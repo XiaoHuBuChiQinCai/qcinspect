@@ -52,3 +52,7 @@ Thumbs.db
 
 # 本地上传的图片（qc.storage.type=local 时的落盘目录）
 data/
+
+# Python 冒烟脚本编译产物
+__pycache__/
+*.pyc

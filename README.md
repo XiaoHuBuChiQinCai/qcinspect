@@ -10,53 +10,105 @@
 
 ```
 C:\qcinspect
+├── docker-compose.yml        一键启动：PostgreSQL 16 + MinIO + 后端
+├── scripts\
+│   └── smoke.py              端到端冒烟测试（登录→建单→提交→审核→导出）
 ├── db\
-│   ├── V1__init.sql          建表脚本 + 初始化数据（法兰盘示例 + 量具 + 不良代码 + 出货），全新安装只跑这个
-│   ├── V2__piece_and_lock.sql       已建库升级：件粒度 + 提交锁定 + 操作日志
-│   ├── V3__standard_bool_config.sql 已建库升级：标准项的可覆写布尔合格值
-│   ├── V4__gauge_disposition_trace.sql 已建库升级：量具 + 不良处置 + 不良代码 + 出货追溯
-│   └── V5__review_and_role.sql      已建库升级：审核闭环 + 审核员角色 + 明细量具提示
+│   ├── V1__init.sql          建表脚本 + 初始化数据（法兰盘示例 + 量具 + 不良代码 + 出货）
+│   ├── V2__piece_and_lock.sql       增量：件粒度 + 提交锁定 + 操作日志
+│   ├── V3__standard_bool_config.sql 增量：标准项的可覆写布尔合格值
+│   ├── V4__gauge_disposition_trace.sql 增量：量具 + 不良处置 + 不良代码 + 出货追溯
+│   └── V5__review_and_role.sql      增量：审核闭环 + 审核员角色 + 明细量具提示
 ├── docs\
 │   └── API.md                接口清单
 ├── qc-server\                后端
 │   ├── pom.xml
-│   └── src\main\java\com\qc\inspect\
-│       ├── judge\            ★ 判定引擎（纯 Java，无框架依赖，已实跑验证）
-│       ├── entity\           14 个实体
-│       ├── mapper\           MyBatis-Plus Mapper
-│       ├── service\          建单快照 / 提交判定 / 审核流转 / 标准配置 / 量具校验 / 处置流转 / 追溯 / CSV 导出
-│       ├── controller\       REST 接口
-│       └── common\           统一返回、异常处理
+│   ├── Dockerfile
+│   ├── src\main\java\com\qc\inspect\
+│   │   ├── judge\            ★ 判定引擎（纯 Java，无框架依赖，有完整单测）
+│   │   ├── entity\           14 个实体
+│   │   ├── mapper\           MyBatis-Plus Mapper
+│   │   ├── service\          建单快照 / 提交判定 / 审核流转 / 标准配置 / 量具校验 / 处置流转 / 追溯 / CSV 导出
+│   │   ├── controller\       REST 接口
+│   │   └── common\           统一返回、异常处理
+│   └── src\test\java\com\qc\inspect\
+│       ├── judge\            ItemJudgeTest / InspectionJudgeTest
+│       └── auth\             JwtUtilTest
 ├── qc-pc\                    PC 端（Vue 3 + Vite + Element Plus）
 └── qc-mobile\                移动端（uni-app，HBuilderX 直接打开）
 ```
+
+> V2~V5 里的 DDL 全部写成 `IF NOT EXISTS` / `DROP ... IF EXISTS`，可以重复执行。
+> 所以新库和老库的升级路径是同一条：按文件名顺序跑一遍就行，不需要区分「这是新库还是旧库」。
 
 ---
 
 ## 二、快速启动
 
-### 1. 建库
+### 方式 A：Docker 一键启动（推荐）
+
+装了 Docker Desktop 的话，不需要本机装 PostgreSQL，也不用管建库脚本跑没跑：
+
+```bash
+docker compose up -d --build
+```
+
+起来之后：
+
+| 入口 | 地址 | 账号 |
+|---|---|---|
+| 后端接口 | http://localhost:8080/api | `admin` / `admin123` |
+| MinIO 控制台 | http://localhost:9001 | `minioadmin` / `minioadmin` |
+| PostgreSQL | localhost:5432 / 库 `qcinspect` | `qc` / `qcpass` |
+
+数据库初始化是自动的：`db/` 下 V1~V5 按顺序挂进 PostgreSQL 的 `docker-entrypoint-initdb.d`，首次启动时执行一遍，演示数据（法兰盘 + 标准 + 量具 + 不良代码 + 出货）一并建好。
+
+跑一遍端到端冒烟测试，验证整条链路：
+
+```bash
+python3 scripts/smoke.py
+```
+
+它会把「登录 → 找批次 → 建单 → 按限值自动填实测值 → 提交判定 → 审核归档 → 查操作日志 → 导出台账」全走一遍，任何一步不符合预期就退出码 1 并指出卡在哪。
+
+常用命令：
+
+```bash
+docker compose logs -f app     # 跟后端日志
+docker compose down            # 停止，保留数据
+docker compose down -v         # 停止并清空数据（数据库 + 照片）
+```
+
+生产部署前必须改掉这三个：`DB_PASSWORD`、`ADMIN_PASSWORD`、`JWT_SECRET`（写进 `.env` 或环境变量，`docker compose` 会自动读同名 shell 变量）。
+
+> 用 JDK 21 跑**是硬要求**，不是建议。项目已用 Maven 3.9.9 + JDK 21 完整编译验证通过。
+> 用 JDK 23 及以上构建会踩一个坑：javac 从 23 起默认不再隐式发现 classpath 上的注解处理器，Lombok 会静默失效，
+> 报错是「找不到符号: 方法 getId()」，看着像实体类写错了。pom 里已显式声明 `annotationProcessorPaths`，
+> 所以新 JDK 也能编，但仍建议用 21 跑，与 `java.version` 保持一致。
+
+### 方式 B：手工启动
+
+#### 1. 建库
 
 本地装好 PostgreSQL 16 后：
 
 ```bash
 createdb qcinspect
 psql -d qcinspect -f db/V1__init.sql
+psql -d qcinspect -f db/V2__piece_and_lock.sql
+psql -d qcinspect -f db/V3__standard_bool_config.sql
+psql -d qcinspect -f db/V4__gauge_disposition_trace.sql
+psql -d qcinspect -f db/V5__review_and_role.sql
 ```
 
 连接信息在 `qc-server/src/main/resources/application.yml`，默认 `postgres/postgres`，改成自己的。
 
-### 2. 起后端
+#### 2. 起后端
 
 ```bash
 cd qc-server
 mvn spring-boot:run
 ```
-
-> **用 JDK 21 跑**。项目已用 Maven 3.9.9 + JDK 21 完整编译验证通过（`mvn -DskipTests compile`，55 个源文件）。
-> 用 JDK 23 及以上构建会踩一个坑：javac 从 23 起默认不再隐式发现 classpath 上的注解处理器，Lombok 会静默失效，
-> 报错是「找不到符号: 方法 getId()」，看着像实体类写错了。pom 里已显式声明 `annotationProcessorPaths`，
-> 所以新 JDK 也能编，但仍建议用 21 跑，与 `java.version` 保持一致。
 
 启动后接口在 `http://localhost:8080/api`。
 
@@ -69,7 +121,7 @@ mvn spring-boot:run
 
 登录后请立刻在右上角「修改密码」里改掉。生产环境务必用环境变量覆盖 `ADMIN_PASSWORD` 与 `JWT_SECRET`（后者至少 32 字节）。
 
-### 2.1 三种角色与演示账号
+##### 2.1 三种角色与演示账号
 
 系统按「谁录入、谁放行」把权限拆成三级：
 
@@ -86,7 +138,7 @@ mvn spring-boot:run
 
 一个人建议只配一个角色。审核员同时是检验员时，系统仍会拦住「审核自己录入的单据」。
 
-### 3. 起 PC 端
+#### 3. 起 PC 端
 
 ```bash
 cd qc-pc
@@ -96,7 +148,7 @@ npm run dev
 
 访问 `http://localhost:5173`。已配好 `/api` 代理到 8080。
 
-### 4. 起移动端
+#### 4. 起移动端
 
 用 **HBuilderX** 打开 `qc-mobile` 目录：
 
@@ -108,43 +160,51 @@ npm run dev
 
 ## 三、已经验证过的部分
 
-判定引擎（`qc-server/src/main/java/com/qc/inspect/judge`）是**纯 Java 实现，不依赖任何框架**，可以直接编译运行：
+### 1. 单元测试：63 个，`mvn test` 直接跑
 
 ```bash
-cd C:/qcinspect
-javac -encoding UTF-8 -d .build qc-server/src/main/java/com/qc/inspect/judge/*.java qc-server/src/test/java/com/qc/inspect/judge/ItemJudgeDemo.java
-java -cp .build com.qc.inspect.judge.ItemJudgeDemo
+cd qc-server
+mvn test
 ```
 
-当前结果：**38 / 38 项断言全部通过**，覆盖：
+```
+Tests run: 63, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
 
-- 数值 / 枚举 / 布尔 / 文本四种类型
-- 单值 / 多点两种测量方式
-- 边界值（等于上限算合格）、非法输入、测点数量不符
-- **件级判定**：任一项 NG 即该件 NG，关键项 NG 单独计数
-- **整批判定**：1 件 NG / 允收 1 件 → 合格；允收 0 件 → 不合格；2 件 NG / 允收 1 件 → 不合格
-- **关键项在允收范围内**：判合格，但理由必须带关键项提示
-- 空单判不合格、未录入单独给理由、允收数负数按 0、同件同项重复行
-- 中文输入兼容（"有"/"无" 等价于 true/false）
+判定引擎是纯 Java 实现、不依赖任何框架，所以它的测试也不需要 Spring 上下文，跑一次不到一秒。
 
-其余代码的验证情况：
+| 测试类 | 数量 | 钉住的是什么 |
+|---|---|---|
+| `ItemJudgeTest` | 38 | 四种类型的判定、边界值、测点数量、布尔项合格值方向 |
+| `InspectionJudgeTest` | 16 | 两层判定、允收数语义、关键项提示、行数与件数不混用 |
+| `JwtUtilTest` | 9 | 验签、篡改、换密钥、过期、弱密钥、BCrypt |
+
+几个刻意写死的地方，都是真实踩过的坑：
+
+- **边界值必须算合格**：`49.90` 配在 `[49.90, 50.10]` 里判合格，闭区间不能写成开区间
+- **布尔项合格值方向**：同一个输入 `"true"`，配「true 判合格」时通过、配「false 判合格」时不通过。这是整个系统最隐蔽的一类配错，光看代码看不出来
+- **行数和件数不能混**：一件工件两个项超差，`ngCount=2` 但 `failedQty=1`；允收数 Ac 比的是件数。混淆了整批结论会算反
+- **空单判不合格**：没有任何数据时判合格，是质量记录里最不能犯的错
+- **关键项在允收范围内仍要提示**：结论可以是合格，但理由必须写出「关键项问题：第 2 件 …」
+
+### 2. 其他验证情况
 
 | 范围 | 方式 | 结果 |
 |---|---|---|
-| 判定引擎 | `javac` + `main` 实跑断言 | **38 / 38 通过** |
-| 认证层（JWT + BCrypt） | `javac` + `main` 实跑断言（真实 jar 依赖） | **19 / 19 通过** |
-| Spring 全量（75 个源文件） | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
-| PC + 移动端 19 个 `.vue` | 模板标签配平 + `node --check` 校验 script | 全部通过 |
-| 5 个 SQL 脚本 | 括号配平 + 中文标点检查 | 全部通过 |
-| 运行时（接口 / 页面） | 未跑 | **没有连数据库实测过**，首次启动仍需自测一遍 |
+| 后端全量 | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
+| 单元测试 | `mvn test` | **63 / 63 通过** |
+| PC + 移动端 18 个 `.vue` | 模板标签配平 + `node --check` 校验 script | 全部通过 |
+| 5 个 SQL 脚本 | 括号配平 + 中文标点检查 + DDL 幂等性逐条核对 | 全部通过 |
+| 端到端 | `docker compose up` + `scripts/smoke.py` | **脚本已提供，但本机没有 Docker / PostgreSQL，没跑过** |
 
-认证层的 19 项断言覆盖：签发三段式 token、字段还原、改 payload 后验签失败、换密钥签发的 token 被拒、负数有效期立即过期、乱码/空串/null 不抛异常只返回 null、短密钥启动即报错；BCrypt 同口令通过、错口令拒绝、两次哈希不同（有随机盐）、哈希不含明文。
-
-> 最后一条「运行时未实测」是这套项目当前最大的不确定性：数据库、登录、上传、打印这条链路我在本机没有 PostgreSQL，跑不起来。代码能编、逻辑能单测，但**没有端到端跑通过一次**。
+> 最后一行是这套项目当前最大的不确定性，也是留 `docker-compose.yml` 和 `smoke.py` 的原因：
+> 代码能编、逻辑能单测，但「建单 → 落库 → 判定 → 审核 → 导出」这条真实链路，我在本机跑不起来。
+> 有 Docker 的机器上执行一次 `docker compose up -d --build && python3 scripts/smoke.py` 就能把这条不确定性消掉。
 
 ---
 
-## 四、四个关键设计决策
+## 四、十三个关键设计决策
 
 ### 1. 标准版本化，永不原地改
 
@@ -321,11 +381,11 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 
 ## 六、下一步
 
-已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出、移动端量具选择/现场拍照/报告查看/续填草稿。
+已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出、移动端量具选择/现场拍照/报告查看/续填草稿、Docker 一键启动、63 个单元测试、端到端冒烟脚本。
 
 按优先级还剩：
 
-1. **端到端跑一次**：本机没有 PostgreSQL，整套接口和页面从未连库实测过。这是当前最大的不确定性，装个 PG 16 跑一遍 `db/V1 → V5` + `mvn spring-boot:run` 就能验掉
+1. **端到端跑一次**：`docker-compose.yml` 和 `scripts/smoke.py` 已经备好，但本机没有 Docker / PostgreSQL，没跑过。找台有 Docker 的机器执行一遍，这条就能从「未验证」变成「已验证」
 2. **合格率口径**：目前同时给单级和件级两个数，接真实客户后要确认他们要哪个
 3. **移动端不良处置**：审核员在手机上看到 NG 后不能直接处置，还得回 PC
 4. **消息通知**：审核退回后检验员不知道，现在只能靠人喊
@@ -337,7 +397,7 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 
 ## 七、注意
 
-- **升级**：全新安装只跑 `db/V1__init.sql`。已建过库的按顺序跑 V2 → V3 → V4 → V5，**V1 与 V2~V5 不要都跑**（内容重叠，会重复建索引报错）
+- **升级**：V2~V5 全部写成幂等 DDL（`ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS` / `CREATE INDEX IF NOT EXISTS`），按 V1 → V5 顺序执行即可，新库老库同一条路径。**但 V1 不是幂等的**（建表用的是普通 `CREATE TABLE`），已经跑过 V1 的库不要再跑一遍
 - **认证**：除 `/api/auth/login`、`/api/images/{id}/raw`、`/actuator/health` 外，所有接口都要 `Authorization: Bearer <token>`，否则返回 401
 - **权限**：主数据维护（标准/量具/检验项/不良代码）与用户管理要 `ADMIN`；审核/归档/作废要 `ADMIN` 或 `REVIEWER`；越权返回 403，前端的菜单隐藏只是体验，真正的边界在 `@PreAuthorize`
 - **JWT 密钥**：`qc.jwt.secret` 至少 32 字节，默认值是开发用的，上线必须用 `JWT_SECRET` 覆盖（启动时会校验长度，不够直接报错）

@@ -1,0 +1,98 @@
+# 工件质检系统 —— 一键启动
+#
+#   docker compose up -d --build      首次启动（会自动建库、跑全部 DDL、装演示数据）
+#   docker compose logs -f app        看后端日志
+#   docker compose down               停止（保留数据）
+#   docker compose down -v            停止并清空数据（含 pgdata 与照片）
+#
+# 起来之后：
+#   PC       http://localhost:8080        admin / admin123
+#   移动 H5  用 HBuilderX 跑 qc-mobile，接口地址指向 http://<本机 IP>:8080/api
+#   MinIO    控制台 http://localhost:9001  minioadmin / minioadmin
+#
+# 冒烟测试：python3 scripts/smoke.py
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: qc-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qcinspect
+      POSTGRES_USER: qc
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-qcpass}
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - qc-pgdata:/var/lib/postgresql/data
+      # 按文件名排序执行。V1 建表 + 演示数据，V2~V5 全部是幂等的增量脚本，
+      # 所以一次全跑是安全的，不需要再区分「新库 / 老库」。
+      - ./db/V1__init.sql:/docker-entrypoint-initdb.d/01_v1_init.sql:ro
+      - ./db/V2__piece_and_lock.sql:/docker-entrypoint-initdb.d/02_v2_piece.sql:ro
+      - ./db/V3__standard_bool_config.sql:/docker-entrypoint-initdb.d/03_v3_bool.sql:ro
+      - ./db/V4__gauge_disposition_trace.sql:/docker-entrypoint-initdb.d/04_v4_gauge.sql:ro
+      - ./db/V5__review_and_role.sql:/docker-entrypoint-initdb.d/05_v5_review.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qc -d qcinspect"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: qc-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      TZ: Asia/Shanghai
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - qc-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build:
+      context: ./qc-server
+    container_name: qc-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: qcinspect
+      DB_USER: qc
+      DB_PASSWORD: ${DB_PASSWORD:-qcpass}
+      # 至少 32 字节，不够长度服务会直接启动失败（这是故意的）
+      JWT_SECRET: ${JWT_SECRET:-qcinspect-compose-dev-secret-change-me-please-0123456789}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      # local = 落容器内磁盘；想用对象存储就保持 minio
+      STORAGE_TYPE: ${STORAGE_TYPE:-minio}
+      STORAGE_DIR: /app/data/files
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: qc-image
+    ports:
+      - "8080:8080"
+    volumes:
+      # STORAGE_TYPE=local 时照片存这里，容器重建不丢
+      - qc-files:/app/data/files
+
+volumes:
+  qc-pgdata:
+  qc-minio:
+  qc-files:

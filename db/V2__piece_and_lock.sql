@@ -50,7 +50,9 @@ COMMENT ON COLUMN qc_inspection_line.piece_no IS
     '件号，从 1 开始。一个批次抽 N 件，每个检验项就有 N 行';
 
 ALTER TABLE qc_inspection_line DROP CONSTRAINT IF EXISTS uk_line_piece_item;
-CREATE UNIQUE INDEX uk_line_piece_item
+-- 老库里它可能是个索引而不是约束，只 DROP CONSTRAINT 删不掉，必须再 DROP INDEX
+DROP INDEX IF EXISTS uk_line_piece_item;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_line_piece_item
     ON qc_inspection_line (inspection_id, piece_no, item_id);
 
 -- ---------- 4. 不良记录：定位到件 ----------
