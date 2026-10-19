@@ -1,0 +1,51 @@
+# ---------- IDE ----------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+.DS_Store
+
+# ---------- Java / Maven ----------
+target/
+.build/
+*.class
+*.jar
+*.war
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+dependency-reduced-pom.xml
+
+# ---------- Node ----------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ---------- uni-app ----------
+unpackage/
+qc-mobile/unpackage/
+qc-mobile/.hbuilderx/
+
+# ---------- 本地配置 / 敏感信息 ----------
+application-local.yml
+application-local.yaml
+application-local.properties
+*.local.yml
+.env
+.env.*
+!.env.example
+
+# ---------- 数据与日志 ----------
+logs/
+*.log
+*.pid
+
+# ---------- 其他 ----------
+Thumbs.db
