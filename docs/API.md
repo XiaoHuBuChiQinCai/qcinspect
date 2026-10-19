@@ -3,8 +3,54 @@
 Base URL：`http://localhost:8080/api`
 统一返回：`{ "code": 0, "msg": "ok", "data": ... }`，`code != 0` 表示失败。
 
-> `operator` 是操作人标识，目前通过 query 参数传（`?operator=张三`），缺省 `system`。
-> 接上 Spring Security 之后应改为从 token 取，届时只需改 Controller 一层。
+> **认证**：除登录接口外，全部需要请求头 `Authorization: Bearer <token>`。
+> 未带 / 过期返回 HTTP 401 + `{ "code": 401, "msg": "未登录或登录已过期" }`；权限不足返回 403。
+>
+> **操作人**：`operator` 这类参数仍然接受，但只要带了有效 token，一律以 token 里的用户为准。
+> 检验员姓名、操作日志的操作人都是这么来的——质量记录的责任人不能由前端随便填。
+
+---
+
+## 〇、认证
+
+| 方法 | 路径 | 说明 | 权限 |
+|---|---|---|---|
+| POST | `/auth/login` | 登录，返回 token | 公开 |
+| GET | `/auth/me` | 当前登录人 | 登录 |
+| POST | `/auth/password` | 修改自己的密码 | 登录 |
+| GET | `/auth/users` | 用户列表 | ADMIN |
+| POST | `/auth/users` | 新增 / 修改用户 | ADMIN |
+| POST | `/auth/users/{id}/reset-password` | 重置他人密码 | ADMIN |
+
+**登录**
+```json
+// 请求
+{ "username": "admin", "password": "admin123" }
+
+// 响应 data
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9....",
+  "user": { "id": 1, "username": "admin", "realName": "系统管理员", "role": "ADMIN" },
+  "expireMinutes": 480
+}
+```
+> 账号不存在与密码错误返回同一句「账号或密码错误」，避免被用来枚举账号。
+> 账号停用返回「账号已停用，请联系管理员」。
+
+**修改密码**
+```json
+{ "oldPassword": "admin123", "newPassword": "abc12345" }
+```
+> 新密码至少 6 位，且不能与原密码相同。
+
+**用户管理**
+```json
+// POST /auth/users 新增
+{ "username": "zhangsan", "realName": "张三", "role": "INSPECTOR", "enabled": true, "password": "init123" }
+
+// POST /auth/users 修改（传 id，password 留空表示不改密码）
+{ "id": 2, "username": "zhangsan", "realName": "张三", "role": "INSPECTOR", "enabled": false }
+```
 
 ---
 
@@ -424,7 +470,82 @@ Base URL：`http://localhost:8080/api`
 
 ---
 
-## 八、状态值约定
+## 八、图片
+
+| 方法 | 路径 | 说明 | 权限 |
+|---|---|---|---|
+| POST | `/images` | 上传，`multipart/form-data` | 登录 |
+| GET | `/images?bizType=INSPECTION&bizId=1` | 某单据的照片列表 | 登录 |
+| GET | `/images/{id}/raw` | 取图片二进制（本地存储模式） | **公开** |
+| DELETE | `/images/{id}` | 删除照片 | 登录 |
+
+**上传**
+```
+POST /api/images
+Content-Type: multipart/form-data
+
+bizType=INSPECTION
+bizId=1
+file=@photo.jpg
+```
+
+**响应 data**
+```json
+{
+  "id": 12,
+  "bizType": "INSPECTION",
+  "bizId": 1,
+  "fileName": "photo.jpg",
+  "contentType": "image/jpeg",
+  "fileSize": 284913,
+  "url": "/api/images/12/raw",
+  "createdBy": "系统管理员",
+  "createdAt": "2026-10-19T17:30:12"
+}
+```
+
+> `url` 两种形态：`local` 存储给 `/api/images/{id}/raw`（本服务代理），`minio` 存储给 7 天有效的预签名地址。
+> 只接受 jpg / jpeg / png / webp / bmp，单张 ≤ 10MB。`Content-Type` 按扩展名反推，不采信浏览器上报值。
+> `/raw` 放行是因为 `<img src>` 带不了 Authorization 头——**公网部署时必须收紧这里**。
+
+---
+
+## 九、检验报告
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/reports/inspection/{id}` | 检验报告 / 合格证所需全部数据，只读 |
+
+**响应 data**
+```json
+{
+  "inspection": { "inspectionNo": "FQC-20261019-0001", "result": "PASS", "sampleQty": 5, "...": "..." },
+  "batch": { "batchNo": "B20261019001", "workOrderNo": "WO-8891", "supplier": "某某钢材" },
+  "product": { "productCode": "P-FLANGE-DN50", "productName": "法兰盘", "spec": "DN50 PN16" },
+  "pieces": [
+    { "pieceNo": 1, "ngCount": 0, "result": "PASS", "rows": [ ... ] },
+    { "pieceNo": 2, "ngCount": 1, "result": "FAIL", "rows": [ ... ] }
+  ],
+  "defects": [ { "pieceNo": 2, "defectCode": "D-OD", "disposition": "REWORK", "status": "PENDING" } ],
+  "images": [ { "id": 12, "url": "/api/images/12/raw", "fileName": "photo.jpg" } ],
+  "conclusion": {
+    "result": "PASS", "pass": true, "final": true,
+    "reason": "不合格 1 件（第 2 件），未超过允收数 1 件",
+    "sampleQty": 5, "acceptQty": 1, "passedQty": 4, "failedQty": 1,
+    "ngCount": 1, "criticalNgCount": 0
+  },
+  "logs": [ ... ],
+  "printedBy": "系统管理员",
+  "printedAt": "2026-10-19T17:31:02"
+}
+```
+
+> `conclusion.final = false` 表示单据还是草稿，判定未生效。**前端必须显式提示**，否则会有人拿草稿当合格证。
+> 报告里的限值、实测值、量具全部来自建单时的快照，标准后来改版不影响历史报告。
+
+---
+
+## 十、状态值约定
 
 | 字段 | 取值 |
 |---|---|

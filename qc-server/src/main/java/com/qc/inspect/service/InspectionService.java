@@ -3,6 +3,7 @@ package com.qc.inspect.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.dto.InspectionSubmitReq;
 import com.qc.inspect.entity.QcBatch;
@@ -112,7 +113,9 @@ public class InspectionService {
         ins.setSampleQty(qty);
         // 允收数同期快照：标准日后改 Ac，不影响已建的单
         ins.setAcceptQty(acceptQty);
-        ins.setInspectorName(inspectorName);
+        // 检验员是质量记录的责任人，不能由前端随便填：已登录时以登录态为准
+        ins.setInspectorName(UserContext.current() != null ? UserContext.username()
+                : (inspectorName == null || inspectorName.isBlank() ? UserContext.ANONYMOUS : inspectorName));
         ins.setStatus("DRAFT");
         ins.setResult("NA");
         ins.setPassedQty(0);

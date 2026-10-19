@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -16,7 +17,11 @@ public class SysUser {
     private Long id;
 
     private String username;
+
+    /** BCrypt 哈希，永不返回给前端 */
+    @JsonIgnore
     private String password;
+
     private String realName;
 
     /** ADMIN / INSPECTOR */

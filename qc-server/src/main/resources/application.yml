@@ -33,11 +33,24 @@ mybatis-plus:
       logic-not-delete-value: 0
 
 qc:
+  jwt:
+    # 生产环境务必用环境变量 JWT_SECRET 覆盖，长度至少 32 字节
+    secret: ${JWT_SECRET:qcinspect-dev-only-secret-change-in-production-0123456789}
+    expire-minutes: ${JWT_EXPIRE_MINUTES:480}
+  # local：落本地磁盘，零依赖，适合单厂内网部署
+  # minio：走对象存储，配 qc.minio 使用
+  storage:
+    type: ${STORAGE_TYPE:local}
+    local-dir: ${STORAGE_DIR:./data/files}
+  default-admin:
+    username: ${ADMIN_USER:admin}
+    password: ${ADMIN_PASSWORD:admin123}
   minio:
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
     access-key: ${MINIO_ACCESS_KEY:minioadmin}
     secret-key: ${MINIO_SECRET_KEY:minioadmin}
     bucket: ${MINIO_BUCKET:qc-image}
+    url-expire-days: 7
 
 logging:
   level:

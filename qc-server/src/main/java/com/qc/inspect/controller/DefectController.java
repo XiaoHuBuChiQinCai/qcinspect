@@ -2,6 +2,7 @@ package com.qc.inspect.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qc.inspect.common.BizException;
+import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcDefectCode;
@@ -39,7 +40,7 @@ public class DefectController {
     /** 提交处置：REWORK / SCRAP / RETURN，status 可选 PROCESSING / DONE */
     @PostMapping("/defects/{id}/dispose")
     public R<QcDefect> dispose(@PathVariable Long id, @RequestBody DisposeReq req) {
-        return R.ok(defectService.dispose(id, req.disposition(), req.status(), req.note(), req.operator()));
+        return R.ok(defectService.dispose(id, req.disposition(), req.status(), req.note(), UserContext.operator(req.operator())));
     }
 
     /** 让步接收审批：理由与授权人必填 */

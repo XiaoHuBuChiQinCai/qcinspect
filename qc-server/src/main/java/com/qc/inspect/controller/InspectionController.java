@@ -2,6 +2,7 @@ package com.qc.inspect.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.dto.InspectionCreateReq;
 import com.qc.inspect.dto.InspectionSubmitReq;
@@ -35,7 +36,7 @@ public class InspectionController {
     @PostMapping
     public R<Map<String, Object>> create(@Valid @RequestBody InspectionCreateReq req,
                                          @RequestParam(required = false, defaultValue = "system") String operator) {
-        return R.ok(inspectionService.create(req.batchId(), req.inspectorName(), req.sampleQty(), operator));
+        return R.ok(inspectionService.create(req.batchId(), req.inspectorName(), req.sampleQty(), UserContext.operator(operator)));
     }
 
     /** 检验单详情，按件组织，每件内按分组归并 */
@@ -49,7 +50,7 @@ public class InspectionController {
     public R<Void> save(@PathVariable Long id,
                         @RequestBody InspectionSubmitReq req,
                         @RequestParam(required = false, defaultValue = "system") String operator) {
-        inspectionService.saveDraft(id, req.lines(), operator);
+        inspectionService.saveDraft(id, req.lines(), UserContext.operator(operator));
         return R.ok();
     }
 
@@ -58,7 +59,7 @@ public class InspectionController {
     public R<InspectionOutcome> submit(@PathVariable Long id,
                                        @RequestBody InspectionSubmitReq req,
                                        @RequestParam(required = false, defaultValue = "system") String operator) {
-        return R.ok(inspectionService.submit(id, req.lines(), operator));
+        return R.ok(inspectionService.submit(id, req.lines(), UserContext.operator(operator)));
     }
 
     /** 解锁已提交的检验单，必须给理由，会写日志 */
@@ -66,7 +67,7 @@ public class InspectionController {
     public R<Void> reopen(@PathVariable Long id,
                           @RequestParam String reason,
                           @RequestParam(required = false, defaultValue = "system") String operator) {
-        inspectionService.reopen(id, reason, operator);
+        inspectionService.reopen(id, reason, UserContext.operator(operator));
         return R.ok();
     }
 
@@ -74,7 +75,7 @@ public class InspectionController {
     @PostMapping("/{id}/close")
     public R<Void> close(@PathVariable Long id,
                          @RequestParam(required = false, defaultValue = "system") String operator) {
-        inspectionService.close(id, operator);
+        inspectionService.close(id, UserContext.operator(operator));
         return R.ok();
     }
 
@@ -83,7 +84,7 @@ public class InspectionController {
     public R<Void> voidInspection(@PathVariable Long id,
                                   @RequestParam String reason,
                                   @RequestParam(required = false, defaultValue = "system") String operator) {
-        inspectionService.voidInspection(id, reason, operator);
+        inspectionService.voidInspection(id, reason, UserContext.operator(operator));
         return R.ok();
     }
 

@@ -3,7 +3,10 @@
     <view class="head">
       <button class="scan" @click="scan">扫码开工单</button>
       <text class="link" @click="load">刷新</text>
+      <text class="link" @click="logout">退出</text>
     </view>
+
+    <view class="me" v-if="user">当前：{{ user.realName || user.username }}</view>
 
     <view v-for="b in batches" :key="b.id" class="card" @click="openBatch(b)">
       <view class="row">
@@ -22,20 +25,37 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { api } from '../../common/api'
+import { api, clearSession, getToken, getUser } from '../../common/api'
 
 const batches = ref([])
 const loading = ref(false)
+const user = ref(getUser())
 
 const statusText = s => ({ PENDING: '待检', INSPECTING: '检验中', DONE: '已完成' }[s] || s)
 
 async function load() {
+  if (!getToken()) {
+    uni.reLaunch({ url: '/pages/login/login' })
+    return
+  }
   loading.value = true
   try {
     batches.value = await api.batches('PENDING')
   } finally {
     loading.value = false
   }
+}
+
+function logout() {
+  uni.showModal({
+    title: '退出登录',
+    content: '确定退出当前账号？',
+    success: res => {
+      if (!res.confirm) return
+      clearSession()
+      uni.reLaunch({ url: '/pages/login/login' })
+    }
+  })
 }
 
 function scan() {
@@ -70,6 +90,7 @@ onMounted(load)
 .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24rpx; }
 .scan { flex: 1; background-color: #1989fa; color: #fff; border-radius: 12rpx; font-size: 32rpx; }
 .link { margin-left: 24rpx; color: #1989fa; font-size: 28rpx; }
+.me { margin-bottom: 16rpx; font-size: 24rpx; color: #8a9199; }
 .card { background: #fff; border-radius: 16rpx; padding: 28rpx; margin-bottom: 20rpx; }
 .row { display: flex; align-items: center; justify-content: space-between; }
 .no { font-size: 32rpx; font-weight: 500; }

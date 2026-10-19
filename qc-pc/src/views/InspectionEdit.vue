@@ -143,7 +143,33 @@
       </el-collapse-item>
     </el-collapse>
 
+    <!-- 现场照片：与检验单项无关，但审核时是唯一能证明"确实检了"的证据 -->
+    <div class="photo-block">
+      <div class="photo-head">
+        <span class="photo-title">现场照片</span>
+        <span class="photo-tip">建议拍：工件整体、NG 部位特写、量具读数</span>
+        <div class="spacer" />
+        <el-upload
+          :show-file-list="false"
+          :http-request="uploadPhoto"
+          accept="image/*"
+          :disabled="locked"
+        >
+          <el-button size="small" :disabled="locked" :loading="uploading">上传照片</el-button>
+        </el-upload>
+      </div>
+      <div class="photo-list">
+        <div v-for="img in images" :key="img.id" class="photo-item">
+          <el-image :src="img.url" fit="cover" :preview-src-list="imageUrls" :initial-index="images.indexOf(img)" />
+          <el-button v-if="!locked" link type="danger" size="small" @click="removePhoto(img)">删除</el-button>
+        </div>
+        <div v-if="!images.length" class="photo-empty">暂无照片</div>
+      </div>
+    </div>
+
     <div class="footer">
+      <el-button @click="$router.push(`/report/${route.params.id}`)">检验报告</el-button>
+      <div class="spacer" />
       <el-button v-if="!locked" type="primary" size="large" :loading="submitting" @click="submit">
         提交判定
       </el-button>
@@ -168,6 +194,10 @@ const activeGroups = ref([])
 const outcome = ref(null)
 const locked = ref(false)
 const gauges = ref([])
+const images = ref([])
+const uploading = ref(false)
+
+const imageUrls = computed(() => images.value.map(i => i.url))
 
 function isGaugeExpired(g) {
   if (!g.nextCalibrateDate) return true
@@ -237,9 +267,42 @@ async function load() {
     currentPiece.value = data.pieces[0]?.pieceNo || 1
     initLines()
     gauges.value = await http.get('/gauges', { params: { status: 'ACTIVE' } })
+    await loadImages()
   } finally {
     loading.value = false
   }
+}
+
+async function loadImages() {
+  try {
+    images.value = await http.get('/images', {
+      params: { bizType: 'INSPECTION', bizId: route.params.id }
+    })
+  } catch {
+    // 图片接口失败不该阻断录入
+    images.value = []
+  }
+}
+
+async function uploadPhoto(option) {
+  uploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', option.file)
+    fd.append('bizType', 'INSPECTION')
+    fd.append('bizId', route.params.id)
+    const img = await http.post('/images', fd)
+    images.value.push(img)
+    ElMessage.success('照片已上传')
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function removePhoto(img) {
+  await ElMessageBox.confirm('删除这张照片？删除后不可恢复。', '提示', { type: 'warning' })
+  await http.delete(`/images/${img.id}`)
+  images.value = images.value.filter(i => i.id !== img.id)
 }
 
 function goPiece(no) {
@@ -365,5 +428,17 @@ onMounted(load)
 .point-input { width: 130px; }
 .gauge-select { width: 180px; }
 .reason { margin-top: 6px; color: #f56c6c; font-size: 12px; }
-.footer { margin-top: 24px; text-align: right; }
+
+.photo-block { margin-top: 24px; padding-top: 16px; border-top: 1px solid #ebeef5; }
+.photo-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.photo-title { font-weight: 500; }
+.photo-tip { color: #b1b3b8; font-size: 12px; }
+.photo-head .spacer { flex: 1; }
+.photo-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.photo-item { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.photo-item :deep(.el-image) { width: 110px; height: 82px; border-radius: 4px; border: 1px solid #ebeef5; }
+.photo-empty { color: #c0c4cc; font-size: 13px; padding: 8px 0; }
+
+.footer { display: flex; align-items: center; margin-top: 24px; }
+.footer .spacer { flex: 1; }
 </style>

@@ -49,3 +49,6 @@ logs/
 
 # ---------- 其他 ----------
 Thumbs.db
+
+# 本地上传的图片（qc.storage.type=local 时的落盘目录）
+data/

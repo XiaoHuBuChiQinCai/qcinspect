@@ -70,7 +70,8 @@ async function openInspection(row) {
   } catch {
     return
   }
-  const data = await http.post('/inspections', { batchId: row.id, inspectorName: '当前用户', sampleQty })
+  // 检验员由后端取登录态，前端不传名字
+  const data = await http.post('/inspections', { batchId: row.id, sampleQty })
   router.push(`/inspection/${data.inspectionId}`)
 }
 
