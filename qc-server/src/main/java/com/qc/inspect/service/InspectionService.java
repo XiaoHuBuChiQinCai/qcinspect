@@ -7,6 +7,7 @@ import com.qc.inspect.common.BizException;
 import com.qc.inspect.dto.InspectionSubmitReq;
 import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcDefect;
+import com.qc.inspect.entity.QcGauge;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcInspectionLine;
 import com.qc.inspect.entity.QcInspectionLog;
@@ -66,6 +67,7 @@ public class InspectionService {
     private final QcInspectionLineMapper lineMapper;
     private final QcDefectMapper defectMapper;
     private final QcInspectionLogMapper logMapper;
+    private final GaugeService gaugeService;
     private final ObjectMapper objectMapper;
 
     // ==================== 建单（含标准快照） ====================
@@ -92,9 +94,10 @@ public class InspectionService {
             throw BizException.of("检验标准未配置任何检验项");
         }
 
-        int qty = resolveSampleQty(standard, sampleQty);
+        int qty = resolveSampleQty(standard, batch, sampleQty);
         if (qty > MAX_SAMPLE_QTY) {
-            throw BizException.of("抽样件数 " + qty + " 超过上限 " + MAX_SAMPLE_QTY + "，请拆批");
+            throw BizException.of("全检模式下一单要验 " + qty + " 件，超过单次上限 " + MAX_SAMPLE_QTY
+                    + " 件。请把批次拆小，或把标准改为抽检");
         }
         int acceptQty = standard.getAllowedNgCount() == null ? 0 : Math.max(standard.getAllowedNgCount(), 0);
 
@@ -143,7 +146,10 @@ public class InspectionService {
                 line.setMinValue(si.getMinValue() != null ? si.getMinValue() : item.getDefaultMin());
                 line.setMaxValue(si.getMaxValue() != null ? si.getMaxValue() : item.getDefaultMax());
                 line.setOptionsJson(si.getOptionsJson() != null ? si.getOptionsJson() : item.getOptionsJson());
-                line.setBoolPassValue(item.getBoolPassValue() == null || item.getBoolPassValue());
+                // 布尔合格值三层回退：标准项覆盖 → 检验项主数据 → 默认 true
+                line.setBoolPassValue(si.getBoolPassValue() != null
+                        ? si.getBoolPassValue()
+                        : (item.getBoolPassValue() != null ? item.getBoolPassValue() : Boolean.TRUE));
                 line.setIsCritical(Boolean.TRUE.equals(si.getIsCritical()));
                 line.setSeq(seq += 10);
                 line.setResult("PENDING");
@@ -200,6 +206,12 @@ public class InspectionService {
             }
             line.setMeasuredValues(toJson(in.values() == null ? List.of() : in.values()));
             line.setMeasuredText(in.textValue());
+            // 草稿阶段只记住选了哪把量具，有效性留到提交时硬校验
+            if (in.gaugeId() != null) {
+                QcGauge gauge = gaugeService.get(in.gaugeId());
+                line.setGaugeId(in.gaugeId());
+                line.setGaugeCode(gauge == null ? null : gauge.getGaugeCode());
+            }
             line.setUpdatedAt(now);
             lineMapper.updateById(line);
         }
@@ -228,6 +240,12 @@ public class InspectionService {
 
             line.setMeasuredValues(toJson(measured));
             line.setMeasuredText(text);
+            // 量具校验：超期/报废的量具测出的数据不可采信，必须在提交时硬拦
+            if (in != null && in.gaugeId() != null) {
+                QcGauge gauge = gaugeService.assertUsable(in.gaugeId(), line.getItemName());
+                line.setGaugeId(gauge.getId());
+                line.setGaugeCode(gauge.getGaugeCode());
+            }
             targets.add(new JudgeTarget(line.getId(), line.getItemId(),
                     line.getPieceNo() == null ? 1 : line.getPieceNo(),
                     line.getItemName(), Boolean.TRUE.equals(line.getIsCritical()),
@@ -470,7 +488,7 @@ public class InspectionService {
                 Boolean.TRUE.equals(line.getBoolPassValue()));
     }
 
-    private int resolveSampleQty(QcStandard standard, Integer sampleQty) {
+    private int resolveSampleQty(QcStandard standard, QcBatch batch, Integer sampleQty) {
         if (sampleQty != null && sampleQty > 0) {
             return sampleQty;
         }
@@ -478,7 +496,9 @@ public class InspectionService {
             return standard.getSampleSize();
         }
         if ("FULL".equals(standard.getSamplingType())) {
-            return 1;
+            // 全检 = 批次里每一件都要验。原来这里写死返回 1，
+            // 导致 100 件的批次只生成 1 件的明细，却对外声称「全检」，是数据失真。
+            return batch.getQty() == null || batch.getQty() <= 0 ? 1 : batch.getQty();
         }
         return 1;
     }

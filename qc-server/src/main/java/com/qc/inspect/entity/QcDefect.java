@@ -30,6 +30,21 @@ public class QcDefect {
     private String disposition;
 
     private String dispositionNote;
+
+    /** PENDING / PROCESSING / DONE / WAIVED */
+    private String dispositionStatus;
+
+    private String dispositionBy;
+    private LocalDateTime dispositionAt;
+
+    /** 让步接收必须有理由和授权人，DB 有 CHECK 约束兜底 */
+    private String concessionReason;
+    private String concessionApprovedBy;
+    private LocalDateTime concessionApprovedAt;
+
+    /** 返工后的复检单，形成「原单 NG → 返工 → 复检」链 */
+    private Long recheckInspectionId;
+
     private String createdBy;
     private LocalDateTime createdAt;
 }

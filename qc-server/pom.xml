@@ -71,6 +71,24 @@
     <build>
         <plugins>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!--
+                        JDK 23 起 javac 默认不再隐式发现 classpath 上的注解处理器（JEP 更严格的默认值），
+                        不显式声明 annotationProcessorPaths，Lombok 就直接不生效，
+                        报错是「找不到符号: 方法 getId()」，看起来像实体类写错了，其实是编译配置问题。
+                    -->
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>

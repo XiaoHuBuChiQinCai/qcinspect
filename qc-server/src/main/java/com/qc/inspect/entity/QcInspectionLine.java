@@ -46,6 +46,10 @@ public class QcInspectionLine {
 
     private String measuredText;
 
+    /** 实际使用的量具，快照 gaugeCode 后与台账解耦 */
+    private Long gaugeId;
+    private String gaugeCode;
+
     /** PASS / FAIL / PENDING */
     private String result;
 

@@ -33,6 +33,14 @@ public class QcStandardItem {
     /** 覆盖检验项主数据的选项，为空则用主数据 */
     private String optionsJson;
 
+    /**
+     * 布尔型合格值，覆盖主数据。
+     *
+     * <p>null = 沿用 {@code qc_item.bool_pass_value}；true = 录「有」算合格，false = 录「无」算合格。
+     * 这个字段必须允许三态，才能在「毛刺（有=坏）」和「去毛刺（有=好）」之间区分。
+     */
+    private Boolean boolPassValue;
+
     private Boolean isDestructive;
 
     @TableLogic

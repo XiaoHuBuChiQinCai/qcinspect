@@ -11,17 +11,19 @@
 ```
 C:\qcinspect
 ├── db\
-│   ├── V1__init.sql          建表脚本 + 初始化数据（法兰盘示例），全新安装只跑这个
-│   └── V2__piece_and_lock.sql  V1 老库的原地升级脚本（补件粒度 + 操作日志）
+│   ├── V1__init.sql          建表脚本 + 初始化数据（法兰盘示例 + 量具 + 不良代码 + 出货），全新安装只跑这个
+│   ├── V2__piece_and_lock.sql       已建库升级：件粒度 + 提交锁定 + 操作日志
+│   ├── V3__standard_bool_config.sql 已建库升级：标准项的可覆写布尔合格值
+│   └── V4__gauge_disposition_trace.sql 已建库升级：量具 + 不良处置 + 不良代码 + 出货追溯
 ├── docs\
 │   └── API.md                接口清单
 ├── qc-server\                后端
 │   ├── pom.xml
 │   └── src\main\java\com\qc\inspect\
-│       ├── judge\            ★ 判定引擎（纯 Java，无框架依赖，已验证）
-│       ├── entity\           10 个实体
+│       ├── judge\            ★ 判定引擎（纯 Java，无框架依赖，已实跑验证）
+│       ├── entity\           14 个实体
 │       ├── mapper\           MyBatis-Plus Mapper
-│       ├── service\          建单快照 / 提交判定 / 标准版本管理
+│       ├── service\          建单快照 / 提交判定 / 标准配置 / 量具校验 / 处置流转 / 追溯
 │       ├── controller\       REST 接口
 │       └── common\           统一返回、异常处理
 ├── qc-pc\                    PC 端（Vue 3 + Vite + Element Plus）
@@ -50,7 +52,10 @@ cd qc-server
 mvn spring-boot:run
 ```
 
-> 本机当前没有装 Maven。用 IntelliJ IDEA 打开 `qc-server/pom.xml`，IDEA 自带 Maven，直接运行 `QcApplication` 即可。或者装一个 Maven 后跑上面的命令。
+> **用 JDK 21 跑**。项目已用 Maven 3.9.9 + JDK 21 完整编译验证通过（`mvn -DskipTests compile`，55 个源文件）。
+> 用 JDK 23 及以上构建会踩一个坑：javac 从 23 起默认不再隐式发现 classpath 上的注解处理器，Lombok 会静默失效，
+> 报错是「找不到符号: 方法 getId()」，看着像实体类写错了。pom 里已显式声明 `annotationProcessorPaths`，
+> 所以新 JDK 也能编，但仍建议用 21 跑，与 `java.version` 保持一致。
 
 启动后接口在 `http://localhost:8080/api`。
 
@@ -95,7 +100,15 @@ java -cp .build com.qc.inspect.judge.ItemJudgeDemo
 - 空单判不合格、未录入单独给理由、允收数负数按 0、同件同项重复行
 - 中文输入兼容（"有"/"无" 等价于 true/false）
 
-其余代码（Spring 层）因为本机没有 Maven 依赖，未做编译验证，用 IDEA 导入后如有报错按提示修。
+其余代码的验证情况：
+
+| 范围 | 方式 | 结果 |
+|---|---|---|
+| 判定引擎 | `javac` + `main` 实跑断言 | **38 / 38 通过** |
+| Spring 全量（55 个源文件） | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
+| PC 端 12 个 `.vue` | 模板标签配平 + `node --check` 校验 script | 全部通过 |
+| 4 个 SQL 脚本 | 括号配平 + 中文标点检查 | 全部通过 |
+| 运行时（接口 / 页面） | 未跑 | **没有连数据库实测过**，首次启动仍需自测一遍 |
 
 ---
 
@@ -171,6 +184,36 @@ CREATE UNIQUE INDEX uk_standard_active ON qc_standard (product_id)
 
 配套的还有草稿暂存（`POST /{id}/save`）：只写实测值，不判定、不改状态、不写日志。40 个输入框没人能一口气填完，没有暂存就会丢数据。
 
+### 7. 量具不过期，数据才算数
+
+`qc_gauge` 记编号、校准日、校准周期，到期日 = 校准日 + 周期（程序算，不手填）。
+
+录入页数值项会带一个量具下拉，**已过期的量具直接置灰不可选**；即使绕过前端硬发请求，提交时 `GaugeService.assertUsable` 也会拦下并报「已于 yyyy-mm-dd 到期，超期量具测出的数据不可采信」。
+
+这么做的理由很实际：卡尺校准过期 3 个月，它测出的 200 个数据在 IATF 16949 / ISO 9001 体系上全部无效，事后无法补救。**这是整个系统里投入产出最高的一块**，成本三张表，但客户一看就知道做的人懂行。
+
+### 8. NG 不是终点，处置才是
+
+`qc_defect` 从「一个标记」变成了有状态流转的闭环：
+
+```
+PENDING ──返工/退货──> PROCESSING ──> DONE（返工必须挂复检单）
+PENDING ──报废────────> DONE
+PENDING ──让步接收────> WAIVED（理由 + 授权人必填，DB 有 CHECK 约束兜底）
+```
+
+两条硬规则：
+
+- **返工完成必须挂一张复检单**，否则无法证明返工后的产品是合格的
+- **让步接收必须有理由和授权人**，这是 ISO 体系里唯一需要「有权签字的人点头」的处置方式，漏了整个评审会被挑出来
+
+### 9. 追溯要能双向走
+
+正向：批次 → 检验单 → 出货记录 → 客户（出问题要召回，得知道货发给谁了）
+反向：出货单号 / 客诉批号 → 批次 → 检验单 → 检验员 + 当时用的量具 + 当时的实测值
+
+**能查到「用了哪把量具」这件事，是这套系统和 Excel 的分水岭。** 所以 `qc_inspection_line` 除了 `gauge_id` 还存了一份 `gauge_code` 快照，量具台账日后改名也不影响历史记录。
+
 ---
 
 ## 五、数据库表清单
@@ -186,6 +229,9 @@ CREATE UNIQUE INDEX uk_standard_active ON qc_standard (product_id)
 | `qc_inspection_line` | 检验明细，件 × 项，含标准快照 |
 | `qc_defect` | 不良记录，带件号 |
 | `qc_inspection_log` | 操作日志，提交/解锁/归档/作废全部留痕 |
+| `qc_gauge` | 量具台账，含校准周期与到期日 |
+| `qc_defect_code` | 不良代码字典，帕累托的统计维度 |
+| `qc_shipment` | 出货记录，追溯的出向 |
 | `qc_image` | 检验照片（MinIO） |
 | `sys_user` | 用户 |
 
@@ -193,18 +239,15 @@ CREATE UNIQUE INDEX uk_standard_active ON qc_standard (product_id)
 
 ## 六、下一步
 
-已完成的模型改造：件粒度、两层判定、提交锁定、草稿暂存、件级合格率。
+已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托、双向往溯。
 
 按优先级还剩：
 
-1. **NG 处置闭环**：`qc_defect.disposition` 现在只是个标记，还需要处置状态流转、返工后复检回链原单、让步接收的授权人签字
-2. **量具校准**：一张表记编号/校准日/有效期，检验单记录用了哪把量具，录入时选到过期量具就拦截
-3. **批次追溯查询页**：正向原料批 → 客户，反向客诉批号 → 检验记录 → 检验员 → 量具
-4. **认证**：`sys_user` 表已建，补 Spring Security + JWT，Controller 加鉴权（`operator` 现在是 query 参数，接上认证后应从 token 取）
-5. **图片上传**：MinIO 已引依赖，补 `ImageController` + 移动端拍照上传
-6. **标准配置编辑页**：目前 `StandardList.vue` 只能看版本和发布新版，还缺「勾选检验项 + 设限值」的编辑页
-7. **不良代码字典 + 帕累托**：`qc_defect.defect_code` 现在可以随便填，没有主数据约束，帕累托排名会散
-8. **检验报告 / 合格证打印**
+1. **认证**：`sys_user` 表已建，补 Spring Security + JWT。现在 `operator` 是请求参数，谁都能填别人的名字——这是当前最大的短板
+2. **图片上传**：MinIO 已引依赖，补 `ImageController` + 移动端拍照上传
+3. **检验报告 / 合格证打印**：客户要拿去应付审核、贴在产品箱里，这是「看起来能交付」的门槛
+4. **移动端补齐新功能**：量具选择、不良处置、扫码建单目前只在 PC 端有
+5. **合格率口径**：目前同时给单级和件级两个数，接真实客户后要确认他们要哪个
 
 暂不做：AQL 比例抽样、SPC 控制图、CPK 数值（样本量不足时算出来是错的，宁可不给）。
 
@@ -212,7 +255,7 @@ CREATE UNIQUE INDEX uk_standard_active ON qc_standard (product_id)
 
 ## 七、注意
 
-- **升级**：V1 建过库的跑 `db/V2__piece_and_lock.sql`；全新安装只跑 V1，**不要再跑 V2**（两者内容重叠）
+- **升级**：全新安装只跑 `db/V1__init.sql`。已建过库的按顺序跑 V2 → V3 → V4，**V1 与 V2/V3/V4 不要都跑**（内容重叠，会重复建索引报错）
 - **件数上限**：单张检验单最多 200 件，超了让人拆批。件数 × 项数 就是明细行数，1000 件全检会把表写爆
 - 所有业务表带 `del_flag` 逻辑删除，MyBatis-Plus 全局配置已接管，删除走 `deleteById` 不会真删
 - 时间统一 `timestamptz`，实体用 `LocalDateTime`

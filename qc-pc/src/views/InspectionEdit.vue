@@ -116,6 +116,26 @@
               placeholder="补充说明，不参与判定"
               :disabled="locked"
             />
+
+            <!-- 量具：数值项才需要。超期量具不可选，因为选了后端也会拦 -->
+            <el-select
+              v-if="line.valueType === 'NUMBER'"
+              v-model="line._gaugeId"
+              size="small"
+              placeholder="用量具"
+              clearable
+              filterable
+              class="gauge-select"
+              :disabled="locked"
+            >
+              <el-option
+                v-for="g in gauges"
+                :key="g.id"
+                :label="`${g.gaugeCode} ${g.gaugeName}${isGaugeExpired(g) ? '（已过期）' : ''}`"
+                :value="g.id"
+                :disabled="isGaugeExpired(g)"
+              />
+            </el-select>
           </div>
 
           <div v-if="line.judgeReason" class="reason">{{ line.judgeReason }}</div>
@@ -147,6 +167,12 @@ const currentPiece = ref(1)
 const activeGroups = ref([])
 const outcome = ref(null)
 const locked = ref(false)
+const gauges = ref([])
+
+function isGaugeExpired(g) {
+  if (!g.nextCalibrateDate) return true
+  return new Date(g.nextCalibrateDate) < new Date(new Date().toDateString())
+}
 
 const currentGroups = computed(() => {
   const p = pieces.value.find(x => x.pieceNo === currentPiece.value)
@@ -179,6 +205,7 @@ function initLines() {
         line._input = saved.length ? saved[0] : ''
       }
       line._text = line.measuredText || ''
+      line._gaugeId = line.gaugeId || null
     })
   })
 }
@@ -209,6 +236,7 @@ async function load() {
     activeGroups.value = Object.keys(data.pieces[0]?.groups || {})
     currentPiece.value = data.pieces[0]?.pieceNo || 1
     initLines()
+    gauges.value = await http.get('/gauges', { params: { status: 'ACTIVE' } })
   } finally {
     loading.value = false
   }
@@ -268,7 +296,7 @@ function collectLines() {
           ? [String(line._input)]
           : []
       }
-      return { lineId: line.id, values, textValue }
+      return { lineId: line.id, values, textValue, gaugeId: line._gaugeId || null }
     })
   )
 }
@@ -335,6 +363,7 @@ onMounted(load)
 .line-head .std { color: #909399; font-size: 12px; }
 .line-body { display: flex; flex-wrap: wrap; gap: 8px; }
 .point-input { width: 130px; }
+.gauge-select { width: 180px; }
 .reason { margin-top: 6px; color: #f56c6c; font-size: 12px; }
 .footer { margin-top: 24px; text-align: right; }
 </style>

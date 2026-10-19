@@ -5,6 +5,9 @@
       <el-menu :default-active="$route.path" router>
         <el-menu-item index="/">待检批次</el-menu-item>
         <el-menu-item index="/standards">检验标准</el-menu-item>
+        <el-menu-item index="/defects">不良处置</el-menu-item>
+        <el-menu-item index="/gauges">量具台账</el-menu-item>
+        <el-menu-item index="/trace">批次追溯</el-menu-item>
         <el-menu-item index="/stat">质量看板</el-menu-item>
       </el-menu>
     </el-aside>

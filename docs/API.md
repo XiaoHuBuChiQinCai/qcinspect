@@ -61,9 +61,12 @@ Base URL：`http://localhost:8080/api`
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/standards?productId=1` | 某产品的所有版本（含已作废） |
-| GET | `/standards/{id}/items` | 标准包含的检验项 |
-| POST | `/standards` | 新建草稿标准（version 自动为 1） |
+| GET | `/standards?productId=1` | 某产品的所有版本，返回 `[{standard, itemCount}]` |
+| GET | `/standards/{id}` | 标准详情，返回 `{standard, items}` |
+| GET | `/standards/{id}/items` | 只取检验项数组 |
+| POST | `/standards` | 新建草稿标准（version 自动为 1，同产品已有草稿会拒绝） |
+| PUT | `/standards/{id}` | 修改草稿表头（编号/抽样方式/允收数/备注） |
+| DELETE | `/standards/{id}` | 删除草稿（生效过的版本不能删） |
 | POST | `/standards/{id}/items` | 整体保存检验项（先清后插，仅草稿可用） |
 | POST | `/standards/{id}/publish` | 以该版本为模板发布新版本（自动生效） |
 | POST | `/standards/{id}/activate` | 启用草稿版本 |
@@ -104,6 +107,22 @@ Base URL：`http://localhost:8080/api`
   }
 ]
 ```
+
+**保存检验项时的校验**（在 `StandardService.saveItems` 里，前端拦不住也会被拒）：
+
+| 规则 | 报错 |
+|---|---|
+| 至少一个检验项 | 至少要配置一个检验项，否则建单时无项可填 |
+| 至少一个关键项 | 全部为非关键项时，任意一项超差都不会判死整批 |
+| 数值项必须有下限或上限 | 「外径」是数值项，必须给上限或下限，否则无法判定 |
+| 下限 ≤ 上限 | 检查是否填反了 |
+| 多点测点数 2~20 | 测点数至少要 2 / 超过 20，实际现场没人会填这么多 |
+| 枚举项至少一个 pass=true | 选项里没有任何一个判为合格，这样怎么填都是 NG |
+| 破坏性项不能配全检 | 全检意味着每件都验，验完就报废 |
+
+**布尔项合格值可覆写**：`qc_standard_item.bool_pass_value` 三态 —— `null` 沿用 `qc_item` 主数据，`true` 录「有」算合格，`false` 录「无」算合格。
+这是必需的，因为「毛刺（有=坏）」和「去毛刺（有=好）」是同一类字段的相反语义。
+
 > 注意：已生效（ACTIVE）的标准不能直接改项，接口会拒绝。必须先 `publish` 出新版本再改。
 
 ---
@@ -315,7 +334,97 @@ Base URL：`http://localhost:8080/api`
 
 ---
 
-## 五、状态值约定
+## 五、量具
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/gauges?status=ACTIVE` | 量具台账 |
+| GET | `/gauges/expiring?days=30` | 已过期 + N 天内到期 |
+| POST | `/gauges` | 新增 / 修改（`nextCalibrateDate` 由后端算，不用传） |
+| POST | `/gauges/{id}/calibrate?calibrateDate=2026-10-19&cycleDays=365` | 送检后登记新校准日 |
+| POST | `/gauges/{id}/scrap?reason=跌落损坏` | 报废 |
+
+**提交检验单时**，每个 `line` 可带 `gaugeId`。带了就会被校验：
+
+- 已报废 → `选用的量具 G-00x 已报废，不能用于检验`
+- 无校准记录 → `没有校准记录，不能用于检验`
+- `nextCalibrateDate < 今天` → `已于 yyyy-mm-dd 到期，超期量具测出的数据不可采信。请先送检校准`
+
+`gaugeId` 当前是**选填**：不填不校验。接真实客户时建议在标准层把数值项标记为「必须记量具」，再改成强制。
+
+---
+
+## 六、不良处置
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/defects?inspectionId=1&status=PENDING` | 不良列表 |
+| POST | `/defects/{id}/dispose` | 提交处置 |
+| POST | `/defects/{id}/concession` | 让步接收审批 |
+| POST | `/defects/{id}/recheck` | 挂返工后的复检单 |
+| GET | `/defects/pareto?productId=1&from=2026-07-01` | 不良帕累托（含占比与累计占比） |
+| GET | `/defect-codes?category=外观` | 不良代码字典 |
+| POST | `/defect-codes` | 新增 / 修改不良代码 |
+
+**处置请求**
+```json
+{ "disposition": "REWORK", "status": "PROCESSING", "note": "返工工序：二次车削", "operator": "张三" }
+```
+
+状态流转规则（`DefectService.dispose`）：
+
+| 当前 | 允许去向 |
+|---|---|
+| `PENDING` | `PROCESSING` / `DONE` |
+| `PROCESSING` | `DONE` |
+| `DONE` / `WAIVED` | 不可再变（已闭环） |
+
+额外两条硬规则：
+
+- 返工单 → `DONE` 时**必须已有 `recheckInspectionId`**，否则报「返工完成后必须挂一张复检单」
+- `disposition = CONCESSION` 走 `dispose` 会被拒，必须走 `/concession` 并带理由和授权人（DB 层还有 CHECK 约束兜底）
+
+**让步接收**
+```json
+{ "reason": "超差 0.02mm，客户确认不影响装配", "approvedBy": "李经理" }
+```
+
+**帕累托返回**
+```json
+[{ "code": "D-SCRATCH", "name": "划伤", "qty": 12, "occ": 5, "percent": 40.0, "cumulative_percent": 40.0 }]
+```
+> 只统计 `SUBMITTED` / `CLOSED` 的单据，草稿里的不良没过审，算进去会把排名带偏。
+
+---
+
+## 七、追溯与出货
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/trace/batch/{batchId}` | 正向：批次 → 检验单 → 不良 → 出货 |
+| GET | `/trace/shipment/{shipmentNo}` | 反向：出货单号 → 批次 → 检验单 → 量具与实测值 |
+| GET | `/trace/customer?customer=苏州德茂` | 某客户收到过的所有批次 |
+| GET | `/shipments?batchId=1` | 出货记录 |
+| POST | `/shipments` | 新增出货 |
+
+返回结构（`/trace/batch/1`）：
+
+```json
+{
+  "batch": { "batchNo": "B20261019001", "qty": 3, "supplier": "宁波精铸一厂" },
+  "product": { "productCode": "P-FLANGE-DN50", "productName": "法兰盘" },
+  "inspections": [
+    { "inspection": { "inspectionNo": "QC202610190001", "result": "FAIL", "failedQty": 1 },
+      "defects": [ { "pieceNo": 2, "defectName": "硬度不足", "dispositionStatus": "PENDING" } ],
+      "openDefects": 1 }
+  ],
+  "shipments": [ { "shipmentNo": "SH20261019001", "customer": "苏州德茂机械", "qty": 3 } ]
+}
+```
+
+---
+
+## 八、状态值约定
 
 | 字段 | 取值 |
 |---|---|
@@ -327,6 +436,8 @@ Base URL：`http://localhost:8080/api`
 | `qc_inspection_line.result` | `PASS` / `FAIL` / `PENDING` |
 | `qc_inspection_log.action` | `CREATE` 建单 / `SUBMIT` 提交 / `REOPEN` 解锁 / `CLOSE` 归档 / `VOID` 作废 |
 | `qc_defect.disposition` | `REWORK` 返工 / `SCRAP` 报废 / `CONCESSION` 让步接收 / `RETURN` 退货 |
+| `qc_defect.disposition_status` | `PENDING` 待处理 / `PROCESSING` 处理中 / `DONE` 已完成 / `WAIVED` 已让步 |
+| `qc_gauge.status` | `ACTIVE` 可用 / `SCRAPPED` 已报废 |
 | `qc_item.value_type` | `NUMBER` / `ENUM` / `BOOL` / `TEXT` |
 | `qc_standard_item.value_mode` | `SINGLE` 单值 / `MULTIPLE` 多点 |
 | `qc_batch.inspect_type` | `IQC` 来料 / `IPQC` 过程 / `FQC` 成品 / `OQC` 出货 |

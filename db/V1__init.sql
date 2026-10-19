@@ -96,6 +96,7 @@ CREATE TABLE qc_standard_item (
     min_value       numeric(18,4),
     max_value       numeric(18,4),
     options_json    jsonb,                              -- 覆盖主数据的默认选项，为空则用主数据
+    bool_pass_value boolean,                            -- 覆盖主数据的合格值（布尔型），NULL 表示沿用主数据
     is_destructive  boolean       NOT NULL DEFAULT false,
     del_flag        smallint      NOT NULL DEFAULT 0,
     created_at      timestamptz   NOT NULL DEFAULT now(),
@@ -204,6 +205,8 @@ CREATE TABLE qc_inspection_line (
     -- 实测数据
     measured_values jsonb,                               -- ["12.03","12.01","12.02"]
     measured_text   text,                                -- 文本型录入
+    gauge_id        bigint,                              -- 实际使用的量具
+    gauge_code      varchar(64),                         -- 量具编号快照
     result          varchar(16)   NOT NULL DEFAULT 'PENDING',  -- PASS / FAIL / PENDING
     judge_reason    varchar(255),
     remark          varchar(255),
@@ -230,11 +233,24 @@ CREATE TABLE qc_defect (
     defect_code       varchar(32),
     defect_name       varchar(64)   NOT NULL,
     defect_qty        int           NOT NULL DEFAULT 1,
-    disposition       varchar(16)   NOT NULL DEFAULT 'REWORK',  -- REWORK / SCRAP / CONCESSION / RETURN
+    disposition       varchar(16),                                -- REWORK / SCRAP / CONCESSION / RETURN
     disposition_note  text,
+    -- 处置闭环
+    disposition_status      varchar(16)   NOT NULL DEFAULT 'PENDING',  -- PENDING/PROCESSING/DONE/WAIVED
+    disposition_by          varchar(64),
+    disposition_at          timestamptz,
+    concession_reason       text,
+    concession_approved_by  varchar(64),
+    concession_approved_at  timestamptz,
+    recheck_inspection_id   bigint,                              -- 返工后的复检单
     created_by        varchar(64),
     created_at        timestamptz   NOT NULL DEFAULT now(),
-    CONSTRAINT ck_defect_disposition CHECK (disposition IN ('REWORK','SCRAP','CONCESSION','RETURN'))
+    CONSTRAINT ck_defect_disposition CHECK (disposition IS NULL
+        OR disposition IN ('REWORK','SCRAP','CONCESSION','RETURN')),
+    CONSTRAINT ck_defect_disposition_status CHECK (disposition_status IN ('PENDING','PROCESSING','DONE','WAIVED')),
+    -- 让步接收必须留理由和授权人，否则等于没人负责
+    CONSTRAINT ck_defect_concession CHECK (disposition_status <> 'WAIVED'
+        OR (concession_reason IS NOT NULL AND concession_approved_by IS NOT NULL))
 );
 CREATE INDEX idx_defect_inspection ON qc_defect (inspection_id);
 CREATE INDEX idx_defect_item ON qc_defect (item_id);
@@ -292,6 +308,75 @@ CREATE TABLE qc_inspection_log (
 CREATE INDEX idx_log_inspection ON qc_inspection_log (inspection_id, created_at DESC);
 COMMENT ON TABLE qc_inspection_log IS '检验单操作日志。已提交的单据不允许原地修改，改动一律通过 reopen 并在此留痕';
 
+-- ------------------------------------------------------------
+-- 12. 量具台账
+--
+-- 过校准有效期的量具测出的数据在质量体系上不被承认，
+-- 所以这张表不是「附属资料」，是判定数据是否有效的前提。
+-- ------------------------------------------------------------
+CREATE TABLE qc_gauge (
+    id                  bigserial     PRIMARY KEY,
+    gauge_code          varchar(64)   NOT NULL,
+    gauge_name          varchar(128)  NOT NULL,
+    gauge_type          varchar(32),                       -- 卡尺 / 千分尺 / 硬度计 / CMM / 塞规
+    accuracy            varchar(32),                       -- 精度，如 0.01mm
+    calibrate_date      date,                              -- 上次校准日
+    calibrate_cycle_days int          NOT NULL DEFAULT 365,
+    next_calibrate_date date,                              -- 下次到期日，程序维护
+    status              varchar(16)   NOT NULL DEFAULT 'ACTIVE',
+    owner_dept          varchar(64),
+    remark              text,
+    del_flag            smallint      NOT NULL DEFAULT 0,
+    created_by          varchar(64),
+    created_at          timestamptz   NOT NULL DEFAULT now(),
+    updated_by          varchar(64),
+    updated_at          timestamptz   NOT NULL DEFAULT now(),
+    CONSTRAINT ck_gauge_status CHECK (status IN ('ACTIVE','SCRAPPED'))
+);
+CREATE UNIQUE INDEX uk_gauge_code ON qc_gauge (gauge_code) WHERE del_flag = 0;
+CREATE INDEX idx_gauge_next_calibrate ON qc_gauge (next_calibrate_date)
+    WHERE del_flag = 0 AND status = 'ACTIVE';
+COMMENT ON TABLE qc_gauge IS '量具台账。过校准有效期的量具测出的数据在质量体系上不被承认';
+
+-- ------------------------------------------------------------
+-- 13. 不良代码字典
+-- ------------------------------------------------------------
+CREATE TABLE qc_defect_code (
+    id          bigserial     PRIMARY KEY,
+    code        varchar(32)   NOT NULL,
+    name        varchar(128)  NOT NULL,
+    category    varchar(32),                            -- 尺寸 / 外观 / 性能 / 材质 / 装配
+    severity    varchar(16)   NOT NULL DEFAULT 'MINOR',  -- CRITICAL / MAJOR / MINOR
+    remark      text,
+    del_flag    smallint      NOT NULL DEFAULT 0,
+    created_at  timestamptz   NOT NULL DEFAULT now(),
+    CONSTRAINT ck_defect_code_severity CHECK (severity IN ('CRITICAL','MAJOR','MINOR'))
+);
+CREATE UNIQUE INDEX uk_defect_code ON qc_defect_code (code) WHERE del_flag = 0;
+CREATE INDEX idx_defect_code_category ON qc_defect_code (category);
+COMMENT ON TABLE qc_defect_code IS '不良代码字典，帕累托图按此维度统计，禁止自由输入';
+
+-- ------------------------------------------------------------
+-- 14. 出货记录（追溯的出向）
+-- ------------------------------------------------------------
+CREATE TABLE qc_shipment (
+    id            bigserial     PRIMARY KEY,
+    shipment_no   varchar(64)   NOT NULL,
+    batch_id      bigint        NOT NULL REFERENCES qc_batch (id),
+    customer      varchar(128)  NOT NULL,
+    qty           int           NOT NULL,
+    shipped_at    timestamptz   NOT NULL DEFAULT now(),
+    remark        text,
+    del_flag      smallint      NOT NULL DEFAULT 0,
+    created_by    varchar(64),
+    created_at    timestamptz   NOT NULL DEFAULT now(),
+    CONSTRAINT ck_shipment_qty CHECK (qty > 0)
+);
+CREATE UNIQUE INDEX uk_shipment_no ON qc_shipment (shipment_no) WHERE del_flag = 0;
+CREATE INDEX idx_shipment_batch ON qc_shipment (batch_id);
+CREATE INDEX idx_shipment_customer ON qc_shipment (customer);
+COMMENT ON TABLE qc_shipment IS '出货记录。正向追溯（原料批 → 客户）和反向追溯（客诉 → 批次）都靠它';
+
 -- ============================================================
 -- 初始化数据：一个法兰盘 + 8 个检验项 + 一个标准
 -- ============================================================
@@ -329,3 +414,28 @@ INSERT INTO qc_standard_item (standard_id, item_id, seq, group_name, is_critical
 (1, 6, 60, '外观', false, 'SINGLE',   1, NULL,  NULL,  false),
 (1, 7, 70, '材质', true,  'SINGLE',   1, NULL,  NULL,  false),
 (1, 8, 80, '备注', false, 'SINGLE',   1, NULL,  NULL,  false);
+
+-- 量具示例：一把正常、一把临近到期、一把已过期
+-- 已过期那把是故意留的，用来验证提交时会不会被拦住
+INSERT INTO qc_gauge (gauge_code, gauge_name, gauge_type, accuracy, calibrate_date, calibrate_cycle_days, next_calibrate_date, status, owner_dept) VALUES
+('G-001', '数显卡尺 0-150',   '卡尺',   '0.01mm', CURRENT_DATE - 120, 365, CURRENT_DATE + 245, 'ACTIVE',  '品质部'),
+('G-002', '外径千分尺 0-25',  '千分尺', '0.001mm', CURRENT_DATE - 340, 365, CURRENT_DATE + 25,  'ACTIVE',  '品质部'),
+('G-003', '洛氏硬度计',       '硬度计', 'HRC 1',  CURRENT_DATE - 500, 365, CURRENT_DATE - 135, 'ACTIVE',  '品质部');
+
+-- 不良代码字典
+INSERT INTO qc_defect_code (code, name, category, severity) VALUES
+('D-SCRATCH', '划伤',     '外观', 'MINOR'),
+('D-BURR',    '毛刺',     '外观', 'MINOR'),
+('D-DENT',    '磕碰凹陷', '外观', 'MAJOR'),
+('D-SIZE',    '尺寸超差', '尺寸', 'MAJOR'),
+('D-THREAD',  '螺纹不良', '尺寸', 'CRITICAL'),
+('D-HARD',    '硬度不足', '性能', 'CRITICAL'),
+('D-MATERIAL','材质不符', '材质', 'CRITICAL'),
+('D-MISSING', '漏装',     '装配', 'CRITICAL');
+
+-- 批次 + 出货示例，用于演示追溯。批次只有 3 件，全检模式一单 3 件，不会触发 200 上限
+INSERT INTO qc_batch (batch_no, work_order_no, product_id, inspect_type, qty, supplier, material_batch_no, status, arrived_at) VALUES
+('B20261019001', 'WO-20261019-01', 1, 'FQC', 3, '宁波精铸一厂', 'M20261010-07', 'PENDING', now());
+
+INSERT INTO qc_shipment (shipment_no, batch_id, customer, qty, shipped_at, remark) VALUES
+('SH20261019001', 1, '苏州德茂机械', 3, now(), '示例出货记录，用于演示反向追溯');
