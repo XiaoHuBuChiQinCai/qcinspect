@@ -2,6 +2,16 @@
 // 小程序真机调试需在开发者工具里勾选「不校验合法域名」
 const BASE = 'http://localhost:8080/api'
 
+/**
+ * 后端返回的图片地址在本地存储模式下是相对路径（/api/images/1/raw），
+ * 拼上 BASE 才能在小程序和 H5 里直接显示。
+ */
+export function absUrl(url) {
+  if (!url) return ''
+  if (/^https?:\/\//i.test(url)) return url
+  return BASE.replace(/\/api$/, '') + (url.startsWith('/') ? url : '/' + url)
+}
+
 const TOKEN_KEY = 'qc_token'
 const USER_KEY = 'qc_user'
 
@@ -87,6 +97,8 @@ export const api = {
     method: 'POST',
     data: { batchId }
   }),
+  /** 该批次下已有的检验单，用于中途退出后接着填，而不是再建一张 */
+  inspectionsOfBatch: batchId => request(`/inspections/page?batchId=${batchId}&size=5`),
   detail: id => request(`/inspections/${id}`),
   saveDraft: (id, lines) => request(`/inspections/${id}/save`, {
     method: 'POST',
@@ -100,7 +112,9 @@ export const api = {
     method: 'POST'
   }),
   gauges: () => request('/gauges?status=ACTIVE'),
-  images: (bizType, bizId) => request(`/images?bizType=${bizType}&bizId=${bizId}`)
+  images: (bizType, bizId) => request(`/images?bizType=${bizType}&bizId=${bizId}`),
+  removeImage: id => request(`/images/${id}`, { method: 'DELETE' }),
+  report: id => request(`/reports/inspection/${id}`)
 }
 
 /** 单张图片上传，返回 Promise */

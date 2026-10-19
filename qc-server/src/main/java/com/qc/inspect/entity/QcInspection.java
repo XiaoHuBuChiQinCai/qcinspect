@@ -1,6 +1,7 @@
 package com.qc.inspect.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -57,6 +58,16 @@ public class QcInspection {
     /** 整批判定说明 */
     private String judgeReason;
 
+    /* ---------- 审核痕迹：判定和放行是两个岗位，痕迹必须能回答「凭什么放行」 ---------- */
+
+    /** 审核人展示名，取登录态，不接受前端传值 */
+    private String reviewedBy;
+
+    private LocalDateTime reviewedAt;
+
+    /** 审核意见，退回时必填 */
+    private String reviewComment;
+
     private LocalDateTime inspectedAt;
     private String remark;
 
@@ -67,4 +78,14 @@ public class QcInspection {
     private LocalDateTime createdAt;
     private String updatedBy;
     private LocalDateTime updatedAt;
+
+    /* ---------- 非表字段：列表页展示用，由控制器补齐，不参与 SQL ---------- */
+
+    /** 批次号 */
+    @TableField(exist = false)
+    private String batchNo;
+
+    /** 产品名称 */
+    @TableField(exist = false)
+    private String productName;
 }

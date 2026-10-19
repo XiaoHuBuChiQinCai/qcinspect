@@ -5,6 +5,7 @@ import com.qc.inspect.entity.QcGauge;
 import com.qc.inspect.service.GaugeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,12 +36,14 @@ public class GaugeController {
     }
 
     @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public R<QcGauge> save(@RequestBody QcGauge gauge) {
         return R.ok(gaugeService.save(gauge));
     }
 
     /** 送检后登记新校准日期 */
     @PostMapping("/{id}/calibrate")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<QcGauge> calibrate(@PathVariable Long id,
                                 @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate calibrateDate,
                                 @RequestParam(required = false) Integer cycleDays) {
@@ -48,6 +51,7 @@ public class GaugeController {
     }
 
     @PostMapping("/{id}/scrap")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<Void> scrap(@PathVariable Long id, @RequestParam(required = false) String reason) {
         gaugeService.scrap(id, reason);
         return R.ok();

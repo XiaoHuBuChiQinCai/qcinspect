@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -24,6 +25,8 @@ import java.util.List;
 
 @Configuration
 @EnableWebSecurity
+// 开启方法级权限：主数据维护限 ADMIN、审核限 ADMIN/REVIEWER，写在控制器上比在 service 里 if 更清楚
+@EnableMethodSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
 

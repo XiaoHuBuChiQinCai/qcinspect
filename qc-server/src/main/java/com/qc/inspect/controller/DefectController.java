@@ -9,6 +9,7 @@ import com.qc.inspect.entity.QcDefectCode;
 import com.qc.inspect.mapper.QcDefectCodeMapper;
 import com.qc.inspect.service.DefectService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -73,6 +74,7 @@ public class DefectController {
     }
 
     @PostMapping("/defect-codes")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<QcDefectCode> saveCode(@RequestBody QcDefectCode code) {
         if (code.getCode() == null || code.getCode().isBlank()) {
             throw BizException.of("不良代码不能为空");

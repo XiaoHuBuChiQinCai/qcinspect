@@ -1,0 +1,63 @@
+package com.qc.inspect.controller;
+
+import com.qc.inspect.service.ExportService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+
+/**
+ * CSV 导出。前端用 responseType=blob 接，浏览器直接下载。
+ */
+@RestController
+@RequestMapping("/api/export")
+@RequiredArgsConstructor
+public class ExportController {
+
+    /** Excel 打开 UTF-8 CSV 不加 BOM 会把中文读成乱码，这三个字节是让财务能直接双击的前提 */
+    private static final byte[] UTF8_BOM = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
+
+    private final ExportService exportService;
+
+    /** 检验单台账 */
+    @GetMapping("/inspections")
+    public ResponseEntity<byte[]> inspections(@RequestParam(required = false) String status,
+                                              @RequestParam(required = false) Long productId) {
+        return csv(exportService.inspectionLedger(status, productId), "inspections");
+    }
+
+    /** 不良台账 */
+    @GetMapping("/defects")
+    public ResponseEntity<byte[]> defects(@RequestParam(required = false) String status) {
+        return csv(exportService.defectLedger(status), "defects");
+    }
+
+    /** 单张检验单的明细 */
+    @GetMapping("/inspections/{id}/lines")
+    public ResponseEntity<byte[]> lines(@PathVariable Long id) {
+        return csv(exportService.inspectionLines(id), "inspection-" + id + "-lines");
+    }
+
+    private ResponseEntity<byte[]> csv(String content, String name) {
+        byte[] body = content.getBytes(StandardCharsets.UTF_8);
+        byte[] withBom = new byte[UTF8_BOM.length + body.length];
+        System.arraycopy(UTF8_BOM, 0, withBom, 0, UTF8_BOM.length);
+        System.arraycopy(body, 0, withBom, UTF8_BOM.length, body.length);
+
+        String fileName = name + "-" + LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE) + ".csv";
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fileName + "\"")
+                .contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(withBom);
+    }
+}

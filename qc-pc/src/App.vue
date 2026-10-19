@@ -6,11 +6,14 @@
       <div class="logo">工件质检</div>
       <el-menu :default-active="$route.path" router>
         <el-menu-item index="/">待检批次</el-menu-item>
+        <el-menu-item index="/inspections">检验单</el-menu-item>
         <el-menu-item index="/standards">检验标准</el-menu-item>
         <el-menu-item index="/defects">不良处置</el-menu-item>
         <el-menu-item index="/gauges">量具台账</el-menu-item>
         <el-menu-item index="/trace">批次追溯</el-menu-item>
         <el-menu-item index="/stat">质量看板</el-menu-item>
+        <el-menu-item v-if="isAdmin" index="/defect-codes">不良代码</el-menu-item>
+        <el-menu-item v-if="isAdmin" index="/users">用户管理</el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
@@ -20,7 +23,7 @@
         <el-dropdown @command="onCommand">
           <span class="user">
             {{ user.realName || user.username }}
-            <el-tag v-if="user.role === 'ADMIN'" size="small" type="warning" effect="plain">管理员</el-tag>
+            <el-tag size="small" :type="roleType" effect="plain">{{ roleText }}</el-tag>
           </span>
           <template #dropdown>
             <el-dropdown-menu>
@@ -66,6 +69,14 @@ const router = useRouter()
 
 const user = ref(getStoredUser() || {})
 const isLogin = computed(() => route.path === '/login')
+
+const isAdmin = computed(() => user.value.role === 'ADMIN')
+const roleText = computed(
+  () => ({ ADMIN: '管理员', INSPECTOR: '检验员', REVIEWER: '审核员' }[user.value.role] || '未知角色')
+)
+const roleType = computed(
+  () => ({ ADMIN: 'warning', INSPECTOR: '', REVIEWER: 'success' }[user.value.role] || 'info')
+)
 
 const pwdVisible = ref(false)
 const pwdSaving = ref(false)

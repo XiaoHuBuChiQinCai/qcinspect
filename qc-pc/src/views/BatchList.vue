@@ -23,7 +23,7 @@
       <el-table-column label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <el-button type="primary" size="small" :disabled="row.status === 'DONE'" @click="openInspection(row)">
-            开检验单
+            {{ row.status === 'INSPECTING' ? '继续检验' : '开检验单' }}
           </el-button>
         </template>
       </el-table-column>
@@ -34,7 +34,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
 
 const router = useRouter()
@@ -54,7 +54,20 @@ async function load() {
   }
 }
 
+/**
+ * 开检验单前先看一眼这个批次有没有没走完的单：
+ * 有草稿就接着填，有待审核就打开看（只读）。
+ * 否则同一批次会挂出两张检验单，两个结论，追溯时没法解释。
+ */
 async function openInspection(row) {
+  const page = await http.get('/inspections/page', { params: { batchId: row.id, size: 5 } })
+  const open = (page.records || []).find(r => r.status === 'DRAFT' || r.status === 'SUBMITTED')
+  if (open) {
+    ElMessage.info(open.status === 'SUBMITTED' ? '该批次已提交，正在等审核' : '接着上次的草稿继续')
+    router.push(`/inspection/${open.id}`)
+    return
+  }
+
   let sampleQty
   try {
     const { value } = await ElMessageBox.prompt(

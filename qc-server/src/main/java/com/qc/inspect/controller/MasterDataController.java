@@ -10,6 +10,7 @@ import com.qc.inspect.mapper.QcBatchMapper;
 import com.qc.inspect.mapper.QcItemMapper;
 import com.qc.inspect.mapper.QcProductMapper;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -44,6 +45,7 @@ public class MasterDataController {
     }
 
     @PostMapping("/products")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<QcProduct> saveProduct(@RequestBody QcProduct product) {
         if (product.getProductCode() == null || product.getProductCode().isBlank()) {
             throw BizException.of("产品编号不能为空");
@@ -69,6 +71,7 @@ public class MasterDataController {
     }
 
     @PostMapping("/items")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<QcItem> saveItem(@RequestBody QcItem item) {
         if (item.getItemCode() == null || item.getItemCode().isBlank()) {
             throw BizException.of("检验项编号不能为空");
@@ -98,6 +101,7 @@ public class MasterDataController {
     }
 
     @PostMapping("/batches")
+    @PreAuthorize("hasAnyRole('ADMIN','INSPECTOR')")
     public R<QcBatch> saveBatch(@RequestBody QcBatch batch) {
         if (batch.getProductId() == null) {
             throw BizException.of("必须指定产品");

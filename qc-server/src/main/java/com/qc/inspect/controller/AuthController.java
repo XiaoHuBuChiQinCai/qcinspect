@@ -5,6 +5,7 @@ import com.qc.inspect.common.R;
 import com.qc.inspect.entity.SysUser;
 import com.qc.inspect.service.AuthService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -34,11 +35,13 @@ public class AuthController {
     }
 
     @GetMapping("/users")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<List<SysUser>> users() {
         return R.ok(authService.listUsers());
     }
 
     @PostMapping("/users")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<SysUser> saveUser(@RequestBody UserReq req) {
         SysUser user = new SysUser();
         user.setId(req.id());
@@ -50,6 +53,7 @@ public class AuthController {
     }
 
     @PostMapping("/users/{id}/reset-password")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<Void> resetPassword(@PathVariable Long id, @RequestBody ResetReq req) {
         authService.resetPassword(id, req.newPassword());
         return R.ok();

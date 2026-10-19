@@ -19,15 +19,13 @@
 
     <view class="progress">
       <text>已填完 {{ filledPieces }} / {{ pieces.length }} 件</text>
-      <text class="cur">当前第 {{ currentPiece }} 件</text>
+      <text class="cur" @click="goReport">查看报告 ›</text>
     </view>
 
-    <view v-if="locked" class="banner lock">
-      已提交锁定，不可修改。需要更正请联系质检主管解锁。
-    </view>
+    <view v-if="locked" class="banner lock">{{ lockText }}</view>
 
-    <view v-if="outcome" :class="['banner', outcome.pass ? 'ok' : 'ng']">
-      {{ outcome.pass ? '批合格' : '批不合格' }} · {{ outcome.reason }}
+    <view v-if="judge" :class="['banner', judge.pass ? 'ok' : 'ng']">
+      {{ judge.pass ? '批合格' : '批不合格' }} · {{ judge.reason }}
     </view>
 
     <view v-for="(items, group) in currentGroups" :key="group" class="group">
@@ -81,8 +79,36 @@
 
         <textarea v-else v-model="line._text" class="ta" placeholder="补充说明，不参与判定" :disabled="locked" />
 
+        <view v-if="line.valueType === 'NUMBER'" class="gauge-row">
+          <text class="gauge-label">量具</text>
+          <picker
+            :range="choicesFor(line)"
+            range-key="label"
+            :disabled="locked"
+            @change="e => pickGauge(line, e)"
+          >
+            <view :class="['gauge-pick', line._gaugeId ? 'picked' : '']">{{ gaugeLabel(line) }}</view>
+          </picker>
+          <text v-if="line.measureTool" class="gauge-tip">建议 {{ line.measureTool }}</text>
+        </view>
+
         <view v-if="line.judgeReason" class="reason">{{ line.judgeReason }}</view>
       </view>
+    </view>
+
+    <view class="group">
+      <view class="group-head">
+        <text class="group-name">现场照片</text>
+        <text class="group-cnt">{{ images.length }} 张</text>
+      </view>
+      <view class="photos">
+        <view v-for="img in images" :key="img.id" class="photo">
+          <image :src="absUrl(img.url)" mode="aspectFill" class="photo-img" @click="preview(img)" />
+          <text v-if="!locked" class="photo-del" @click.stop="delPhoto(img)">×</text>
+        </view>
+        <view v-if="!locked" class="photo add" @click="addPhoto">＋</view>
+      </view>
+      <view class="photo-tip">建议拍全：NG 部位特写、量具读数、批次标签。照片是判定被质疑时唯一的现场证据。</view>
     </view>
 
     <view class="footer">
@@ -96,15 +122,37 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { api } from '../../common/api'
+import { absUrl, api, uploadImage } from '../../common/api'
 
 const info = ref({})
 const pieces = ref([])
 const currentPiece = ref(1)
-const outcome = ref(null)
 const submitting = ref(false)
 const locked = ref(false)
 const inspectionId = ref(null)
+const gauges = ref([])
+const images = ref([])
+
+const lockText = computed(() => {
+  const s = info.value.status
+  if (s === 'SUBMITTED') {
+    return '已提交，等待审核。审核退回后可继续修改；确需立即更正请联系管理员解锁。'
+  }
+  if (s === 'CLOSED') {
+    return '已审核归档，不可修改。如需更正，只能由管理员解锁并在日志中留痕。'
+  }
+  if (s === 'VOID') {
+    return '该检验单已作废，仅可查看。'
+  }
+  return '已锁定，不可修改。'
+})
+
+/** 判定结论直接来自单据本身，刷新后依然在，不用靠提交时的返回值记着 */
+const judge = computed(() => {
+  const r = info.value.result
+  if (r !== 'PASS' && r !== 'FAIL') return null
+  return { pass: r === 'PASS', reason: info.value.judgeReason }
+})
 
 const currentGroups = computed(() => {
   const p = pieces.value.find(x => x.pieceNo === currentPiece.value)
@@ -117,6 +165,7 @@ const filledPieces = computed(() =>
 
 onLoad(async query => {
   inspectionId.value = query.id
+  await loadGauges()
   await load()
 })
 
@@ -150,8 +199,30 @@ async function load() {
         line._input = saved.length ? saved[0] : ''
       }
       line._text = line.measuredText || ''
+      // 已存过的量具选择带回来，否则暂存后再进来量具就丢了
+      line._gaugeId = line.gaugeId || null
     })
   })
+
+  await loadImages()
+}
+
+/** 量具台账只在首次进页面拉一次，切件不重复请求 */
+async function loadGauges() {
+  if (gauges.value.length) return
+  try {
+    gauges.value = await api.gauges()
+  } catch (e) {
+    gauges.value = []
+  }
+}
+
+async function loadImages() {
+  try {
+    images.value = await api.images('INSPECTION', inspectionId.value)
+  } catch (e) {
+    images.value = []
+  }
 }
 
 function goPiece(no) {
@@ -231,9 +302,91 @@ function collectLines() {
           ? [String(line._input)]
           : []
       }
-      return { lineId: line.id, values, textValue }
+      return { lineId: line.id, values, textValue, gaugeId: line._gaugeId || null }
     })
   )
+}
+
+// ==================== 量具 ====================
+
+/**
+ * 量具选项：建议的测量手段排在最前面。
+ * 检验员手上可能同时有卡尺、千分尺、硬度计，按项推荐能少翻一半的台账。
+ */
+function choicesFor(line) {
+  const tool = line.measureTool
+  const list = gauges.value.map(g => ({
+    id: g.id,
+    label: g.gaugeCode + ' ' + g.gaugeName,
+    tool: g.gaugeType,
+    hit: !!tool && (g.gaugeType === tool || (g.gaugeName || '').indexOf(tool) >= 0)
+  }))
+  list.sort((a, b) => (b.hit ? 1 : 0) - (a.hit ? 1 : 0))
+  return [{ id: null, label: '不记录量具' }].concat(list)
+}
+
+function gaugeLabel(line) {
+  if (!line._gaugeId) {
+    return line.measureTool ? '未选择（建议 ' + line.measureTool + '）' : '未选择'
+  }
+  const hit = gauges.value.find(g => g.id === line._gaugeId)
+  return hit ? hit.gaugeCode : '未选择'
+}
+
+function pickGauge(line, e) {
+  if (locked.value) return
+  const opts = choicesFor(line)
+  const idx = Number(e.detail.value)
+  const pick = opts[idx]
+  line._gaugeId = pick ? pick.id : null
+}
+
+// ==================== 现场照片 ====================
+
+function addPhoto() {
+  if (locked.value) return
+  uni.chooseImage({
+    count: 4,
+    sizeType: ['compressed'],
+    success: async res => {
+      const paths = res.tempFilePaths || []
+      if (!paths.length) return
+      uni.showLoading({ title: '上传中' })
+      try {
+        for (const p of paths) {
+          await uploadImage(p, 'INSPECTION', inspectionId.value)
+        }
+        await loadImages()
+        uni.showToast({ title: '已上传 ' + paths.length + ' 张', icon: 'none' })
+      } finally {
+        uni.hideLoading()
+      }
+    }
+  })
+}
+
+function preview(img) {
+  const urls = images.value.map(i => absUrl(i.url))
+  uni.previewImage({ urls, current: absUrl(img.url) })
+}
+
+function delPhoto(img) {
+  uni.showModal({
+    title: '删除照片',
+    content: '照片删掉就找不回来了，确定删除？',
+    success: async res => {
+      if (!res.confirm) return
+      await api.removeImage(img.id)
+      await loadImages()
+    }
+  })
+}
+
+// ==================== 报告 ====================
+
+function goReport() {
+  if (!inspectionId.value) return
+  uni.navigateTo({ url: '/pages/report/report?id=' + inspectionId.value })
 }
 
 async function saveDraft() {
@@ -257,8 +410,9 @@ async function submit() {
 
   submitting.value = true
   try {
-    outcome.value = await api.submit(inspectionId.value, collectLines())
+    await api.submit(inspectionId.value, collectLines())
     await load()
+    uni.showToast({ title: judge.value && judge.value.pass ? '已提交：批合格' : '已提交：批不合格', icon: 'none' })
     uni.pageScrollTo({ scrollTop: 0, duration: 200 })
   } finally {
     submitting.value = false
@@ -309,6 +463,28 @@ async function submit() {
 .bool-btn.on { background: #1989fa; color: #fff; }
 .ta { width: 100%; background: #f5f6f8; border-radius: 10rpx; padding: 14rpx 18rpx; font-size: 26rpx; height: 80rpx; box-sizing: border-box; }
 .reason { font-size: 24rpx; color: #c45656; margin-top: 10rpx; }
+
+.gauge-row { display: flex; align-items: center; margin-top: 14rpx; }
+.gauge-label { font-size: 24rpx; color: #8a9199; margin-right: 12rpx; }
+.gauge-pick {
+  font-size: 24rpx; color: #8a9199; padding: 8rpx 18rpx;
+  background: #f5f6f8; border-radius: 8rpx;
+}
+.gauge-pick.picked { color: #1989fa; background: #eaf3ff; }
+.gauge-tip { font-size: 22rpx; color: #b0b6bd; margin-left: auto; }
+
+.photos { display: flex; flex-wrap: wrap; gap: 14rpx; padding: 22rpx 24rpx; }
+.photo { position: relative; width: 150rpx; height: 150rpx; border-radius: 12rpx; overflow: hidden; background: #f5f6f8; }
+.photo-img { width: 150rpx; height: 150rpx; }
+.photo.add {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 56rpx; color: #b0b6bd; border: 1rpx dashed #d8dde3; box-sizing: border-box;
+}
+.photo-del {
+  position: absolute; top: 0; right: 0; width: 40rpx; height: 40rpx; line-height: 36rpx;
+  text-align: center; background: rgba(0, 0, 0, .45); color: #fff; font-size: 28rpx; border-bottom-left-radius: 12rpx;
+}
+.photo-tip { padding: 0 24rpx 22rpx; font-size: 22rpx; color: #a8abb2; line-height: 1.5; }
 
 .footer { position: fixed; left: 0; right: 0; bottom: 0; padding: 20rpx 24rpx; background: #fff; border-top: 1rpx solid #f0f2f5; display: flex; gap: 16rpx; }
 .btn { flex: 1; border-radius: 12rpx; font-size: 30rpx; margin: 0; }

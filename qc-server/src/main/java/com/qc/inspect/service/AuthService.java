@@ -22,6 +22,9 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AuthService {
 
+    /** 角色白名单，与 db/V5 的 ck_user_role 约束保持一致 */
+    private static final List<String> ROLES = List.of("ADMIN", "INSPECTOR", "REVIEWER");
+
     private final SysUserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
@@ -101,6 +104,9 @@ public class AuthService {
         if (req.getRole() == null || req.getRole().isBlank()) {
             req.setRole("INSPECTOR");
         }
+        if (!ROLES.contains(req.getRole())) {
+            throw BizException.of("角色只能是 ADMIN / INSPECTOR / REVIEWER，收到：" + req.getRole());
+        }
         req.setUsername(req.getUsername().trim());
         req.setUpdatedAt(LocalDateTime.now());
 
@@ -115,6 +121,7 @@ public class AuthService {
             if (exist != null && !exist.getId().equals(req.getId())) {
                 throw BizException.of("账号已被其他用户占用");
             }
+            assertNotLastAdmin(req);
             // 未传密码表示不改密码
             req.setPassword(rawPassword == null || rawPassword.isBlank()
                     ? null : passwordEncoder.encode(rawPassword));
@@ -122,6 +129,29 @@ public class AuthService {
         }
         req.setPassword(null);
         return req;
+    }
+
+    /**
+     * 不允许把最后一个可用的管理员降级或停用。
+     *
+     * <p>这不是权限洁癖：一旦系统里没有管理员，标准发布、量具台账、账号维护全部锁死，
+     * 只能改数据库才能救回来。宁可在这里拦住。
+     */
+    private void assertNotLastAdmin(SysUser req) {
+        SysUser old = userMapper.selectById(req.getId());
+        if (old == null || !"ADMIN".equals(old.getRole())) {
+            return;
+        }
+        boolean stillAdmin = "ADMIN".equals(req.getRole()) && !Boolean.FALSE.equals(req.getEnabled());
+        if (stillAdmin) {
+            return;
+        }
+        long activeAdmins = userMapper.selectCount(Wrappers.<SysUser>lambdaQuery()
+                .eq(SysUser::getRole, "ADMIN")
+                .eq(SysUser::getEnabled, true));
+        if (activeAdmins <= 1) {
+            throw BizException.of("这是最后一个可用管理员，不能降级或停用。请先新建另一个管理员账号");
+        }
     }
 
     @Transactional

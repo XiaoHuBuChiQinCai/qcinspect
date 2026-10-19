@@ -9,6 +9,7 @@ import com.qc.inspect.mapper.QcStandardItemMapper;
 import com.qc.inspect.mapper.QcStandardMapper;
 import com.qc.inspect.service.StandardService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -77,18 +78,21 @@ public class StandardController {
 
     /** 新建草稿标准 */
     @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public R<QcStandard> create(@RequestBody QcStandard standard) {
         return R.ok(standardService.createDraft(standard));
     }
 
     /** 修改草稿表头 */
     @PutMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<QcStandard> update(@PathVariable Long id, @RequestBody QcStandard standard) {
         return R.ok(standardService.updateDraft(id, standard));
     }
 
     /** 删除草稿 */
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<Void> delete(@PathVariable Long id) {
         standardService.deleteDraft(id);
         return R.ok();
@@ -96,18 +100,21 @@ public class StandardController {
 
     /** 整体保存标准的检验项（先清后插，适合配置页一次性提交） */
     @PostMapping("/{id}/items")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<Integer> saveItems(@PathVariable Long id, @RequestBody List<QcStandardItem> items) {
         return R.ok(standardService.saveItems(id, items));
     }
 
     /** 以某版本为模板发布新版本（自动生效，旧版置作废） */
     @PostMapping("/{id}/publish")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<QcStandard> publish(@PathVariable Long id) {
         return R.ok(standardService.publishNewVersion(id));
     }
 
     /** 启用草稿版本 */
     @PostMapping("/{id}/activate")
+    @PreAuthorize("hasRole('ADMIN')")
     public R<Void> activate(@PathVariable Long id) {
         standardService.activate(id);
         return R.ok();

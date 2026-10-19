@@ -8,6 +8,11 @@
 
     <view class="me" v-if="user">当前：{{ user.realName || user.username }}</view>
 
+    <view class="tabs">
+      <view :class="['tab', tab === 'PENDING' ? 'on' : '']" @click="switchTab('PENDING')">待检</view>
+      <view :class="['tab', tab === 'INSPECTING' ? 'on' : '']" @click="switchTab('INSPECTING')">检验中</view>
+    </view>
+
     <view v-for="b in batches" :key="b.id" class="card" @click="openBatch(b)">
       <view class="row">
         <text class="no">{{ b.batchNo }}</text>
@@ -19,17 +24,21 @@
       <view class="sub">{{ b.supplier || '内部生产' }}</view>
     </view>
 
-    <view v-if="!loading && !batches.length" class="empty">暂无待检批次</view>
+    <view v-if="!loading && !batches.length" class="empty">
+      {{ tab === 'PENDING' ? '暂无待检批次' : '没有进行中的检验单' }}
+    </view>
   </view>
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { ref } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
 import { api, clearSession, getToken, getUser } from '../../common/api'
 
 const batches = ref([])
 const loading = ref(false)
 const user = ref(getUser())
+const tab = ref('PENDING')
 
 const statusText = s => ({ PENDING: '待检', INSPECTING: '检验中', DONE: '已完成' }[s] || s)
 
@@ -40,10 +49,15 @@ async function load() {
   }
   loading.value = true
   try {
-    batches.value = await api.batches('PENDING')
+    batches.value = await api.batches(tab.value)
   } finally {
     loading.value = false
   }
+}
+
+function switchTab(t) {
+  tab.value = t
+  load()
 }
 
 function logout() {
@@ -60,9 +74,15 @@ function logout() {
 
 function scan() {
   uni.scanCode({
-    success: res => {
+    success: async res => {
       const code = (res.result || '').trim()
-      const hit = batches.value.find(b => b.batchNo === code || b.workOrderNo === code)
+      if (!code) return
+      // 当前页签里没匹配到就往全部批次里再找一次，扫到的可能是别的状态的批次
+      let hit = batches.value.find(b => b.batchNo === code || b.workOrderNo === code)
+      if (!hit) {
+        const all = await api.batches()
+        hit = all.find(b => b.batchNo === code || b.workOrderNo === code)
+      }
       if (hit) {
         openBatch(hit)
       } else {
@@ -72,9 +92,20 @@ function scan() {
   })
 }
 
+/**
+ * 打开批次：已有草稿就接着填，已有待审核就看（只读），都没有才新建。
+ * 检验员中途退出、手机没电、被叫走都是常事，直接再建一张会留下重复草稿，
+ * 更麻烦的是同一批次出现两张有效单，判定结论对不上。
+ */
 async function openBatch(batch) {
-  uni.showLoading({ title: '建单中' })
+  uni.showLoading({ title: '处理中' })
   try {
+    const page = await api.inspectionsOfBatch(batch.id)
+    const open = (page.records || []).find(r => r.status === 'DRAFT' || r.status === 'SUBMITTED')
+    if (open) {
+      uni.navigateTo({ url: `/pages/inspect/inspect?id=${open.id}` })
+      return
+    }
     const data = await api.createInspection(batch.id)
     uni.navigateTo({ url: `/pages/inspect/inspect?id=${data.inspectionId}` })
   } finally {
@@ -82,7 +113,8 @@ async function openBatch(batch) {
   }
 }
 
-onMounted(load)
+// 每次回到列表都重新拉：刚提交完的批次应该从「检验中」消失
+onShow(load)
 </script>
 
 <style>
@@ -91,6 +123,14 @@ onMounted(load)
 .scan { flex: 1; background-color: #1989fa; color: #fff; border-radius: 12rpx; font-size: 32rpx; }
 .link { margin-left: 24rpx; color: #1989fa; font-size: 28rpx; }
 .me { margin-bottom: 16rpx; font-size: 24rpx; color: #8a9199; }
+
+.tabs { display: flex; gap: 12rpx; margin-bottom: 20rpx; }
+.tab {
+  flex: 1; text-align: center; padding: 14rpx 0; border-radius: 10rpx;
+  background: #eef2f7; color: #5a6b7b; font-size: 27rpx;
+}
+.tab.on { background: #1989fa; color: #fff; }
+
 .card { background: #fff; border-radius: 16rpx; padding: 28rpx; margin-bottom: 20rpx; }
 .row { display: flex; align-items: center; justify-content: space-between; }
 .no { font-size: 32rpx; font-weight: 500; }

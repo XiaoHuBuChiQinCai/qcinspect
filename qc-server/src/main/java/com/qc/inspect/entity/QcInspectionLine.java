@@ -40,6 +40,9 @@ public class QcInspectionLine {
     private Boolean isCritical;
     private Integer seq;
 
+    /** 快照：该检验项建议的测量手段（卡尺 / 千分尺 / 硬度计），移动端据此推荐量具 */
+    private String measureTool;
+
     // ---------- 实测数据 ----------
     /** JSON 数组字符串，如 ["12.03","12.01","12.02"] */
     private String measuredValues;

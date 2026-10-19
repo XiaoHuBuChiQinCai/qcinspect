@@ -19,7 +19,7 @@ public class QcInspectionLog {
 
     private Long inspectionId;
 
-    /** CREATE / SUBMIT / REOPEN / CLOSE / VOID */
+    /** CREATE / SUBMIT / REOPEN / CLOSE / VOID / REVIEW（审核通过） / REJECT（审核退回） */
     private String action;
 
     private String fromStatus;

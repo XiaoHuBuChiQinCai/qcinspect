@@ -6,13 +6,18 @@ import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.dto.InspectionCreateReq;
 import com.qc.inspect.dto.InspectionSubmitReq;
+import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcInspectionLog;
+import com.qc.inspect.entity.QcProduct;
 import com.qc.inspect.judge.InspectionOutcome;
+import com.qc.inspect.mapper.QcBatchMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
+import com.qc.inspect.mapper.QcProductMapper;
 import com.qc.inspect.service.InspectionService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,6 +28,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/inspections")
@@ -31,6 +40,8 @@ public class InspectionController {
 
     private final InspectionService inspectionService;
     private final QcInspectionMapper inspectionMapper;
+    private final QcBatchMapper batchMapper;
+    private final QcProductMapper productMapper;
 
     /** 建检验单：按批次 + 产品生效标准自动快照，并按抽样件数展开成 件 × 项 的明细 */
     @PostMapping
@@ -71,11 +82,26 @@ public class InspectionController {
         return R.ok();
     }
 
-    /** 归档 */
+    /** 归档（审核员/管理员） */
     @PostMapping("/{id}/close")
+    @PreAuthorize("hasAnyRole('ADMIN','REVIEWER')")
     public R<Void> close(@PathVariable Long id,
                          @RequestParam(required = false, defaultValue = "system") String operator) {
         inspectionService.close(id, UserContext.operator(operator));
+        return R.ok();
+    }
+
+    /**
+     * 审核：通过则归档，退回则回到草稿。
+     *
+     * <p>退回必须带意见；不能审核自己录入的单据（管理员除外）。
+     */
+    @PostMapping("/{id}/review")
+    @PreAuthorize("hasAnyRole('ADMIN','REVIEWER')")
+    public R<Void> review(@PathVariable Long id, @RequestBody ReviewReq req,
+                          @RequestParam(required = false, defaultValue = "system") String operator) {
+        inspectionService.review(id, Boolean.TRUE.equals(req.approve()), req.comment(),
+                UserContext.operator(operator));
         return R.ok();
     }
 
@@ -94,18 +120,44 @@ public class InspectionController {
         return R.ok(inspectionService.logs(id));
     }
 
-    /** 检验单分页 */
+    /** 检验单分页。批次号/产品名不是表字段，这里一次性补齐，免得前端为一个列表发十次请求 */
     @GetMapping("/page")
     public R<Page<QcInspection>> page(@RequestParam(defaultValue = "1") long current,
                                       @RequestParam(defaultValue = "10") long size,
                                       @RequestParam(required = false) String status,
-                                      @RequestParam(required = false) Long batchId) {
+                                      @RequestParam(required = false) Long batchId,
+                                      @RequestParam(required = false) Long productId) {
         Page<QcInspection> page = new Page<>(current, size);
         inspectionMapper.selectPage(page, new LambdaQueryWrapper<QcInspection>()
                 .eq(status != null && !status.isBlank(), QcInspection::getStatus, status)
                 .eq(batchId != null, QcInspection::getBatchId, batchId)
+                .eq(productId != null, QcInspection::getProductId, productId)
                 .orderByDesc(QcInspection::getId));
+        fillDisplayFields(page.getRecords());
         return R.ok(page);
+    }
+
+    /** 补齐批次号与产品名 */
+    private void fillDisplayFields(List<QcInspection> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> batchIds = rows.stream().map(QcInspection::getBatchId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<Long> productIds = rows.stream().map(QcInspection::getProductId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, QcBatch> batches = batchIds.isEmpty() ? Map.of()
+                : batchMapper.selectBatchIds(batchIds).stream()
+                .collect(Collectors.toMap(QcBatch::getId, Function.identity(), (a, b) -> a));
+        Map<Long, QcProduct> products = productIds.isEmpty() ? Map.of()
+                : productMapper.selectBatchIds(productIds).stream()
+                .collect(Collectors.toMap(QcProduct::getId, Function.identity(), (a, b) -> a));
+        for (QcInspection row : rows) {
+            QcBatch batch = batches.get(row.getBatchId());
+            QcProduct product = products.get(row.getProductId());
+            row.setBatchNo(batch == null ? null : batch.getBatchNo());
+            row.setProductName(product == null ? null : product.getProductName());
+        }
     }
 
     /** 近 30 天合格率趋势 */
@@ -118,5 +170,9 @@ public class InspectionController {
     @GetMapping("/stat/defect")
     public R<List<Map<String, Object>>> statDefect() {
         return R.ok(inspectionMapper.statDefect());
+    }
+
+    /** 审核请求体：approve=true 通过归档，false 退回草稿（comment 必填） */
+    public record ReviewReq(Boolean approve, String comment) {
     }
 }

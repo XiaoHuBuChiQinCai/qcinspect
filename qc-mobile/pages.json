@@ -17,6 +17,12 @@
       "style": {
         "navigationBarTitleText": "检验录入"
       }
+    },
+    {
+      "path": "pages/report/report",
+      "style": {
+        "navigationBarTitleText": "检验报告"
+      }
     }
   ],
   "globalStyle": {

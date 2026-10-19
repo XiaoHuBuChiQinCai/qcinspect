@@ -14,7 +14,8 @@ C:\qcinspect
 │   ├── V1__init.sql          建表脚本 + 初始化数据（法兰盘示例 + 量具 + 不良代码 + 出货），全新安装只跑这个
 │   ├── V2__piece_and_lock.sql       已建库升级：件粒度 + 提交锁定 + 操作日志
 │   ├── V3__standard_bool_config.sql 已建库升级：标准项的可覆写布尔合格值
-│   └── V4__gauge_disposition_trace.sql 已建库升级：量具 + 不良处置 + 不良代码 + 出货追溯
+│   ├── V4__gauge_disposition_trace.sql 已建库升级：量具 + 不良处置 + 不良代码 + 出货追溯
+│   └── V5__review_and_role.sql      已建库升级：审核闭环 + 审核员角色 + 明细量具提示
 ├── docs\
 │   └── API.md                接口清单
 ├── qc-server\                后端
@@ -23,7 +24,7 @@ C:\qcinspect
 │       ├── judge\            ★ 判定引擎（纯 Java，无框架依赖，已实跑验证）
 │       ├── entity\           14 个实体
 │       ├── mapper\           MyBatis-Plus Mapper
-│       ├── service\          建单快照 / 提交判定 / 标准配置 / 量具校验 / 处置流转 / 追溯
+│       ├── service\          建单快照 / 提交判定 / 审核流转 / 标准配置 / 量具校验 / 处置流转 / 追溯 / CSV 导出
 │       ├── controller\       REST 接口
 │       └── common\           统一返回、异常处理
 ├── qc-pc\                    PC 端（Vue 3 + Vite + Element Plus）
@@ -67,6 +68,23 @@ mvn spring-boot:run
 | 密码 | `admin123` | `ADMIN_PASSWORD` |
 
 登录后请立刻在右上角「修改密码」里改掉。生产环境务必用环境变量覆盖 `ADMIN_PASSWORD` 与 `JWT_SECRET`（后者至少 32 字节）。
+
+### 2.1 三种角色与演示账号
+
+系统按「谁录入、谁放行」把权限拆成三级：
+
+| 角色 | 能做什么 | 不能做什么 |
+|---|---|---|
+| `ADMIN` 管理员 | 全部功能；用户管理、标准/量具/不良代码等主数据维护 | —— |
+| `INSPECTOR` 检验员 | 建单、录入、提交、处置不良 | 审核放行、作废单据、改主数据 |
+| `REVIEWER` 审核员 | 审核通过归档、退回、作废、查看全部数据 | 改主数据、改已提交的实测值 |
+
+**没有任何 SQL 内置演示账号**——BCrypt 哈希写死在脚本里既不可解释也像后门。用 `admin` 登录后到「用户管理」里建：
+
+- `inspector` / `INSPECTOR` → 移动端扫码录入
+- `reviewer` / `REVIEWER` → PC 端审核放行
+
+一个人建议只配一个角色。审核员同时是检验员时，系统仍会拦住「审核自己录入的单据」。
 
 ### 3. 起 PC 端
 
@@ -115,9 +133,9 @@ java -cp .build com.qc.inspect.judge.ItemJudgeDemo
 |---|---|---|
 | 判定引擎 | `javac` + `main` 实跑断言 | **38 / 38 通过** |
 | 认证层（JWT + BCrypt） | `javac` + `main` 实跑断言（真实 jar 依赖） | **19 / 19 通过** |
-| Spring 全量（60 个源文件） | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
-| PC + 移动端 15 个 `.vue` | 模板标签配平 + `node --check` 校验 script | 全部通过 |
-| 4 个 SQL 脚本 | 括号配平 + 中文标点检查 | 全部通过 |
+| Spring 全量（75 个源文件） | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
+| PC + 移动端 19 个 `.vue` | 模板标签配平 + `node --check` 校验 script | 全部通过 |
+| 5 个 SQL 脚本 | 括号配平 + 中文标点检查 | 全部通过 |
 | 运行时（接口 / 页面） | 未跑 | **没有连数据库实测过**，首次启动仍需自测一遍 |
 
 认证层的 19 项断言覆盖：签发三段式 token、字段还原、改 payload 后验签失败、换密钥签发的 token 被拒、负数有效期立即过期、乱码/空串/null 不抛异常只返回 null、短密钥启动即报错；BCrypt 同口令通过、错口令拒绝、两次哈希不同（有随机盐）、哈希不含明文。
@@ -188,15 +206,23 @@ CREATE UNIQUE INDEX uk_standard_active ON qc_standard (product_id)
 
 合格率现在有单级和件级两个口径，`stat/daily` 两个都返回，前端展示件级。
 
-### 6. 提交即锁定
+### 6. 提交即锁定，审核才放行
 
-状态机：`DRAFT → SUBMITTED → CLOSED`，`SUBMITTED` 可 `REOPEN` 回 `DRAFT`，`DRAFT`/`SUBMITTED` 可 `VOID`。
+状态机：`DRAFT → SUBMITTED →（审核通过）CLOSED`，`SUBMITTED` 可 `REOPEN` 回 `DRAFT`，也可被审核退回回 `DRAFT`，`DRAFT`/`SUBMITTED` 可 `VOID`。
 
 **已提交的检验单不允许原地改**，任何改动必须走 `reopen` 并填写理由，全部记进 `qc_inspection_log`。
 
 这条不是为了防人，是为了让数据有证据价值。一条能被静默修改的检验记录，在 ISO 审核里是零分——审核员只要问一句“这个值什么时候改的、谁改的”，答不上来整份记录就作废了。
 
 配套的还有草稿暂存（`POST /{id}/save`）：只写实测值，不判定、不改状态、不写日志。40 个输入框没人能一口气填完，没有暂存就会丢数据。
+
+**为什么提交和放行要分成两个人**：检验员自己录完自己放行，叫「自检自判」，是体系漏洞。所以 `SUBMITTED` 不能直接 `CLOSED`，必须经 `REVIEWER` 审核。三条硬规则：
+
+- 审核不通过必须写意见——否则检验员拿着空白的退回单，不知道要改什么
+- 不允许审核本人录入的单据（管理员例外，但日志里会标注「管理员代审本人录入单据」）
+- 审核痕迹落三个字段：`reviewed_by` / `reviewed_at` / `review_comment`，加上日志里的 `REVIEW` / `REJECT` 两条动作，能完整回答「当时凭什么放行」
+
+批次状态也跟着走：提交后批次仍是「检验中」，审核通过才变「已完成」。否则看板上会把没人审过的数据提前算进合格率。
 
 ### 7. 量具不过期，数据才算数
 
@@ -259,6 +285,17 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 - 草稿状态也能出报告，但会带 `conclusion.final = false`，前端顶部显示「未提交，判定未生效」——防止有人拿草稿当合格证
 - 打印走浏览器原生 `window.print()` + `@page A4`，不引 PDF 库。要归档就「另存为 PDF」
 
+### 13. 导出 CSV 而不是 Excel
+
+`GET /api/export/inspections | /defects | /inspections/{id}/lines` 三张台账，返回 `text/csv`。
+
+不引 POI 的理由：这三张表交付出去就是被丢进 Excel 二次透视的，样式反而是干扰；省掉几十兆依赖，也省掉「导出模板改版」这类维护。真要带版面的表单走报告打印。
+
+两个容易被忽略的细节：
+
+- **UTF-8 BOM**：不加这三个字节，Excel 双击打开中文全是乱码，用户第一反应是「系统有问题」
+- **公式注入**：以 `=` `+` `@` 开头、或 `-` 后跟非数字的单元格，Excel 会当公式执行。导出的是别人填的备注，所以统一加前缀 `'` 转成纯文本；`-0.02` 这类正常负值不受影响
+
 ---
 
 ## 五、数据库表清单
@@ -270,29 +307,29 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 | `qc_standard` | 检验标准（产品 + 版本） |
 | `qc_standard_item` | 标准包含的检验项（一个标准 N 项） |
 | `qc_batch` | 批次 |
-| `qc_inspection` | 检验单（含件数统计 passed_qty / failed_qty / accept_qty） |
-| `qc_inspection_line` | 检验明细，件 × 项，含标准快照 |
+| `qc_inspection` | 检验单（含件数统计 passed_qty / failed_qty / accept_qty、审核痕迹 reviewed_by / reviewed_at） |
+| `qc_inspection_line` | 检验明细，件 × 项，含标准快照与建议量具 |
 | `qc_defect` | 不良记录，带件号 |
-| `qc_inspection_log` | 操作日志，提交/解锁/归档/作废全部留痕 |
+| `qc_inspection_log` | 操作日志，提交/解锁/审核/退回/归档/作废全部留痕 |
 | `qc_gauge` | 量具台账，含校准周期与到期日 |
 | `qc_defect_code` | 不良代码字典，帕累托的统计维度 |
 | `qc_shipment` | 出货记录，追溯的出向 |
 | `qc_image` | 检验照片，本地盘或 MinIO |
-| `sys_user` | 用户（BCrypt 口令，ADMIN / INSPECTOR） |
+| `sys_user` | 用户（BCrypt 口令，ADMIN / INSPECTOR / REVIEWER） |
 
 ---
 
 ## 六、下一步
 
-已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托、双向往溯、认证与用户管理、图片上传、检验报告打印。
+已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出、移动端量具选择/现场拍照/报告查看/续填草稿。
 
 按优先级还剩：
 
-1. **移动端补齐新功能**：量具选择、不良处置、报告查看目前只在 PC 端有；移动端已有登录和拍照上传的底层方法（`uploadImage`），页面还没接
+1. **端到端跑一次**：本机没有 PostgreSQL，整套接口和页面从未连库实测过。这是当前最大的不确定性，装个 PG 16 跑一遍 `db/V1 → V5` + `mvn spring-boot:run` 就能验掉
 2. **合格率口径**：目前同时给单级和件级两个数，接真实客户后要确认他们要哪个
-3. **用户与角色细化**：现在只有 ADMIN / INSPECTOR 两级，真实场景通常还要「审核员」（能 reopen 但改不了值）和「只读」
-4. **不良代码字典维护页**：接口有，PC 端还没做编辑界面
-5. **数据导出**：合格率、帕累托目前只能看不能导 Excel
+3. **移动端不良处置**：审核员在手机上看到 NG 后不能直接处置，还得回 PC
+4. **消息通知**：审核退回后检验员不知道，现在只能靠人喊
+5. **报表导出扩展**：帕累托、日合格率目前只能在页面看，还不能导
 
 暂不做：AQL 比例抽样、SPC 控制图、CPK 数值（样本量不足时算出来是错的，宁可不给）。
 
@@ -300,8 +337,9 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 
 ## 七、注意
 
-- **升级**：全新安装只跑 `db/V1__init.sql`。已建过库的按顺序跑 V2 → V3 → V4，**V1 与 V2/V3/V4 不要都跑**（内容重叠，会重复建索引报错）
+- **升级**：全新安装只跑 `db/V1__init.sql`。已建过库的按顺序跑 V2 → V3 → V4 → V5，**V1 与 V2~V5 不要都跑**（内容重叠，会重复建索引报错）
 - **认证**：除 `/api/auth/login`、`/api/images/{id}/raw`、`/actuator/health` 外，所有接口都要 `Authorization: Bearer <token>`，否则返回 401
+- **权限**：主数据维护（标准/量具/检验项/不良代码）与用户管理要 `ADMIN`；审核/归档/作废要 `ADMIN` 或 `REVIEWER`；越权返回 403，前端的菜单隐藏只是体验，真正的边界在 `@PreAuthorize`
 - **JWT 密钥**：`qc.jwt.secret` 至少 32 字节，默认值是开发用的，上线必须用 `JWT_SECRET` 覆盖（启动时会校验长度，不够直接报错）
 - **件数上限**：单张检验单最多 200 件，超了让人拆批。件数 × 项数 就是明细行数，1000 件全检会把表写爆
 - 所有业务表带 `del_flag` 逻辑删除，MyBatis-Plus 全局配置已接管，删除走 `deleteById` 不会真删

@@ -6,6 +6,9 @@ Base URL：`http://localhost:8080/api`
 > **认证**：除登录接口外，全部需要请求头 `Authorization: Bearer <token>`。
 > 未带 / 过期返回 HTTP 401 + `{ "code": 401, "msg": "未登录或登录已过期" }`；权限不足返回 403。
 >
+> **角色**：`ADMIN` 管理员 / `INSPECTOR` 检验员 / `REVIEWER` 审核员。下表的「权限」列写的就是接口要求的角色，
+> 由 `@PreAuthorize` 在后端强制，前端隐藏菜单只是体验层面的事。
+>
 > **操作人**：`operator` 这类参数仍然接受，但只要带了有效 token，一律以 token 里的用户为准。
 > 检验员姓名、操作日志的操作人都是这么来的——质量记录的责任人不能由前端随便填。
 
@@ -44,12 +47,15 @@ Base URL：`http://localhost:8080/api`
 > 新密码至少 6 位，且不能与原密码相同。
 
 **用户管理**
+
+`role` 只接受 `ADMIN` / `INSPECTOR` / `REVIEWER`，其他值直接拒。系统会拦住「把最后一个可用管理员降级或停用」——一旦没有管理员，标准发布和账号维护就全锁死了，只能改库救回来。
+
 ```json
 // POST /auth/users 新增
 { "username": "zhangsan", "realName": "张三", "role": "INSPECTOR", "enabled": true, "password": "init123" }
 
 // POST /auth/users 修改（传 id，password 留空表示不改密码）
-{ "id": 2, "username": "zhangsan", "realName": "张三", "role": "INSPECTOR", "enabled": false }
+{ "id": 2, "username": "zhangsan", "realName": "张三", "role": "REVIEWER", "enabled": false }
 ```
 
 ---
@@ -318,19 +324,41 @@ Base URL：`http://localhost:8080/api`
 3. 没有任何检验数据 → 判不合格（空单不能判合格）
 4. 关键项 NG 落在允收范围内时结论仍为合格，但 `reason` 必须带关键项提示
 
-副作用：明细写回 `result` / `judgeReason`，生成 `qc_defect` 不良记录（带件号），单据转 `SUBMITTED`，批次转 `DONE`，写一条 `SUBMIT` 日志。
+副作用：明细写回 `result` / `judgeReason`，生成 `qc_defect` 不良记录（带件号），单据转 `SUBMITTED`，批次**保持** `INSPECTING`，写一条 `SUBMIT` 日志。
+
+> 批次要等审核通过才转 `DONE`。提交只是「等审核」，这时候就把批次算完成，看板上的合格率会提前把没人审过的数据算进去。
 
 **提交后锁定**。重复提交 `DRAFT` 以外的状态会返回错误，必须先 `reopen`。
 
-### 5. 解锁 / 归档 / 作废
+### 5. 解锁 / 审核 / 归档 / 作废
 
-| 方法 | 路径 | 前置状态 | 说明 |
-|---|---|---|---|
-| POST | `/inspections/{id}/reopen?reason=xxx` | `SUBMITTED` | 回 `DRAFT`，`reason` 必填 |
-| POST | `/inspections/{id}/close` | `SUBMITTED` | 转 `CLOSED` 归档 |
-| POST | `/inspections/{id}/void?reason=xxx` | `DRAFT` / `SUBMITTED` | 转 `VOID`，`reason` 必填 |
+| 方法 | 路径 | 前置状态 | 权限 | 说明 |
+|---|---|---|---|---|
+| POST | `/inspections/{id}/reopen?reason=xxx` | `SUBMITTED` | 登录 | 回 `DRAFT`，`reason` 必填 |
+| POST | `/inspections/{id}/review` | `SUBMITTED` | ADMIN / REVIEWER | 审核，`approve` 决定归档或退回 |
+| POST | `/inspections/{id}/close` | `SUBMITTED` | ADMIN / REVIEWER | 转 `CLOSED` 归档（跳过审核，仅管理员补录用） |
+| POST | `/inspections/{id}/void?reason=xxx` | `DRAFT` / `SUBMITTED` | 登录 | 转 `VOID`，`reason` 必填 |
 
-三个动作都写日志。`reason` 为空直接报错——解锁和作废必须说清楚为什么，这是质量记录可追溯的前提。
+**审核**
+```json
+// 通过并归档
+{ "approve": true, "comment": "抽样符合标准，量具均在有效期" }
+
+// 退回检验员
+{ "approve": false, "comment": "第 3 件硬度只测了一点，标准要求单值，请补测并附量具照片" }
+```
+
+规则：
+
+| 场景 | 结果 |
+|---|---|
+| `approve=false` 且 `comment` 为空 | 报「退回必须填写审核意见」 |
+| 审核人是该单的 `inspectorName` 且不是管理员 | 报「不能审核自己录入的检验单」 |
+| 管理员审核本人录入的单据 | 放行，但日志 `summary` 标注「管理员代审本人录入单据」 |
+| 通过 | 状态 → `CLOSED`，批次 → `DONE`，写 `reviewed_by` / `reviewed_at` / `review_comment` 与 `REVIEW` 日志 |
+| 退回 | 状态 → `DRAFT`，`result` 清为 `NA`，件数统计清零，批次 → `INSPECTING`，写 `REJECT` 日志 |
+
+四个动作都写日志。`reason` 为空直接报错——解锁和作废必须说清楚为什么，这是质量记录可追溯的前提。
 
 ### 6. 操作日志
 
@@ -347,13 +375,30 @@ Base URL：`http://localhost:8080/api`
     "operator": "张三",
     "summary": "不合格 1 件（第 3 件），未超过允收数 1 件",
     "createdAt": "2026-10-19T15:20:11"
+  },
+  {
+    "id": 4,
+    "action": "REJECT",
+    "fromStatus": "SUBMITTED",
+    "toStatus": "DRAFT",
+    "reason": "第 3 件硬度只测了一点",
+    "operator": "王审核",
+    "summary": "审核退回：第 3 件硬度只测了一点",
+    "createdAt": "2026-10-19T16:02:40"
   }
 ]
 ```
 
 ### 7. 分页
 
-`GET /inspections/page?current=1&size=10&status=SUBMITTED&batchId=1`
+`GET /inspections/page?current=1&size=10&status=SUBMITTED&batchId=1&productId=1`
+
+返回 MyBatis-Plus 的 `Page` 结构，`records[]` 里额外带了两个非表字段：
+
+- `batchNo` 批次号
+- `productName` 产品名
+
+> 这两个字段由控制器一次性补齐（按批次的 productId 批量查），不是为了好看——前端列表每行都发一次请求查批次，十个分页就是几十次往返。
 
 ---
 
@@ -397,6 +442,8 @@ Base URL：`http://localhost:8080/api`
 - `nextCalibrateDate < 今天` → `已于 yyyy-mm-dd 到期，超期量具测出的数据不可采信。请先送检校准`
 
 `gaugeId` 当前是**选填**：不填不校验。接真实客户时建议在标准层把数值项标记为「必须记量具」，再改成强制。
+
+**明细里带了 `measureTool`**：建单快照时把 `qc_item.measure_tool`（卡尺 / 千分尺 / 硬度计）一起复制进 `qc_inspection_line`。移动端据此在数值项旁显示「建议 千分尺」，并把类型匹配的量具排在下拉前面——检验员手上可能同时有三四把量具，按项推荐能少翻一半台账。
 
 ---
 
@@ -545,17 +592,49 @@ file=@photo.jpg
 
 ---
 
-## 十、状态值约定
+## 十、导出（CSV）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/export/inspections?status=CLOSED` | 检验单台账 |
+| GET | `/export/defects?status=PENDING` | 不良台账 |
+| GET | `/export/inspections/{id}/lines` | 单张检验单的明细 |
+
+响应 `Content-Type: text/csv; charset=UTF-8`，带 BOM，`Content-Disposition: attachment`，浏览器直接下载。
+
+前端调用要点：
+
+```js
+// 必须 responseType=blob
+const blob = await http.get('/export/inspections', { params: {}, responseType: 'blob' })
+```
+
+> **失败时返回的是 JSON 而不是文件流**。axios 配了 `responseType=blob` 后会把那段 JSON 也包成 Blob，
+> 所以前端要先判断 `blob.type` 是否含 `json`，是就解析出 `msg` 提示用户，否则会存下一个内容是报错信息的 `.csv`。
+
+**检验单台账列**：单号 / 批次号 / 工单号 / 产品 / 检验类型 / 抽样方式 / 抽样件数 / 允收数 Ac / 合格件数 / 不合格件数 / NG 行数 / 关键 NG 行数 / 判定结论 / 单据状态 / 检验员 / 检验时间 / 审核人 / 审核时间 / 判定说明
+
+**不良台账列**：单号 / 件号 / 检验项 / 不良代码 / 不良名称 / 数量 / 处置方式 / 处置状态 / 处置人 / 处置时间 / 让步理由 / 让步授权人 / 复检单号 / 发现时间
+
+**明细列**：单号 / 件号 / 分组 / 检验项 / 数据类型 / 测量方式 / 下限 / 上限 / 单位 / 实测值 / 合格值(布尔) / 量具 / 检验结果 / 判定说明
+
+> 空结果直接报「没有符合条件的检验单可导出」，不返回一个只有表头的空文件——空文件更容易被误当成「本期零不良」。
+
+---
+
+## 十一、状态值约定
 
 | 字段 | 取值 |
 |---|---|
+| `sys_user.role` | `ADMIN` 管理员 / `INSPECTOR` 检验员 / `REVIEWER` 审核员 |
 | `qc_standard.status` | `DRAFT` 草稿 / `ACTIVE` 生效 / `OBSOLETE` 作废 |
 | `qc_standard.sampling_type` | `FULL` 全检 / `SAMPLE` 抽检 / `NONE` 免检 |
 | `qc_batch.status` | `PENDING` 待检 / `INSPECTING` 检验中 / `DONE` 已完成 |
-| `qc_inspection.status` | `DRAFT` 草稿 / `SUBMITTED` 已提交（锁定）/ `CLOSED` 已归档 / `VOID` 已作废 |
+| `qc_inspection.status` | `DRAFT` 草稿 / `SUBMITTED` 待审核（锁定）/ `CLOSED` 已归档 / `VOID` 已作废 |
 | `qc_inspection.result` | `PASS` / `FAIL` / `NA` |
+| `qc_inspection.reviewed_by` | 审核人展示名，由登录态写入，不接受前端传值 |
 | `qc_inspection_line.result` | `PASS` / `FAIL` / `PENDING` |
-| `qc_inspection_log.action` | `CREATE` 建单 / `SUBMIT` 提交 / `REOPEN` 解锁 / `CLOSE` 归档 / `VOID` 作废 |
+| `qc_inspection_log.action` | `CREATE` 建单 / `SUBMIT` 提交 / `REOPEN` 解锁 / `CLOSE` 归档 / `VOID` 作废 / `REVIEW` 审核通过 / `REJECT` 审核退回 |
 | `qc_defect.disposition` | `REWORK` 返工 / `SCRAP` 报废 / `CONCESSION` 让步接收 / `RETURN` 退货 |
 | `qc_defect.disposition_status` | `PENDING` 待处理 / `PROCESSING` 处理中 / `DONE` 已完成 / `WAIVED` 已让步 |
 | `qc_gauge.status` | `ACTIVE` 可用 / `SCRAPPED` 已报废 |

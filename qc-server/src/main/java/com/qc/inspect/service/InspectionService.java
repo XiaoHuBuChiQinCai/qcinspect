@@ -1,6 +1,7 @@
 package com.qc.inspect.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qc.inspect.auth.UserContext;
@@ -50,7 +51,8 @@ import java.util.stream.Collectors;
  * 检验单核心服务。
  *
  * <p>三件事：建单快照（按件展开）、提交判定（两层）、状态锁与留痕。
- * <p>状态机：DRAFT → SUBMITTED → CLOSED；SUBMITTED 可 REOPEN 回 DRAFT；DRAFT/SUBMITTED 可 VOID。
+ * <p>状态机：DRAFT → SUBMITTED →（审核通过）CLOSED；SUBMITTED 可 REOPEN 回 DRAFT，
+ * 也可被审核退回回 DRAFT；DRAFT/SUBMITTED 可 VOID。
  * 已提交的单据不允许原地改，一律走 reopen 并写日志——质量记录一旦能被静默修改，就没有证据价值。
  */
 @Service
@@ -155,6 +157,8 @@ public class InspectionService {
                         : (item.getBoolPassValue() != null ? item.getBoolPassValue() : Boolean.TRUE));
                 line.setIsCritical(Boolean.TRUE.equals(si.getIsCritical()));
                 line.setSeq(seq += 10);
+                // 量具提示也快照：移动端按项推荐量具，不靠检验员在台账里凭记忆翻
+                line.setMeasureTool(item.getMeasureTool());
                 line.setResult("PENDING");
                 line.setCreatedAt(LocalDateTime.now());
                 lineMapper.insert(line);
@@ -309,7 +313,9 @@ public class InspectionService {
 
         QcBatch batch = batchMapper.selectById(ins.getBatchId());
         if (batch != null) {
-            batch.setStatus("DONE");
+            // 提交只是「等审核」，批次还不算做完。放行后由 review 置 DONE，
+            // 否则一张还没人审过的单会让批次显示已完成，看板上的合格率就提前被算进去了
+            batch.setStatus("INSPECTING");
             batch.setUpdatedAt(now);
             batchMapper.updateById(batch);
         }
@@ -340,6 +346,15 @@ public class InspectionService {
         ins.setUpdatedBy(operator);
         ins.setUpdatedAt(LocalDateTime.now());
         inspectionMapper.updateById(ins);
+
+        // 旧的审核痕迹要真的抹掉。MyBatis-Plus 的 updateById 默认跳过 null 字段，
+        // 只把实体里的 reviewedBy 置 null 是写不进库的，必须用 UpdateWrapper 显式 set
+        inspectionMapper.update(null, new LambdaUpdateWrapper<QcInspection>()
+                .eq(QcInspection::getId, inspectionId)
+                .set(QcInspection::getReviewedBy, null)
+                .set(QcInspection::getReviewedAt, null)
+                .set(QcInspection::getReviewComment, null));
+
         writeLog(inspectionId, "REOPEN", from, "DRAFT", operator, reason, "解锁原因：" + reason);
     }
 
@@ -356,6 +371,72 @@ public class InspectionService {
         ins.setUpdatedAt(LocalDateTime.now());
         inspectionMapper.updateById(ins);
         writeLog(inspectionId, "CLOSE", from, "CLOSED", operator, null, "归档");
+    }
+
+    // ==================== 审核 ====================
+
+    /**
+     * 审核：通过则归档，退回则回到草稿由检验员修正。
+     *
+     * <p>这是「判定」与「放行」分离的那一刀。检验员提交时引擎已经判完了合格与否，
+     * 审核员要做的不是重新算一遍，而是对这次判定的有效性背书 —— 抽样是否按标准、
+     * 量具是否在有效期、NG 是否都挂了处置。所以退回必须写意见，否则检验员不知道改什么。
+     *
+     * <p>不允许审核自己录入的单据：自检自判是体系漏洞，管理员例外但要留痕说明。
+     */
+    @Transactional
+    public void review(Long inspectionId, boolean approve, String comment, String operator) {
+        QcInspection ins = require(inspectionId);
+        if (!"SUBMITTED".equals(ins.getStatus())) {
+            throw BizException.of("只有已提交待审核的检验单可以审核，当前状态：" + ins.getStatus());
+        }
+        if (!approve && (comment == null || comment.isBlank())) {
+            throw BizException.of("退回必须填写审核意见，否则检验员不知道要改什么");
+        }
+
+        boolean selfReview = ins.getInspectorName() != null && ins.getInspectorName().equals(operator);
+        if (selfReview && !UserContext.isAdmin()) {
+            throw BizException.of("不能审核自己录入的检验单。判定与放行需要由不同的人完成");
+        }
+
+        String from = ins.getStatus();
+        LocalDateTime now = LocalDateTime.now();
+        String note = comment == null ? null : comment.trim();
+
+        if (approve) {
+            ins.setStatus("CLOSED");
+            writeLog(inspectionId, "REVIEW", from, "CLOSED", operator, note,
+                    "审核通过" + (selfReview ? "（管理员代审本人录入单据）" : "")
+                            + (note == null || note.isBlank() ? "" : "：" + note));
+        } else {
+            ins.setStatus("DRAFT");
+            ins.setResult("NA");
+            ins.setPassedQty(0);
+            ins.setFailedQty(0);
+            ins.setNgCount(0);
+            ins.setCriticalNgCount(0);
+            ins.setJudgeReason("审核退回：" + note);
+            // 这次判定被否了，它派生的不良记录也一并撤掉：
+            // 留在处置队列里会被人当成真的待返工品去处理，重新提交时会按新数据重建
+            defectMapper.delete(new LambdaQueryWrapper<QcDefect>()
+                    .eq(QcDefect::getInspectionId, inspectionId));
+            writeLog(inspectionId, "REJECT", from, "DRAFT", operator, note, "审核退回：" + note);
+        }
+
+        ins.setReviewedBy(operator);
+        ins.setReviewedAt(now);
+        ins.setReviewComment(note);
+        ins.setUpdatedBy(operator);
+        ins.setUpdatedAt(now);
+        inspectionMapper.updateById(ins);
+
+        // 归档后批次才算真正放行；退回则批次回到检验中
+        QcBatch batch = ins.getBatchId() == null ? null : batchMapper.selectById(ins.getBatchId());
+        if (batch != null) {
+            batch.setStatus(approve ? "DONE" : "INSPECTING");
+            batch.setUpdatedAt(now);
+            batchMapper.updateById(batch);
+        }
     }
 
     /** 作废：录错了整单不要了走这条路，而不是删数据 */
