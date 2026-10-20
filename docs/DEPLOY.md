@@ -154,23 +154,71 @@ docker compose -f docker-compose.prod.yml up -d   # 不加 --build
 
 ---
 
-## 五、移动端与小程序
+## 五、移动端 H5
 
-PC 端由 Nginx 托管，`/api` 同源反代，开箱即用。移动端要单独处理：
+H5 挂在**同一个 Nginx 容器的 `/h5/` 下**，不额外开服务：`http://<域名>/h5/`。
+`manifest.json` 里 `h5.router.base` 已经是 `/h5/`，走 hash 路由。
 
-1. **H5**：用 HBuilderX「发行 → 网站-H5手机版」构建，产物扔到服务器上任意静态目录即可
-2. **构建前必须改接口地址**：`qc-mobile/common/api.js` 第 3 行
-   ```js
-   const BASE = 'http://localhost:8080/api'   // 改成 https://你的域名/api
-   ```
-   这行是写死的，不改的话手机上永远连不上。H5 与 PC 同域时可以改成相对路径 `/api`
+### 服务器上构建（推荐）
 
-3. **微信小程序必须 HTTPS + 已备案域名**。用 IP 直连只能调试，发布过不了审核：
-   - 域名要完成 ICP 备案（腾讯云可代办，通常 1–2 周）
-   - 申请免费 SSL 证书，Nginx 加 443 监听
-   - 小程序后台「开发管理 → 服务器域名」里把 `https://你的域名` 加进 request 合法域名
+服务器装了 Node 18 + npm 9，`qc-mobile/.npmrc` 已指向 npmmirror：
 
-内网自用、不上小程序的话，第 3 条可以先跳过，直接用 H5 + IP 访问。
+```bash
+cd qc-mobile
+npm install          # 首次约 30 秒，之后有缓存
+npm run build:h5     # 产物 dist/build/h5
+cd .. && docker compose -f docker-compose.prod.yml restart web
+```
+
+产物通过 compose 的只读挂载直接进 Nginx，**改 H5 不需要重建镜像**。
+
+### 本地构建再上传（不想在服务器装 Node 时）
+
+```bash
+cd qc-mobile && npm install && npm run build:h5
+rsync -avz --delete dist/build/h5/ ubuntu@<IP>:/root/qc/qcinspect/qc-mobile/dist/build/h5/
+```
+
+### 本地调试
+
+```bash
+cd qc-mobile && npm run dev:h5     # http://localhost:5174
+```
+
+`/api` 由 vite 代理到 `localhost:8080`，跟线上的 Nginx 行为一致。
+
+### 为什么源码没挪进 src/
+
+uni-app 的 CLI 默认只找 `src/`，但这是个 HBuilderX 版项目，`pages/`、`main.js`
+都在根目录。`package.json` 里用 `cross-env UNI_INPUT_DIR=. uni build` 把输入目录指回根目录，
+**源码结构一行没动**——HBuilderX 和命令行两种方式都能构建同一个项目。
+
+注意这个变量必须由 cross-env 在进程启动前注入，写在 `vite.config.js` 里太晚：
+uni 的 `initEnv` 在加载 vite 配置之前就跑完了。
+
+### 接口地址
+
+`common/api.js` 里用条件编译分开：
+
+```js
+// #ifdef H5
+const BASE = '/api'                        // 同域反代，换服务器不用改代码
+// #endif
+// #ifndef H5
+const BASE = 'http://localhost:8080/api'   // 小程序/APP 只能绝对地址
+// #endif
+```
+
+### 微信小程序
+
+**必须 HTTPS + 已备案域名**，IP 直连只能调试、发布过不了审核：
+
+- 域名完成 ICP 备案（腾讯云可代办，通常 1–2 周）
+- 申请免费 SSL 证书，Nginx 加 443 监听
+- 小程序后台「开发管理 → 服务器域名」里把 `https://你的域名` 加进 request 合法域名
+- 构建前把 `api.js` 里 `#ifndef H5` 分支的地址改成你的域名
+
+内网自用、不上小程序的话，直接访问 `/h5/` 即可。
 
 ---
 

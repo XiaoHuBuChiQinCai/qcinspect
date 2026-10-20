@@ -39,7 +39,7 @@ C:\qcinspect
 │       ├── judge\            ItemJudgeTest / InspectionJudgeTest
 │       └── auth\             JwtUtilTest
 ├── qc-pc\                    PC 端（Vue 3 + Vite + Element Plus），含 Dockerfile 与 nginx.conf
-└── qc-mobile\                移动端（uni-app，HBuilderX 直接打开）
+└── qc-mobile\                移动端（uni-app），HBuilderX 或 `npm run build:h5` 均可构建
 ```
 
 > V2~V6 里的 DDL 全部写成 `IF NOT EXISTS` / `DROP ... IF EXISTS`，可以重复执行。
@@ -159,11 +159,22 @@ npm run dev
 
 #### 4. 起移动端
 
-用 **HBuilderX** 打开 `qc-mobile` 目录：
+**方式一：命令行**（装了 Node 就能用，不依赖 HBuilderX）
+
+```bash
+cd qc-mobile
+npm install
+npm run dev:h5      # http://localhost:5174，/api 已代理到 8080
+```
+
+**方式二：HBuilderX** 打开 `qc-mobile` 目录：
 
 - 运行到浏览器：直接点「运行 → 运行到浏览器」，起 H5
 - 运行到微信开发者工具：点「运行 → 运行到小程序模拟器」，需要在 `manifest.json` 里填自己的小程序 AppID
-- 真机调试时把 `common/api.js` 里的 `BASE` 改成电脑内网 IP，小程序开发者工具勾选「不校验合法域名」
+- 真机调试时把 `common/api.js` 里 `#ifndef H5` 分支的 `BASE` 改成电脑内网 IP，开发者工具勾选「不校验合法域名」
+
+> 两种方式构建的是同一个项目：源码保持在根目录（HBuilderX 版结构），
+> CLI 通过 `UNI_INPUT_DIR=.` 指回来。详见 `docs/DEPLOY.md` 第五节。
 
 ---
 
