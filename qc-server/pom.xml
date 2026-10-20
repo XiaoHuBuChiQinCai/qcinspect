@@ -26,6 +26,40 @@
         <embedded-postgres-binaries.version>16.6.0</embedded-postgres-binaries.version>
     </properties>
 
+    <!--
+        依赖走阿里云镜像。
+        原因：Maven Central 在国内服务器上单连接只有 800KB/s 左右，且部分元数据请求会卡在
+        超时重试上——实测 Docker 构建停在 dependency:go-offline 十几分钟没有进展、缓存也不再增长。
+        换成阿里云后同样的依赖 17MB/s。
+        本地构建不受影响：本地仓库已有缓存时不会回源，settings.xml 里配了 mirror 的也会覆盖这里。
+    -->
+    <repositories>
+        <repository>
+            <id>aliyun</id>
+            <name>Aliyun Public</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+    <pluginRepositories>
+        <pluginRepository>
+            <id>aliyun-plugin</id>
+            <name>Aliyun Plugin</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>

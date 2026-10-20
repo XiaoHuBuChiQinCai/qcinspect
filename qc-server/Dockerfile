@@ -6,10 +6,11 @@ WORKDIR /build
 
 # 先只拷 pom，把依赖层缓存下来；改代码时不必重新下载全部依赖
 COPY pom.xml .
-RUN mvn -B -ntp -q dependency:go-offline
+# 不加 -q：首次构建时这层是唯一的进度来源，静默了就只能盯着空白日志猜它是不是卡死了
+RUN mvn -B -ntp dependency:go-offline
 
 COPY src ./src
-RUN mvn -B -ntp -q -DskipTests package
+RUN mvn -B -ntp -DskipTests package
 
 # ---------- 运行阶段 ----------
 FROM eclipse-temurin:21-jre
