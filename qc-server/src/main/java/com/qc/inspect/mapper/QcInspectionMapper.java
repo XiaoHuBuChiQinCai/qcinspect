@@ -14,8 +14,12 @@ public interface QcInspectionMapper extends BaseMapper<QcInspection> {
 
     /**
      * 当天已生成的单号数量（含已逻辑删除的，避免单号复用）。
+     *
+     * <p>参数必须显式 CAST 成 text：PostgreSQL 的 CONCAT 接受任意类型，
+     * 一个没类型的占位符会让它无法推断，直接报「无法确定参数 $1 的数据类型」。
+     * 这个错会让建单接口 500，也就是一张单都开不出来。
      */
-    @Select("SELECT count(*) FROM qc_inspection WHERE inspection_no LIKE CONCAT('QC', #{day}, '%')")
+    @Select("SELECT count(*) FROM qc_inspection WHERE inspection_no LIKE CONCAT('QC', CAST(#{day} AS text), '%')")
     long countByDayPrefix(@Param("day") String day);
 
     /**
@@ -38,6 +42,35 @@ public interface QcInspectionMapper extends BaseMapper<QcInspection> {
             ORDER BY 1
             """)
     List<Map<String, Object>> statDaily();
+
+    /**
+     * 被审核退回、还没重新提交的草稿。
+     *
+     * <p>判定依据是「当前是草稿」且「历史上出现过 REJECT」——被退回后又改完提交的单
+     * 状态会变 SUBMITTED，自然从待办里消失，不用额外标记已读。
+     */
+    @Select("""
+            SELECT i.*
+            FROM qc_inspection i
+            WHERE i.del_flag = 0
+              AND i.status = 'DRAFT'
+              AND i.created_by = #{operator}
+              AND EXISTS (SELECT 1 FROM qc_inspection_log l
+                          WHERE l.inspection_id = i.id AND l.action = 'REJECT')
+            ORDER BY i.updated_at DESC NULLS LAST, i.id DESC
+            """)
+    List<QcInspection> rejectedDrafts(@Param("operator") String operator);
+
+    @Select("""
+            SELECT count(*)
+            FROM qc_inspection i
+            WHERE i.del_flag = 0
+              AND i.status = 'DRAFT'
+              AND i.created_by = #{operator}
+              AND EXISTS (SELECT 1 FROM qc_inspection_log l
+                          WHERE l.inspection_id = i.id AND l.action = 'REJECT')
+            """)
+    long countRejectedDrafts(@Param("operator") String operator);
 
     /**
      * 缺陷分布（帕累托数据源）。

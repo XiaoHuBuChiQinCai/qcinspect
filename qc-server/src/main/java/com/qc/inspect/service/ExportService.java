@@ -164,7 +164,82 @@ public class ExportService {
         return csv.toString();
     }
 
+    // ==================== 帕累托 ====================
+
+    /**
+     * 不良帕累托导出。
+     *
+     * <p>帕累托的意义在于「少数原因造成多数问题」，所以导出时必须带累计占比——
+     * 只有占比没有累计，拿到 Excel 里还得自己算一遍，那就白导了。
+     */
+    public String pareto(Long productId, String from) {
+        List<Map<String, Object>> list = defectMapper.pareto(productId, from);
+        if (list.isEmpty()) {
+            throw BizException.of("没有不良数据可导出");
+        }
+
+        Csv csv = new Csv();
+        csv.header("不良代码", "不良名称", "不良数量", "发生次数", "占比%", "累计占比%");
+        for (Map<String, Object> row : list) {
+            csv.row(text(row.get("code")),
+                    text(row.get("name")),
+                    row.get("qty"),
+                    row.get("occ"),
+                    row.get("percent"),
+                    row.get("cumulative_percent"));
+        }
+        return csv.toString();
+    }
+
+    // ==================== 日合格率 ====================
+
+    /**
+     * 近 30 天合格率导出。单级（整单）与件级两个口径都出：
+     * 抽检场景下件级更准，单级留着跟历史报表对账。
+     */
+    public String dailyYield() {
+        List<Map<String, Object>> list = inspectionMapper.statDaily();
+        if (list.isEmpty()) {
+            throw BizException.of("近 30 天没有可统计的检验单");
+        }
+
+        Csv csv = new Csv();
+        csv.header("日期", "检验单数", "整单合格数", "单级合格率%", "受检件数", "合格件数", "件级合格率%");
+        for (Map<String, Object> row : list) {
+            long total = num(row.get("total"));
+            long passCnt = num(row.get("pass_cnt"));
+            long pieceTotal = num(row.get("piece_total"));
+            long piecePass = num(row.get("piece_pass"));
+            csv.row(row.get("day"),
+                    total,
+                    passCnt,
+                    percent(passCnt, total),
+                    pieceTotal,
+                    piecePass,
+                    percent(piecePass, pieceTotal));
+        }
+        return csv.toString();
+    }
+
     // ==================== 内部方法 ====================
+
+    private String text(Object v) {
+        return v == null ? null : String.valueOf(v);
+    }
+
+    private long num(Object v) {
+        return v instanceof Number n ? n.longValue() : 0L;
+    }
+
+    /** 分母为 0 时返回空串而不是 0：报表里「0%」和「没有数据」是两件事 */
+    private String percent(long part, long total) {
+        if (total <= 0) {
+            return "";
+        }
+        return BigDecimal.valueOf(part * 100.0 / total)
+                .setScale(2, java.math.RoundingMode.HALF_UP)
+                .toPlainString();
+    }
 
     private String measuredText(QcInspectionLine l) {
         if (l.getMeasuredText() != null && !l.getMeasuredText().isBlank()) {

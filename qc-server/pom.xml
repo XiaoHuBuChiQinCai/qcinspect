@@ -22,6 +22,8 @@
         <mybatis-plus.version>3.5.9</mybatis-plus.version>
         <minio.version>8.5.12</minio.version>
         <jjwt.version>0.12.6</jjwt.version>
+        <embedded-postgres.version>2.1.0</embedded-postgres.version>
+        <embedded-postgres-binaries.version>16.6.0</embedded-postgres-binaries.version>
     </properties>
 
     <dependencies>
@@ -88,9 +90,43 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!--
+            集成测试用真实 PostgreSQL，不依赖 Docker。
+
+            为什么不用 H2 的内存模式凑：本项目大量依赖 jsonb、timestamptz、
+            partial unique index（带 WHERE 的唯一索引）和窗口函数，H2 兼容模式跑不过去，
+            跑过了也不能证明生产能跑。宁可多下一个几十兆的二进制包。
+        -->
+        <dependency>
+            <groupId>io.zonky.test</groupId>
+            <artifactId>embedded-postgres</artifactId>
+            <version>${embedded-postgres.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.zonky.test.postgres</groupId>
+            <artifactId>embedded-postgres-binaries-windows-amd64</artifactId>
+            <version>${embedded-postgres-binaries.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
+        <testResources>
+            <testResource>
+                <directory>src/test/resources</directory>
+            </testResource>
+            <!--
+                建表脚本只维护一份（仓库根的 db/），测试直接从那里读。
+                复制一份到 test/resources 的写法迟早会两边不一致，
+                然后出现「测试跑得过、生产建表失败」这种最难查的问题。
+            -->
+            <testResource>
+                <directory>${project.basedir}/../db</directory>
+                <targetPath>db</targetPath>
+            </testResource>
+        </testResources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -120,6 +156,21 @@
                             <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
+                </configuration>
+            </plugin>
+            <!--
+                surefire 默认只认 *Test / Test*，*IT 是 failsafe 的命名约定。
+                这里显式把 *IT 也纳入 mvn test，否则「端到端测试」在 CI 里等于不存在，
+                和之前把 main() 演示类当测试是同一个坑。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*IT.java</include>
+                    </includes>
                 </configuration>
             </plugin>
         </plugins>

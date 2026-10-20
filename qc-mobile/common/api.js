@@ -114,7 +114,26 @@ export const api = {
   gauges: () => request('/gauges?status=ACTIVE'),
   images: (bizType, bizId) => request(`/images?bizType=${bizType}&bizId=${bizId}`),
   removeImage: id => request(`/images/${id}`, { method: 'DELETE' }),
-  report: id => request(`/reports/inspection/${id}`)
+  report: id => request(`/reports/inspection/${id}`),
+
+  // ---------- 待办 ----------
+  todoSummary: () => request('/todo/summary'),
+  todoReviews: () => request('/todo/reviews'),
+  todoDefects: () => request('/todo/defects'),
+  todoMine: () => request('/todo/mine'),
+  todoGauges: () => request('/todo/gauges'),
+
+  /** 审核：approve=true 通过归档，false 退回草稿（comment 必填） */
+  review: (id, approve, comment) => request(`/inspections/${id}/review`, {
+    method: 'POST',
+    data: { approve, comment }
+  }),
+
+  /** 不良处置：disposition 取 REWORK / SCRAP / RETURN，status 取 PROCESSING / DONE */
+  dispose: (id, disposition, status, note) => request(`/defects/${id}/dispose`, {
+    method: 'POST',
+    data: { disposition, status, note }
+  })
 }
 
 /** 单张图片上传，返回 Promise */

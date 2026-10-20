@@ -47,6 +47,19 @@ public class ExportController {
         return csv(exportService.inspectionLines(id), "inspection-" + id + "-lines");
     }
 
+    /** 不良帕累托（带累计占比） */
+    @GetMapping("/pareto")
+    public ResponseEntity<byte[]> pareto(@RequestParam(required = false) Long productId,
+                                         @RequestParam(required = false) String from) {
+        return csv(exportService.pareto(productId, from), "pareto");
+    }
+
+    /** 近 30 天合格率（单级 + 件级两个口径） */
+    @GetMapping("/daily-yield")
+    public ResponseEntity<byte[]> dailyYield() {
+        return csv(exportService.dailyYield(), "daily-yield");
+    }
+
     private ResponseEntity<byte[]> csv(String content, String name) {
         byte[] body = content.getBytes(StandardCharsets.UTF_8);
         byte[] withBom = new byte[UTF8_BOM.length + body.length];

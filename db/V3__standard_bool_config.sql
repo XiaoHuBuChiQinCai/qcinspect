@@ -15,8 +15,11 @@ BEGIN;
 ALTER TABLE qc_standard_item
     ADD COLUMN IF NOT EXISTS bool_pass_value boolean;
 
+-- 备注：这句话必须写成单个字符串字面量。
+-- 拆成两行相邻字面量时，psql 能跑（PostgreSQL 允许换行拼接），
+-- 但 Spring 的 spring.sql.init 脚本执行器会把换行压成空格再发出去，
+-- PostgreSQL 就会报「语法错误 在 '第二段' 或附近」。
 COMMENT ON COLUMN qc_standard_item.bool_pass_value IS
-    '布尔型合格值（覆盖主数据）。NULL = 沿用 qc_item.bool_pass_value；'
-    'true = 录「有」算合格，false = 录「无」算合格';
+    '布尔型合格值（覆盖主数据）。NULL = 沿用 qc_item.bool_pass_value；true = 录「有」算合格，false = 录「无」算合格';
 
 COMMIT;

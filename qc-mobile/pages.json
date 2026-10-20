@@ -23,6 +23,12 @@
       "style": {
         "navigationBarTitleText": "检验报告"
       }
+    },
+    {
+      "path": "pages/todo/todo",
+      "style": {
+        "navigationBarTitleText": "待办"
+      }
     }
   ],
   "globalStyle": {

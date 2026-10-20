@@ -8,6 +8,18 @@
 
     <view class="me" v-if="user">当前：{{ user.realName || user.username }}</view>
 
+    <view class="todo" @click="openTodo">
+      <text class="todo-title">我的待办</text>
+      <view class="todo-right">
+        <text v-if="summary.pendingReview" class="chip">待审 {{ summary.pendingReview }}</text>
+        <text v-if="summary.pendingDefect" class="chip">待处置 {{ summary.pendingDefect }}</text>
+        <text v-if="summary.myRejected" class="chip red">退回 {{ summary.myRejected }}</text>
+        <text v-if="summary.overdueGauge" class="chip warn">量具超期 {{ summary.overdueGauge }}</text>
+        <text v-if="!summary.actionable && !summary.overdueGauge" class="chip none">暂无</text>
+        <text class="arrow">›</text>
+      </view>
+    </view>
+
     <view class="tabs">
       <view :class="['tab', tab === 'PENDING' ? 'on' : '']" @click="switchTab('PENDING')">待检</view>
       <view :class="['tab', tab === 'INSPECTING' ? 'on' : '']" @click="switchTab('INSPECTING')">检验中</view>
@@ -39,6 +51,7 @@ const batches = ref([])
 const loading = ref(false)
 const user = ref(getUser())
 const tab = ref('PENDING')
+const summary = ref({})
 
 const statusText = s => ({ PENDING: '待检', INSPECTING: '检验中', DONE: '已完成' }[s] || s)
 
@@ -50,9 +63,19 @@ async function load() {
   loading.value = true
   try {
     batches.value = await api.batches(tab.value)
+    // 待办角标拿不到不该挡住批次列表，单独兜一层
+    try {
+      summary.value = await api.todoSummary()
+    } catch (e) {
+      summary.value = {}
+    }
   } finally {
     loading.value = false
   }
+}
+
+function openTodo() {
+  uni.navigateTo({ url: '/pages/todo/todo' })
 }
 
 function switchTab(t) {
@@ -123,6 +146,21 @@ onShow(load)
 .scan { flex: 1; background-color: #1989fa; color: #fff; border-radius: 12rpx; font-size: 32rpx; }
 .link { margin-left: 24rpx; color: #1989fa; font-size: 28rpx; }
 .me { margin-bottom: 16rpx; font-size: 24rpx; color: #8a9199; }
+
+.todo {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #fff; border-radius: 16rpx; padding: 22rpx 24rpx; margin-bottom: 20rpx;
+}
+.todo-title { font-size: 28rpx; color: #303133; }
+.todo-right { display: flex; align-items: center; }
+.chip {
+  font-size: 22rpx; padding: 4rpx 14rpx; border-radius: 8rpx; margin-left: 10rpx;
+  background: #eef2f7; color: #5a6b7b;
+}
+.chip.red { background: #fef0f0; color: #c45656; }
+.chip.warn { background: #fdf6ec; color: #b88230; }
+.chip.none { color: #a8abb2; }
+.arrow { margin-left: 12rpx; color: #c0c4cc; font-size: 32rpx; }
 
 .tabs { display: flex; gap: 12rpx; margin-bottom: 20rpx; }
 .tab {

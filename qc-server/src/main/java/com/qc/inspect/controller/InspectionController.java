@@ -6,15 +6,12 @@ import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.dto.InspectionCreateReq;
 import com.qc.inspect.dto.InspectionSubmitReq;
-import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcInspectionLog;
-import com.qc.inspect.entity.QcProduct;
 import com.qc.inspect.judge.InspectionOutcome;
-import com.qc.inspect.mapper.QcBatchMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
-import com.qc.inspect.mapper.QcProductMapper;
 import com.qc.inspect.service.InspectionService;
+import com.qc.inspect.service.InspectionViewService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -28,10 +25,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/inspections")
@@ -39,9 +32,8 @@ import java.util.stream.Collectors;
 public class InspectionController {
 
     private final InspectionService inspectionService;
+    private final InspectionViewService viewService;
     private final QcInspectionMapper inspectionMapper;
-    private final QcBatchMapper batchMapper;
-    private final QcProductMapper productMapper;
 
     /** 建检验单：按批次 + 产品生效标准自动快照，并按抽样件数展开成 件 × 项 的明细 */
     @PostMapping
@@ -133,31 +125,8 @@ public class InspectionController {
                 .eq(batchId != null, QcInspection::getBatchId, batchId)
                 .eq(productId != null, QcInspection::getProductId, productId)
                 .orderByDesc(QcInspection::getId));
-        fillDisplayFields(page.getRecords());
+        viewService.fill(page.getRecords());
         return R.ok(page);
-    }
-
-    /** 补齐批次号与产品名 */
-    private void fillDisplayFields(List<QcInspection> rows) {
-        if (rows == null || rows.isEmpty()) {
-            return;
-        }
-        Set<Long> batchIds = rows.stream().map(QcInspection::getBatchId)
-                .filter(Objects::nonNull).collect(Collectors.toSet());
-        Set<Long> productIds = rows.stream().map(QcInspection::getProductId)
-                .filter(Objects::nonNull).collect(Collectors.toSet());
-        Map<Long, QcBatch> batches = batchIds.isEmpty() ? Map.of()
-                : batchMapper.selectBatchIds(batchIds).stream()
-                .collect(Collectors.toMap(QcBatch::getId, Function.identity(), (a, b) -> a));
-        Map<Long, QcProduct> products = productIds.isEmpty() ? Map.of()
-                : productMapper.selectBatchIds(productIds).stream()
-                .collect(Collectors.toMap(QcProduct::getId, Function.identity(), (a, b) -> a));
-        for (QcInspection row : rows) {
-            QcBatch batch = batches.get(row.getBatchId());
-            QcProduct product = products.get(row.getProductId());
-            row.setBatchNo(batch == null ? null : batch.getBatchNo());
-            row.setProductName(product == null ? null : product.getProductName());
-        }
     }
 
     /** 近 30 天合格率趋势 */

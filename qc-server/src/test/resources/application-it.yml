@@ -1,0 +1,30 @@
+# 集成测试专用配置：真实 PostgreSQL（嵌入式），不连本机数据库
+spring:
+  sql:
+    init:
+      mode: always
+      # 脚本里有中文，不显式指定就用平台默认编码（Windows 上是 GBK），会读出乱码
+      encoding: UTF-8
+      # 脚本顺序不能乱：V2 依赖 V1 建的表，V5 依赖 V2 的日志表
+      schema-locations:
+        - classpath:db/V1__init.sql
+        - classpath:db/V2__piece_and_lock.sql
+        - classpath:db/V3__standard_bool_config.sql
+        - classpath:db/V4__gauge_disposition_trace.sql
+        - classpath:db/V5__review_and_role.sql
+      continue-on-error: false
+
+mybatis-plus:
+  configuration:
+    # 集成测试里把 SQL 日志关掉，否则十几张表建完再跑用例，控制台没法看
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+qc:
+  storage:
+    type: local
+    local-dir: target/it-files
+
+logging:
+  level:
+    root: warn
+    com.qc.inspect: info

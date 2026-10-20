@@ -28,7 +28,7 @@ C:\qcinspect
 │   │   ├── judge\            ★ 判定引擎（纯 Java，无框架依赖，有完整单测）
 │   │   ├── entity\           14 个实体
 │   │   ├── mapper\           MyBatis-Plus Mapper
-│   │   ├── service\          建单快照 / 提交判定 / 审核流转 / 标准配置 / 量具校验 / 处置流转 / 追溯 / CSV 导出
+│   │   ├── service\          建单快照 / 提交判定 / 审核流转 / 标准配置 / 量具校验 / 处置流转 / 追溯 / 待办聚合 / CSV 导出
 │   │   ├── controller\       REST 接口
 │   │   └── common\           统一返回、异常处理
 │   └── src\test\java\com\qc\inspect\
@@ -160,7 +160,7 @@ npm run dev
 
 ## 三、已经验证过的部分
 
-### 1. 单元测试：63 个，`mvn test` 直接跑
+### 1. 单元测试 + 集成测试：70 个，`mvn test` 一条命令跑完
 
 ```bash
 cd qc-server
@@ -168,39 +168,44 @@ mvn test
 ```
 
 ```
-Tests run: 63, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 70, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
-判定引擎是纯 Java 实现、不依赖任何框架，所以它的测试也不需要 Spring 上下文，跑一次不到一秒。
+| 测试类 | 数量 | 跑的是什么 | 耗时 |
+|---|---|---|---|
+| `ItemJudgeTest` | 38 | 四种类型的判定、边界值、测点数量、布尔项合格值方向 | < 0.1 s |
+| `InspectionJudgeTest` | 16 | 两层判定、允收数语义、关键项提示、行数与件数不混用 | < 0.1 s |
+| `JwtUtilTest` | 9 | 验签、篡改、换密钥、过期、弱密钥、BCrypt | < 1 s |
+| `InspectionFlowIT` | 7 | **真实 PostgreSQL + 真实 HTTP + 真实 JWT**：建单 → 填报 → 提交 → 锁定 → 审核归档 → 退回 → 导出 → 待办 | ~ 20 s |
 
-| 测试类 | 数量 | 钉住的是什么 |
-|---|---|---|
-| `ItemJudgeTest` | 38 | 四种类型的判定、边界值、测点数量、布尔项合格值方向 |
-| `InspectionJudgeTest` | 16 | 两层判定、允收数语义、关键项提示、行数与件数不混用 |
-| `JwtUtilTest` | 9 | 验签、篡改、换密钥、过期、弱密钥、BCrypt |
+集成测试用 `io.zonky.test` 的嵌入式 PostgreSQL 起一个真库，按 V1 → V5 顺序执行仓库里的建表脚本，再用 `TestRestTemplate` 走完整的 HTTP + JWT 链路。**不需要 Docker**，`mvn test` 直接跑；`*IT` 已在 surefire 里显式纳入，CI 不会漏。
 
-几个刻意写死的地方，都是真实踩过的坑：
+为什么不用 H2 图省事：本项目用了 `jsonb`、`timestamptz`、带 `WHERE` 的部分唯一索引和窗口函数，H2 的 PostgreSQL 兼容模式跑不过去；就算跑过了也不能证明生产能跑。宁可多下一个几十兆的二进制包。
 
-- **边界值必须算合格**：`49.90` 配在 `[49.90, 50.10]` 里判合格，闭区间不能写成开区间
-- **布尔项合格值方向**：同一个输入 `"true"`，配「true 判合格」时通过、配「false 判合格」时不通过。这是整个系统最隐蔽的一类配错，光看代码看不出来
-- **行数和件数不能混**：一件工件两个项超差，`ngCount=2` 但 `failedQty=1`；允收数 Ac 比的是件数。混淆了整批结论会算反
-- **空单判不合格**：没有任何数据时判合格，是质量记录里最不能犯的错
-- **关键项在允收范围内仍要提示**：结论可以是合格，但理由必须写出「关键项问题：第 2 件 …」
+### 2. 集成测试抓出的三个真缺陷
 
-### 2. 其他验证情况
+三个都是「编译通过、单测通过、一调接口就 500」的类型，也正好说明端到端验证省不得：
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 建库直接失败：`语法错误 在 'true = 录「有」算合格…' 或附近` | V3 里有一条 `COMMENT` 用「相邻字符串字面量」拆成两行。psql 支持换行拼接，但 Spring 的 `spring.sql.init` 会把换行压成空格再发，PostgreSQL 于是报语法错 | 合并成单个字面量 |
+| 2 | 所有查询 500：`Cannot convert the column of type TIMESTAMPTZ to requested type java.time.LocalDateTime` | 时间列全是 `timestamptz`，实体是 `LocalDateTime`；MyBatis 内置 handler 走 `getObject(col, LocalDateTime.class)`，PG 驱动只认不带时区的 `timestamp` | 自定义 `TimestamptzTypeHandler`：读 `OffsetDateTime` 再按系统时区还原 |
+| 3 | 建单 500：`无法确定参数 $1 的数据类型` | 单号统计 `CONCAT('QC', #{day}, '%')` 的占位符没有类型，PostgreSQL 无法推断 | `CAST(#{day} AS text)` |
+
+第 2、3 条如果没跑真库，上线第一天就会撞上：登录之后所有列表空白，或者一张单都开不出来。
+
+### 3. 其他验证情况
 
 | 范围 | 方式 | 结果 |
 |---|---|---|
 | 后端全量 | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
-| 单元测试 | `mvn test` | **63 / 63 通过** |
-| PC + 移动端 18 个 `.vue` | 模板标签配平 + `node --check` 校验 script | 全部通过 |
-| 5 个 SQL 脚本 | 括号配平 + 中文标点检查 + DDL 幂等性逐条核对 | 全部通过 |
-| 端到端 | `docker compose up` + `scripts/smoke.py` | **脚本已提供，但本机没有 Docker / PostgreSQL，没跑过** |
+| 单元 + 集成测试 | `mvn test`（含嵌入式 PostgreSQL） | **70 / 70 通过** |
+| 5 个 SQL 脚本 | 括号配平 + 幂等性核对 + **在真库上实际执行过**（集成测试） | 全部通过 |
+| PC + 移动端 20 个 `.vue` | 模板标签配平 + `node --check` 校验 script | 19 通过，`qc-mobile/App.vue` 无 template 属正常 |
+| Docker 编排 | `docker-compose.yml` 结构、脚本挂载顺序 | 只做了结构与 YAML 校验，**本机无 Docker，没实跑过** |
 
-> 最后一行是这套项目当前最大的不确定性，也是留 `docker-compose.yml` 和 `smoke.py` 的原因：
-> 代码能编、逻辑能单测，但「建单 → 落库 → 判定 → 审核 → 导出」这条真实链路，我在本机跑不起来。
-> 有 Docker 的机器上执行一次 `docker compose up -d --build && python3 scripts/smoke.py` 就能把这条不确定性消掉。
+> 现在唯一还悬着的是 Docker 那条路：`docker compose up` 里的 `docker-entrypoint-initdb.d` 用 psql 执行脚本，与集成测试用的 Spring 脚本执行器不是同一条路径（这正是缺陷 1 的成因），所以两者都值得各跑一次。
 
 ---
 
@@ -381,15 +386,15 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 
 ## 六、下一步
 
-已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出、移动端量具选择/现场拍照/报告查看/续填草稿、Docker 一键启动、63 个单元测试、端到端冒烟脚本。
+已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出（检验单/不良/明细/帕累托/日合格率）、移动端量具选择·现场拍照·报告查看·续填草稿、待办聚合与角标、Docker 一键启动、70 个测试（含真库集成测试）、端到端冒烟脚本。
 
 按优先级还剩：
 
-1. **端到端跑一次**：`docker-compose.yml` 和 `scripts/smoke.py` 已经备好，但本机没有 Docker / PostgreSQL，没跑过。找台有 Docker 的机器执行一遍，这条就能从「未验证」变成「已验证」
-2. **合格率口径**：目前同时给单级和件级两个数，接真实客户后要确认他们要哪个
-3. **移动端不良处置**：审核员在手机上看到 NG 后不能直接处置，还得回 PC
-4. **消息通知**：审核退回后检验员不知道，现在只能靠人喊
-5. **报表导出扩展**：帕累托、日合格率目前只能在页面看，还不能导
+1. **Docker 那条路实跑一次**：集成测试已经用真 PostgreSQL 跑通全链路，但 `docker compose up` 走的是 psql 执行脚本，是另一条路径。找台有 Docker 的机器跑一遍 `docker compose up -d --build && python3 scripts/smoke.py`
+2. **合格率口径**：页面和导出都同时给单级与件级，接真实客户后要确认他们要哪个（大概率要件级，但要客户自己点头）
+3. **消息通知**：审核退回后检验员现在只能靠待办角标发现，缺一条主动推送（企业微信/短信）
+4. **让步接收在移动端缺失**：手机端只做了返工/报废/退货，让步接收要填理由和授权人，得回 PC
+5. **单点登录与组织架构**：现在账号是本地表，接客户环境通常要对接他们的 AD / 企业微信通讯录
 
 暂不做：AQL 比例抽样、SPC 控制图、CPK 数值（样本量不足时算出来是错的，宁可不给）。
 

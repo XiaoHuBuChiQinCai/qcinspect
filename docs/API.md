@@ -599,6 +599,8 @@ file=@photo.jpg
 | GET | `/export/inspections?status=CLOSED` | 检验单台账 |
 | GET | `/export/defects?status=PENDING` | 不良台账 |
 | GET | `/export/inspections/{id}/lines` | 单张检验单的明细 |
+| GET | `/export/pareto?productId=&from=` | 不良帕累托，带占比与**累计占比** |
+| GET | `/export/daily-yield` | 近 30 天合格率，单级与件级两个口径 |
 
 响应 `Content-Type: text/csv; charset=UTF-8`，带 BOM，`Content-Disposition: attachment`，浏览器直接下载。
 
@@ -614,7 +616,7 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 
 **检验单台账列**：单号 / 批次号 / 工单号 / 产品 / 检验类型 / 抽样方式 / 抽样件数 / 允收数 Ac / 合格件数 / 不合格件数 / NG 行数 / 关键 NG 行数 / 判定结论 / 单据状态 / 检验员 / 检验时间 / 审核人 / 审核时间 / 判定说明
 
-**不良台账列**：单号 / 件号 / 检验项 / 不良代码 / 不良名称 / 数量 / 处置方式 / 处置状态 / 处置人 / 处置时间 / 让步理由 / 让步授权人 / 复检单号 / 发现时间
+**不良台账列**：检验单号 / 件号 / 不良名称 / 不良代码 / 数量 / 处置方式 / 处置状态 / 处置人 / 处置时间 / 让步理由 / 让步授权人 / 复检单号 / 发现时间
 
 **明细列**：单号 / 件号 / 分组 / 检验项 / 数据类型 / 测量方式 / 下限 / 上限 / 单位 / 实测值 / 合格值(布尔) / 量具 / 检验结果 / 判定说明
 
@@ -641,3 +643,37 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 | `qc_item.value_type` | `NUMBER` / `ENUM` / `BOOL` / `TEXT` |
 | `qc_standard_item.value_mode` | `SINGLE` 单值 / `MULTIPLE` 多点 |
 | `qc_batch.inspect_type` | `IQC` 来料 / `IPQC` 过程 / `FQC` 成品 / `OQC` 出货 |
+
+---
+
+## 十二、待办
+
+手机端首页角标和工作台都从这里取数。五个数字一次给全，避免前端为角标发五次请求。
+
+| 方法 | 路径 | 返回 |
+|---|---|---|
+| GET | `/todo/summary` | 见下 |
+| GET | `/todo/reviews` | 待审核的检验单（`SUBMITTED`），已补 `batchNo` / `productName` |
+| GET | `/todo/defects` | 待处置不良（`PENDING` + `PROCESSING`），带 `inspectionNo` |
+| GET | `/todo/mine` | `{ drafts: [...], rejected: [...] }`，按登录人过滤 |
+| GET | `/todo/gauges` | 超期未校准量具，带 `overdueDays` |
+
+`/todo/summary`：
+
+```json
+{
+  "pendingReview": 3,
+  "pendingDefect": 5,
+  "overdueGauge": 1,
+  "myDraft": 2,
+  "myRejected": 1,
+  "actionable": 9
+}
+```
+
+口径说明：
+
+- **待审核**只算 `SUBMITTED`。草稿是检验员自己的活，不该出现在审核员待办里
+- **被退回**的判定是「当前是草稿 + 历史上出现过 `REJECT`」。改完重新提交后状态变 `SUBMITTED`，自然从待办消失，不需要已读标记
+- **`actionable`** = 待审核 + 待处置 + 我被退回，**不含**量具超期：量具不是单据，混进去会让人误以为积压了几十张单
+- 量具超期单独立一项。超期量具量出来的数据，体系审核直接判无效，它比「有几张单待审」更要紧
