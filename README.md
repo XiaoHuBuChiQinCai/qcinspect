@@ -10,7 +10,9 @@
 
 ```
 C:\qcinspect
-├── docker-compose.yml        一键启动：PostgreSQL 16 + MinIO + 后端
+├── docker-compose.yml        本地开发：PostgreSQL 16 + MinIO + 后端（不含前端页面）
+├── docker-compose.prod.yml   生产部署：PG + 后端 + Nginx 托管 PC 页面，适配 2C2G
+├── .env.example              生产环境变量模板（复制成 .env 后改密码）
 ├── scripts\
 │   └── smoke.py              端到端冒烟测试（登录→建单→提交→审核→导出）
 ├── db\
@@ -21,7 +23,8 @@ C:\qcinspect
 │   ├── V5__review_and_role.sql      增量：审核闭环 + 审核员角色 + 明细量具提示
 │   └── V6__notice.sql               增量：站内通知（审核退回 / 让步放行）
 ├── docs\
-│   └── API.md                接口清单
+│   ├── API.md                接口清单
+│   └── DEPLOY.md             部署指南：镜像选型、2G 内存账、swap 与 OOM、小程序 HTTPS
 ├── qc-server\                后端
 │   ├── pom.xml
 │   ├── Dockerfile
@@ -35,7 +38,7 @@ C:\qcinspect
 │   └── src\test\java\com\qc\inspect\
 │       ├── judge\            ItemJudgeTest / InspectionJudgeTest
 │       └── auth\             JwtUtilTest
-├── qc-pc\                    PC 端（Vue 3 + Vite + Element Plus）
+├── qc-pc\                    PC 端（Vue 3 + Vite + Element Plus），含 Dockerfile 与 nginx.conf
 └── qc-mobile\                移动端（uni-app，HBuilderX 直接打开）
 ```
 
@@ -81,6 +84,11 @@ docker compose down -v         # 停止并清空数据（数据库 + 照片）
 ```
 
 生产部署前必须改掉这三个：`DB_PASSWORD`、`ADMIN_PASSWORD`、`JWT_SECRET`（写进 `.env` 或环境变量，`docker compose` 会自动读同名 shell 变量）。
+
+> **本编排只起后端和数据库，8080 上没有 PC 页面**（后端不托管前端静态文件）。
+> 本地开发时 PC 端另行 `npm run dev`（见方式 B）。
+> 要一次性起「PG + 后端 + PC 页面」的完整环境，用 `docker-compose.prod.yml`，
+> 部署到云服务器的完整步骤（含镜像选型、2G 内存怎么分配、构建 OOM 怎么躲）见 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
 
 > 用 JDK 21 跑**是硬要求**，不是建议。项目已用 Maven 3.9.9 + JDK 21 完整编译验证通过。
 > 用 JDK 23 及以上构建会踩一个坑：javac 从 23 起默认不再隐式发现 classpath 上的注解处理器，Lombok 会静默失效，
@@ -203,6 +211,7 @@ BUILD SUCCESS
 | 后端全量 | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
 | 单元 + 集成测试 | `mvn test`（含嵌入式 PostgreSQL） | **71 / 71 通过** |
 | 6 个 SQL 脚本 | 括号配平 + 幂等性核对 + **在真库上实际执行过**（集成测试） | 全部通过 |
+| PC 端生产构建 | `npm install` + `npm run build`（Node 22.22.2） | **成功**，dist 1.6 MB，主包 gzip 371 KB |
 | PC + 移动端 21 个 `.vue` | 模板标签配平 + `node --check` 校验 script | **21 / 21 通过**（`qc-mobile/App.vue` 无 template，只校验 script） |
 | Docker 编排 | `docker-compose.yml` 结构、脚本挂载顺序 | 只做了结构与 YAML 校验，**本机无 Docker，没实跑过** |
 

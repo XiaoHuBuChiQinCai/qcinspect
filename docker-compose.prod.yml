@@ -1,0 +1,92 @@
+# 工件质检系统 —— 生产编排（2 核 2G 轻量服务器）
+#
+# 与根目录 docker-compose.yml 的区别：
+#   1. 去掉 MinIO。2G 内存塞不下 PG + Java + MinIO，照片直接落宿主机磁盘卷
+#   2. 加 web 容器（Nginx）托管 PC 端并反代 /api —— 后端本身不提供静态页面
+#   3. 全部容器加 mem_limit，并显式给 JVM -Xmx。不加会出人命：
+#      Dockerfile 里是 -XX:MaxRAMPercentage=70，宿主 2G 时 JVM 会认领 1.4G 堆，
+#      PG 再要 200M+，机器直接开始 swap 直到被 OOM killer 干掉
+#   4. 只对外暴露 80。数据库和 API 端口都不映射到宿主机
+#
+# 用法：
+#   cp .env.example .env      然后改掉 DB_PASSWORD / JWT_SECRET
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# 注意：2G 机器上直接 build 后端镜像大概率被 OOM kill（Maven 编译要吃 1G+）。
+# 先看 docs/DEPLOY.md 里「在服务器上构建」那一节，加 swap 或本地构建后传镜像。
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: qc-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qcinspect
+      POSTGRES_USER: qc
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-qcpass}
+      TZ: Asia/Shanghai
+      # 小机器上让 PG 把统计信息留在内存里，减少磁盘抖动
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    # 默认配置是按「有多少内存吃多少」，2G 机器上必须压住
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=384MB
+      - -c
+      - max_connections=50
+      - -c
+      - work_mem=4MB
+    mem_limit: 512m
+    volumes:
+      - qc-pgdata:/var/lib/postgresql/data
+      # 挂整个目录，靠 V1..V6 的字典序执行；新增 V7 只要文件名还带 V 前缀就自动跟上
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qc -d qcinspect"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  app:
+    build:
+      context: ./qc-server
+    container_name: qc-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: qcinspect
+      DB_USER: qc
+      DB_PASSWORD: ${DB_PASSWORD:-qcpass}
+      # 至少 32 字节，不够长度服务会直接启动失败（这是故意的）
+      JWT_SECRET: ${JWT_SECRET:-qcinspect-prod-secret-change-me-please-0123456789}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      # 照片落本地卷：2G 机器不跑 MinIO，也省掉一次对象存储的运维
+      STORAGE_TYPE: local
+      STORAGE_DIR: /app/data/files
+      # 覆盖 Dockerfile 里的 MaxRAMPercentage=70
+      JAVA_OPTS: "-Xmx512m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC -Dfile.encoding=UTF-8"
+    mem_limit: 900m
+    volumes:
+      - qc-files:/app/data/files
+
+  web:
+    build:
+      context: ./qc-pc
+    container_name: qc-web
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+    mem_limit: 128m
+
+volumes:
+  qc-pgdata:
+  qc-files:

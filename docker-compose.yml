@@ -1,4 +1,4 @@
-# 工件质检系统 —— 一键启动
+# 工件质检系统 —— 本地开发编排（带 MinIO，不含前端）
 #
 #   docker compose up -d --build      首次启动（会自动建库、跑全部 DDL、装演示数据）
 #   docker compose logs -f app        看后端日志
@@ -6,9 +6,14 @@
 #   docker compose down -v            停止并清空数据（含 pgdata 与照片）
 #
 # 起来之后：
-#   PC       http://localhost:8080        admin / admin123
-#   移动 H5  用 HBuilderX 跑 qc-mobile，接口地址指向 http://<本机 IP>:8080/api
-#   MinIO    控制台 http://localhost:9001  minioadmin / minioadmin
+#   后端接口  http://localhost:8080/api   admin / admin123
+#   PC 前端   cd qc-pc && npm i && npm run dev   →  http://localhost:5173（vite 代理到 8080）
+#   移动 H5   用 HBuilderX 跑 qc-mobile，接口地址指向 http://<本机 IP>:8080/api
+#   MinIO     控制台 http://localhost:9001  minioadmin / minioadmin
+#
+# 本文件只给开发用：后端不托管前端静态文件，8080 上只有 API。
+# 要一次性起「PG + 后端 + PC 页面」的完整环境（生产/轻量服务器），用 docker-compose.prod.yml，
+# 见 docs/DEPLOY.md。
 #
 # 冒烟测试：python3 scripts/smoke.py
 
