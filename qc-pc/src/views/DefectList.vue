@@ -150,11 +150,12 @@ async function loadPareto() {
 }
 
 async function dispose(row, disposition, status) {
+  // 操作人一律以登录态为准（后端 UserContext 优先取 token），前端不再传这个名字
   if (disposition === 'REWORK' && status === 'PROCESSING') {
     const { value } = await ElMessageBox.prompt('返工说明（可留空）', '开始返工', { inputPlaceholder: '返工工序 / 负责人' })
-    await http.post(`/defects/${row.id}/dispose`, { disposition, status, note: value, operator: '当前用户' })
+    await http.post(`/defects/${row.id}/dispose`, { disposition, status, note: value })
   } else {
-    await http.post(`/defects/${row.id}/dispose`, { disposition, status, operator: '当前用户' })
+    await http.post(`/defects/${row.id}/dispose`, { disposition, status })
   }
   ElMessage.success('已提交处置')
   await load()

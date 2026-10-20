@@ -133,7 +133,20 @@ export const api = {
   dispose: (id, disposition, status, note) => request(`/defects/${id}/dispose`, {
     method: 'POST',
     data: { disposition, status, note }
-  })
+  }),
+
+  /** 让步接收：理由与授权人必填，后端会校验，DB 还有 CHECK 约束兜底 */
+  concession: (id, reason, approvedBy) => request(`/defects/${id}/concession`, {
+    method: 'POST',
+    data: { reason, approvedBy }
+  }),
+
+  // ---------- 通知 ----------
+  notices: (unreadOnly, limit) =>
+    request(`/notices?unreadOnly=${!!unreadOnly}&limit=${limit || 20}`),
+  noticeSummary: () => request('/notices/summary'),
+  readNotice: id => request(`/notices/${id}/read`, { method: 'POST' }),
+  readAllNotices: () => request('/notices/read-all', { method: 'POST' })
 }
 
 /** 单张图片上传，返回 Promise */

@@ -18,7 +18,8 @@ C:\qcinspect
 │   ├── V2__piece_and_lock.sql       增量：件粒度 + 提交锁定 + 操作日志
 │   ├── V3__standard_bool_config.sql 增量：标准项的可覆写布尔合格值
 │   ├── V4__gauge_disposition_trace.sql 增量：量具 + 不良处置 + 不良代码 + 出货追溯
-│   └── V5__review_and_role.sql      增量：审核闭环 + 审核员角色 + 明细量具提示
+│   ├── V5__review_and_role.sql      增量：审核闭环 + 审核员角色 + 明细量具提示
+│   └── V6__notice.sql               增量：站内通知（审核退回 / 让步放行）
 ├── docs\
 │   └── API.md                接口清单
 ├── qc-server\                后端
@@ -28,7 +29,7 @@ C:\qcinspect
 │   │   ├── judge\            ★ 判定引擎（纯 Java，无框架依赖，有完整单测）
 │   │   ├── entity\           14 个实体
 │   │   ├── mapper\           MyBatis-Plus Mapper
-│   │   ├── service\          建单快照 / 提交判定 / 审核流转 / 标准配置 / 量具校验 / 处置流转 / 追溯 / 待办聚合 / CSV 导出
+│   │   ├── service\          建单快照 / 提交判定 / 审核流转 / 标准配置 / 量具校验 / 处置流转 / 追溯 / 待办聚合 / 站内通知 / CSV 导出
 │   │   ├── controller\       REST 接口
 │   │   └── common\           统一返回、异常处理
 │   └── src\test\java\com\qc\inspect\
@@ -38,7 +39,7 @@ C:\qcinspect
 └── qc-mobile\                移动端（uni-app，HBuilderX 直接打开）
 ```
 
-> V2~V5 里的 DDL 全部写成 `IF NOT EXISTS` / `DROP ... IF EXISTS`，可以重复执行。
+> V2~V6 里的 DDL 全部写成 `IF NOT EXISTS` / `DROP ... IF EXISTS`，可以重复执行。
 > 所以新库和老库的升级路径是同一条：按文件名顺序跑一遍就行，不需要区分「这是新库还是旧库」。
 
 ---
@@ -61,7 +62,7 @@ docker compose up -d --build
 | MinIO 控制台 | http://localhost:9001 | `minioadmin` / `minioadmin` |
 | PostgreSQL | localhost:5432 / 库 `qcinspect` | `qc` / `qcpass` |
 
-数据库初始化是自动的：`db/` 下 V1~V5 按顺序挂进 PostgreSQL 的 `docker-entrypoint-initdb.d`，首次启动时执行一遍，演示数据（法兰盘 + 标准 + 量具 + 不良代码 + 出货）一并建好。
+数据库初始化是自动的：`db/` 下 V1~V6 按顺序挂进 PostgreSQL 的 `docker-entrypoint-initdb.d`，首次启动时执行一遍，演示数据（法兰盘 + 标准 + 量具 + 不良代码 + 出货）一并建好。
 
 跑一遍端到端冒烟测试，验证整条链路：
 
@@ -160,7 +161,7 @@ npm run dev
 
 ## 三、已经验证过的部分
 
-### 1. 单元测试 + 集成测试：70 个，`mvn test` 一条命令跑完
+### 1. 单元测试 + 集成测试：71 个，`mvn test` 一条命令跑完
 
 ```bash
 cd qc-server
@@ -168,7 +169,7 @@ mvn test
 ```
 
 ```
-Tests run: 70, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 71, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
@@ -177,9 +178,9 @@ BUILD SUCCESS
 | `ItemJudgeTest` | 38 | 四种类型的判定、边界值、测点数量、布尔项合格值方向 | < 0.1 s |
 | `InspectionJudgeTest` | 16 | 两层判定、允收数语义、关键项提示、行数与件数不混用 | < 0.1 s |
 | `JwtUtilTest` | 9 | 验签、篡改、换密钥、过期、弱密钥、BCrypt | < 1 s |
-| `InspectionFlowIT` | 7 | **真实 PostgreSQL + 真实 HTTP + 真实 JWT**：建单 → 填报 → 提交 → 锁定 → 审核归档 → 退回 → 导出 → 待办 | ~ 20 s |
+| `InspectionFlowIT` | 8 | **真实 PostgreSQL + 真实 HTTP + 真实 JWT**：建单 → 填报 → 提交 → 锁定 → 审核归档 → 退回 → 导出 → 待办 → 退回通知与越权读拦截 | ~ 24 s |
 
-集成测试用 `io.zonky.test` 的嵌入式 PostgreSQL 起一个真库，按 V1 → V5 顺序执行仓库里的建表脚本，再用 `TestRestTemplate` 走完整的 HTTP + JWT 链路。**不需要 Docker**，`mvn test` 直接跑；`*IT` 已在 surefire 里显式纳入，CI 不会漏。
+集成测试用 `io.zonky.test` 的嵌入式 PostgreSQL 起一个真库，按 V1 → V6 顺序执行仓库里的建表脚本，再用 `TestRestTemplate` 走完整的 HTTP + JWT 链路。**不需要 Docker**，`mvn test` 直接跑；`*IT` 已在 surefire 里显式纳入，CI 不会漏。
 
 为什么不用 H2 图省事：本项目用了 `jsonb`、`timestamptz`、带 `WHERE` 的部分唯一索引和窗口函数，H2 的 PostgreSQL 兼容模式跑不过去；就算跑过了也不能证明生产能跑。宁可多下一个几十兆的二进制包。
 
@@ -200,9 +201,9 @@ BUILD SUCCESS
 | 范围 | 方式 | 结果 |
 |---|---|---|
 | 后端全量 | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
-| 单元 + 集成测试 | `mvn test`（含嵌入式 PostgreSQL） | **70 / 70 通过** |
-| 5 个 SQL 脚本 | 括号配平 + 幂等性核对 + **在真库上实际执行过**（集成测试） | 全部通过 |
-| PC + 移动端 20 个 `.vue` | 模板标签配平 + `node --check` 校验 script | 19 通过，`qc-mobile/App.vue` 无 template 属正常 |
+| 单元 + 集成测试 | `mvn test`（含嵌入式 PostgreSQL） | **71 / 71 通过** |
+| 6 个 SQL 脚本 | 括号配平 + 幂等性核对 + **在真库上实际执行过**（集成测试） | 全部通过 |
+| PC + 移动端 21 个 `.vue` | 模板标签配平 + `node --check` 校验 script | **21 / 21 通过**（`qc-mobile/App.vue` 无 template，只校验 script） |
 | Docker 编排 | `docker-compose.yml` 结构、脚本挂载顺序 | 只做了结构与 YAML 校验，**本机无 Docker，没实跑过** |
 
 > 现在唯一还悬着的是 Docker 那条路：`docker compose up` 里的 `docker-entrypoint-initdb.d` 用 psql 执行脚本，与集成测试用的 Spring 脚本执行器不是同一条路径（这正是缺陷 1 的成因），所以两者都值得各跑一次。
@@ -380,21 +381,23 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 | `qc_defect_code` | 不良代码字典，帕累托的统计维度 |
 | `qc_shipment` | 出货记录，追溯的出向 |
 | `qc_image` | 检验照片，本地盘或 MinIO |
+| `qc_notice` | 站内通知，审核退回与让步放行主动落到接收人待办 |
 | `sys_user` | 用户（BCrypt 口令，ADMIN / INSPECTOR / REVIEWER） |
 
 ---
 
 ## 六、下一步
 
-已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出（检验单/不良/明细/帕累托/日合格率）、移动端量具选择·现场拍照·报告查看·续填草稿、待办聚合与角标、Docker 一键启动、70 个测试（含真库集成测试）、端到端冒烟脚本。
+已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出（检验单/不良/明细/帕累托/日合格率）、移动端量具选择·现场拍照·报告查看·续填草稿、待办聚合与角标、站内通知与审核退回主动推送、移动端让步接收、Docker 一键启动、71 个测试（含真库集成测试）、端到端冒烟脚本。
 
 按优先级还剩：
 
 1. **Docker 那条路实跑一次**：集成测试已经用真 PostgreSQL 跑通全链路，但 `docker compose up` 走的是 psql 执行脚本，是另一条路径。找台有 Docker 的机器跑一遍 `docker compose up -d --build && python3 scripts/smoke.py`
 2. **合格率口径**：页面和导出都同时给单级与件级，接真实客户后要确认他们要哪个（大概率要件级，但要客户自己点头）
-3. **消息通知**：审核退回后检验员现在只能靠待办角标发现，缺一条主动推送（企业微信/短信）
-4. **让步接收在移动端缺失**：手机端只做了返工/报废/退货，让步接收要填理由和授权人，得回 PC
-5. **单点登录与组织架构**：现在账号是本地表，接客户环境通常要对接他们的 AD / 企业微信通讯录
+3. **通知的出站通道**：站内通知已经闭环（PC 顶栏铃铛 + 移动端未读横幅，60 秒轮询），
+   但人不在系统里时仍然收不到。要真正做到「推到人」，下一步接企业微信应用消息或短信，
+   现在的 `qc_notice` 就是那条出站队列的源
+4. **单点登录与组织架构**：现在账号是本地表，接客户环境通常要对接他们的 AD / 企业微信通讯录
 
 暂不做：AQL 比例抽样、SPC 控制图、CPK 数值（样本量不足时算出来是错的，宁可不给）。
 
@@ -402,7 +405,7 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 
 ## 七、注意
 
-- **升级**：V2~V5 全部写成幂等 DDL（`ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS` / `CREATE INDEX IF NOT EXISTS`），按 V1 → V5 顺序执行即可，新库老库同一条路径。**但 V1 不是幂等的**（建表用的是普通 `CREATE TABLE`），已经跑过 V1 的库不要再跑一遍
+- **升级**：V2~V5 全部写成幂等 DDL（`ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS` / `CREATE INDEX IF NOT EXISTS`），按 V1 → V6 顺序执行即可，新库老库同一条路径。**但 V1 不是幂等的**（建表用的是普通 `CREATE TABLE`），已经跑过 V1 的库不要再跑一遍
 - **认证**：除 `/api/auth/login`、`/api/images/{id}/raw`、`/actuator/health` 外，所有接口都要 `Authorization: Bearer <token>`，否则返回 401
 - **权限**：主数据维护（标准/量具/检验项/不良代码）与用户管理要 `ADMIN`；审核/归档/作废要 `ADMIN` 或 `REVIEWER`；越权返回 403，前端的菜单隐藏只是体验，真正的边界在 `@PreAuthorize`
 - **JWT 密钥**：`qc.jwt.secret` 至少 32 字节，默认值是开发用的，上线必须用 `JWT_SECRET` 覆盖（启动时会校验长度，不够直接报错）

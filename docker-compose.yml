@@ -33,6 +33,7 @@ services:
       - ./db/V3__standard_bool_config.sql:/docker-entrypoint-initdb.d/03_v3_bool.sql:ro
       - ./db/V4__gauge_disposition_trace.sql:/docker-entrypoint-initdb.d/04_v4_gauge.sql:ro
       - ./db/V5__review_and_role.sql:/docker-entrypoint-initdb.d/05_v5_review.sql:ro
+      - ./db/V6__notice.sql:/docker-entrypoint-initdb.d/06_v6_notice.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U qc -d qcinspect"]
       interval: 5s

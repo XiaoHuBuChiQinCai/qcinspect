@@ -71,6 +71,7 @@ public class InspectionService {
     private final QcDefectMapper defectMapper;
     private final QcInspectionLogMapper logMapper;
     private final GaugeService gaugeService;
+    private final NoticeService noticeService;
     private final ObjectMapper objectMapper;
 
     // ==================== 建单（含标准快照） ====================
@@ -421,6 +422,13 @@ public class InspectionService {
             defectMapper.delete(new LambdaQueryWrapper<QcDefect>()
                     .eq(QcDefect::getInspectionId, inspectionId));
             writeLog(inspectionId, "REJECT", from, "DRAFT", operator, note, "审核退回：" + note);
+
+            // 退回是一次需要对方动作的事件：不主动落到录入人的通知里，
+            // 单子就会一直躺在 DRAFT，而检验员在产线上永远不会知道
+            noticeService.push(ins.getCreatedBy(), NoticeService.TYPE_REVIEW_REJECT,
+                    "检验单被退回：" + ins.getInspectionNo(),
+                    note,
+                    "INSPECTION", inspectionId, ins.getInspectionNo());
         }
 
         ins.setReviewedBy(operator);

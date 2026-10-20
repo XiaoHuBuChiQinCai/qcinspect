@@ -20,6 +20,35 @@
       <el-header class="header">
         <span class="dept">品质管理部</span>
         <div class="spacer" />
+
+        <!-- 通知：审核退回、让步放行这类「要你动一下」的事件从后端主动推到这里 -->
+        <el-popover v-model:visible="noticeVisible" placement="bottom-end" :width="380" trigger="click" @show="loadNotices">
+          <template #reference>
+            <span class="bell">
+              <el-badge :value="unread" :hidden="!unread" :max="99">
+                <span class="bell-text">通知</span>
+              </el-badge>
+            </span>
+          </template>
+          <div class="notice-head">
+            <span>未读 {{ unread }} 条</span>
+            <el-button link type="primary" size="small" :disabled="!unread" @click="readAll">全部已读</el-button>
+          </div>
+          <div class="notice-list">
+            <div v-if="!notices.length" class="notice-empty">没有新通知</div>
+            <div
+              v-for="n in notices"
+              :key="n.id"
+              :class="['notice', n.readFlag ? 'read' : '']"
+              @click="openNotice(n)"
+            >
+              <div class="n-title">{{ n.title }}</div>
+              <div v-if="n.content" class="n-content">{{ n.content }}</div>
+              <div class="n-time">{{ n.createdAt }}</div>
+            </div>
+          </div>
+        </el-popover>
+
         <el-dropdown @command="onCommand">
           <span class="user">
             {{ user.realName || user.username }}
@@ -59,10 +88,10 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import http, { clearSession, getStoredUser } from './api/http'
+import http, { clearSession, getStoredUser, getToken } from './api/http'
 
 const route = useRoute()
 const router = useRouter()
@@ -81,6 +110,60 @@ const roleType = computed(
 const pwdVisible = ref(false)
 const pwdSaving = ref(false)
 const pwd = reactive({ oldPassword: '', newPassword: '', confirm: '' })
+
+// ---------------- 通知 ----------------
+const unread = ref(0)
+const notices = ref([])
+const noticeVisible = ref(false)
+let noticeTimer = null
+
+/** 角标：轮询用的，失败不弹框（silent），否则后端一抖每分钟糊一个错误提示 */
+async function loadNoticeSummary() {
+  if (!getToken()) return
+  try {
+    const r = await http.get('/notices/summary', { silent: true })
+    unread.value = r?.unread || 0
+  } catch {
+    // 角标是锦上添花，取不到就保持原值
+  }
+}
+
+async function loadNotices() {
+  if (!getToken()) return
+  notices.value = await http.get('/notices', { params: { limit: 20 } })
+}
+
+async function openNotice(n) {
+  if (!n.readFlag) {
+    await http.post(`/notices/${n.id}/read`)
+    n.readFlag = 1
+    unread.value = Math.max(0, unread.value - 1)
+  }
+  noticeVisible.value = false
+  if (n.bizType === 'INSPECTION' && n.bizId) {
+    router.push(`/inspection/${n.bizId}`)
+  } else if (n.bizType === 'DEFECT') {
+    router.push('/defects')
+  }
+}
+
+async function readAll() {
+  await http.post('/notices/read-all')
+  notices.value.forEach(n => {
+    n.readFlag = 1
+  })
+  unread.value = 0
+}
+
+onMounted(() => {
+  loadNoticeSummary()
+  // 质检现场没有推送通道，用轮询兜底：一分钟一次足够，退回来的单不会等半小时才被看见
+  noticeTimer = setInterval(loadNoticeSummary, 60000)
+})
+
+onUnmounted(() => {
+  if (noticeTimer) clearInterval(noticeTimer)
+})
 
 async function onCommand(cmd) {
   if (cmd === 'pwd') {
@@ -126,4 +209,20 @@ html, body, #app { height: 100%; margin: 0; }
 .dept { color: #606266; }
 .spacer { flex: 1; }
 .user { cursor: pointer; color: #303133; display: inline-flex; align-items: center; gap: 6px; outline: none; }
+
+/* ---- 通知 ---- */
+.bell { cursor: pointer; margin-right: 18px; outline: none; }
+.bell-text { display: inline-block; padding: 0 10px; font-size: 13px; color: #606266; line-height: 22px; }
+.notice-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 8px; border-bottom: 1px solid var(--el-border-color-lighter); font-size: 13px;
+}
+.notice-list { max-height: 360px; overflow-y: auto; }
+.notice { padding: 10px 4px; border-bottom: 1px solid var(--el-border-color-lighter); cursor: pointer; }
+.notice:hover { background: var(--el-fill-color-light); }
+.notice.read { opacity: .6; }
+.n-title { font-size: 13px; font-weight: 500; color: var(--el-text-color-primary); }
+.n-content { font-size: 12px; color: var(--el-text-color-regular); margin-top: 4px; line-height: 1.5; }
+.n-time { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 4px; }
+.notice-empty { text-align: center; color: var(--el-text-color-secondary); font-size: 13px; padding: 24px 0; }
 </style>

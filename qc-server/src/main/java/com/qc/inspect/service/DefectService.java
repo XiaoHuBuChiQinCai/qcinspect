@@ -31,6 +31,7 @@ public class DefectService {
 
     private final QcDefectMapper defectMapper;
     private final QcInspectionMapper inspectionMapper;
+    private final NoticeService noticeService;
 
     public List<QcDefect> list(Long inspectionId, String status) {
         return defectMapper.selectList(new LambdaQueryWrapper<QcDefect>()
@@ -108,6 +109,14 @@ public class DefectService {
         d.setDispositionBy(approvedBy);
         d.setDispositionAt(LocalDateTime.now());
         defectMapper.updateById(d);
+
+        // 检验员原本可能正等着返工，特采放行必须让他知道，否则会白干一道工序
+        QcInspection ins = d.getInspectionId() == null ? null : inspectionMapper.selectById(d.getInspectionId());
+        String no = ins == null ? null : ins.getInspectionNo();
+        noticeService.push(d.getCreatedBy(), NoticeService.TYPE_CONCESSION,
+                "不良已让步接收：" + (no == null ? d.getDefectName() : no),
+                "第 " + d.getPieceNo() + " 件「" + d.getDefectName() + "」由 " + approvedBy + " 批准让步放行，无需处置。理由：" + reason,
+                "DEFECT", d.getId(), no);
         return d;
     }
 

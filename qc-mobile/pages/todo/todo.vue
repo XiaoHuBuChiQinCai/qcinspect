@@ -5,6 +5,12 @@
       <text class="link" @click="load">刷新</text>
     </view>
 
+    <!-- 审核退回原来只躺在列表里，人不主动翻就看不见；这条横幅是主动推的那一半 -->
+    <view v-if="noticeUnread" class="notice-bar" @click="goNotice">
+      <text class="nb-text">有 {{ noticeUnread }} 条新通知</text>
+      <text class="nb-link">查看 ›</text>
+    </view>
+
     <view class="summary">
       <view class="stat">
         <text class="num">{{ summary.pendingReview || 0 }}</text>
@@ -80,7 +86,10 @@
             size="mini"
             @click="finish(d)"
           >标记完成</button>
-          <button v-else class="btn primary" size="mini" @click="dispose(d)">处置</button>
+          <template v-else>
+            <button class="btn warn" size="mini" @click="openConcession(d)">让步接收</button>
+            <button class="btn primary" size="mini" @click="dispose(d)">处置</button>
+          </template>
         </view>
       </view>
 
@@ -120,6 +129,31 @@
       </view>
       <view v-if="!gauges.length" class="empty small">量具都在有效期内</view>
     </view>
+
+    <!-- ============ 让步接收（理由 + 授权人，两个字段 modal 装不下，自己画） ============ -->
+    <view v-if="conVisible" class="mask" @click="conVisible = false">
+      <view class="dialog" @click.stop>
+        <text class="dialog-title">让步接收审批</text>
+        <text class="dialog-tip">
+          让步接收是 ISO 体系里唯一需要授权人签字放行的处置方式，理由会被审核追问。
+        </text>
+        <view class="dlg-row">
+          <text class="dlg-lab">待处置</text>
+          <text class="dlg-val">第 {{ conTarget && conTarget.pieceNo }} 件 · {{ conTarget && conTarget.defectName }}</text>
+        </view>
+        <textarea
+          v-model="conReason"
+          class="ta"
+          :maxlength="500"
+          placeholder="如：该尺寸超差 0.02mm，客户已确认不影响装配"
+        />
+        <input v-model="conApprover" class="ipt" placeholder="授权人（品质经理姓名）" />
+        <view class="dialog-actions">
+          <button class="btn ghost" size="mini" @click="conVisible = false">取消</button>
+          <button class="btn primary" size="mini" @click="doConcession">确认让步</button>
+        </view>
+      </view>
+    </view>
   </view>
 </template>
 
@@ -139,6 +173,7 @@ const reviews = ref([])
 const defects = ref([])
 const mine = ref({ drafts: [], rejected: [] })
 const gauges = ref([])
+const noticeUnread = ref(0)
 const tab = ref('review')
 const loading = ref(false)
 
@@ -165,9 +200,15 @@ async function load() {
     const m = await api.todoMine()
     mine.value = { drafts: m.drafts || [], rejected: m.rejected || [] }
     gauges.value = await api.todoGauges()
+    const ns = await api.noticeSummary()
+    noticeUnread.value = ns.unread || 0
   } finally {
     loading.value = false
   }
+}
+
+function goNotice() {
+  uni.navigateTo({ url: '/pages/notice/notice' })
 }
 
 function switchTab(k) {
@@ -249,6 +290,33 @@ function finish(d) {
   })
 }
 
+// 让步接收走单独接口：后端 dispose 遇到 CONCESSION 会直接拒绝，
+// 因为这条路径必须理由和授权人同时存在，不能用「处置」的口子绕过去
+const conVisible = ref(false)
+const conReason = ref('')
+const conApprover = ref('')
+const conTarget = ref(null)
+
+function openConcession(d) {
+  conTarget.value = d
+  conReason.value = ''
+  conApprover.value = ''
+  conVisible.value = true
+}
+
+async function doConcession() {
+  const reason = conReason.value.trim()
+  const approver = conApprover.value.trim()
+  if (!reason || !approver) {
+    uni.showToast({ title: '理由和授权人都是必填', icon: 'none' })
+    return
+  }
+  await api.concession(conTarget.value.id, reason, approver)
+  conVisible.value = false
+  uni.showToast({ title: '已记录让步', icon: 'success' })
+  load()
+}
+
 function statusText(s) {
   return { PENDING: '待处理', PROCESSING: '处理中', DONE: '已完成', WAIVED: '已让步' }[s] || s || ''
 }
@@ -266,8 +334,15 @@ onShow(load)
 .title { font-size: 34rpx; font-weight: 500; }
 .link { color: #1989fa; font-size: 28rpx; }
 
-.summary { display: flex; background: #fff; border-radius: 16rpx; padding: 24rpx 0; margin-bottom: 20rpx; }
-.stat { flex: 1; text-align: center; }
+.notice-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #eef5ff; border: 1rpx solid #cfe1ff; border-radius: 12rpx;
+  padding: 18rpx 22rpx; margin-bottom: 20rpx;
+}
+.nb-text { font-size: 26rpx; color: #1a6fd4; }
+.nb-link { font-size: 26rpx; color: #1989fa; }
+
+.summary { display: flex; background: #fff; border-radius: 16rpx; padding: 24rpx 0; margin-bottom: 20rpx; }.stat { flex: 1; text-align: center; }
 .num { display: block; font-size: 40rpx; font-weight: 600; color: #303133; }
 .num.warn { color: #e6a23c; }
 .lab { font-size: 22rpx; color: #8a9199; }
@@ -302,9 +377,32 @@ onShow(load)
 .actions { display: flex; justify-content: flex-end; gap: 16rpx; margin-top: 20rpx; }
 .btn { margin: 0; border-radius: 10rpx; font-size: 26rpx; }
 .btn.primary { background: #1989fa; color: #fff; }
+.btn.warn { background: #fdf6ec; color: #b88230; border: 1rpx solid #f0d9b5; }
 .btn.ghost { background: #fff; color: #c45656; border: 1rpx solid #f3c4c4; }
 
 .section { font-size: 26rpx; color: #5a6b7b; margin: 24rpx 0 14rpx; }
 .empty { text-align: center; color: #a8abb2; padding: 100rpx 0; font-size: 26rpx; }
 .empty.small { padding: 40rpx 0; }
+
+/* ---- 让步接收弹层 ---- */
+.mask {
+  position: fixed; left: 0; top: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; z-index: 99;
+}
+.dialog { width: 620rpx; background: #fff; border-radius: 20rpx; padding: 32rpx; }
+.dialog-title { font-size: 32rpx; font-weight: 600; color: #303133; }
+.dialog-tip { display: block; margin-top: 12rpx; font-size: 23rpx; color: #b88230; line-height: 1.5; }
+.dlg-row { display: flex; align-items: center; gap: 12rpx; margin-top: 20rpx; }
+.dlg-lab { font-size: 24rpx; color: #8a9199; }
+.dlg-val { font-size: 25rpx; color: #303133; }
+.ta {
+  width: 100%; height: 160rpx; margin-top: 20rpx; padding: 16rpx;
+  box-sizing: border-box; background: #f6f8fa; border-radius: 10rpx;
+  font-size: 26rpx; line-height: 1.5;
+}
+.ipt {
+  width: 100%; height: 76rpx; margin-top: 16rpx; padding: 0 16rpx;
+  box-sizing: border-box; background: #f6f8fa; border-radius: 10rpx; font-size: 26rpx;
+}
+.dialog-actions { display: flex; justify-content: flex-end; gap: 16rpx; margin-top: 26rpx; }
 </style>

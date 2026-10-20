@@ -12,6 +12,7 @@ spring:
         - classpath:db/V3__standard_bool_config.sql
         - classpath:db/V4__gauge_disposition_trace.sql
         - classpath:db/V5__review_and_role.sql
+        - classpath:db/V6__notice.sql
       continue-on-error: false
 
 mybatis-plus:

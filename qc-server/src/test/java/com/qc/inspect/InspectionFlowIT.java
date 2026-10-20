@@ -224,6 +224,66 @@ class InspectionFlowIT {
         assertThat(String.valueOf(ins.get("reviewComment"))).contains("照片");
     }
 
+    @Test
+    @Order(8)
+    @DisplayName("审核退回主动通知录入人，通知只能本人读")
+    void rejectNotifiesInspector() {
+        // 换一个真人来录单：管理员自审自退时接收人就是操作人，通知会被刻意跳过，
+        // 这条用例要验的是「别人退给我的单，我能收到」
+        data(post("/api/auth/users", Map.of(
+                "username", "it_inspector",
+                "realName", "集成检验员",
+                "role", "INSPECTOR",
+                "enabled", true,
+                "password", "it123456")));
+
+        String adminToken = token;
+        String inspectorToken = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        assertThat(inspectorToken).isNotBlank();
+
+        Long id;
+        token = inspectorToken;
+        try {
+            id = num(data(post("/api/inspections", Map.of("batchId", batchId, "sampleQty", 1)))
+                    .get("inspectionId"));
+            data(post("/api/inspections/" + id + "/submit",
+                    Map.of("lines", fillCompliant(detail(id)))));
+        } finally {
+            token = adminToken;
+        }
+
+        data(post("/api/inspections/" + id + "/review",
+                Map.of("approve", false, "comment", "第 1 件实测值请附量具编号，否则无法证明数据有效")));
+
+        Long noticeId = null;
+        token = inspectorToken;
+        try {
+            // 退回之后录入人一进 App 就应当看到角标，不必自己去翻待办列表
+            assertThat(num(data(get("/api/notices/summary")).get("unread")))
+                    .as("退回必须产生一条未读通知").isEqualTo(1);
+
+            List<Map<String, Object>> list = asList(get("/api/notices?limit=20").get("data"));
+            assertThat(list).hasSize(1);
+
+            Map<String, Object> n = list.get(0);
+            noticeId = num(n.get("id"));
+            assertThat(n.get("noticeType")).isEqualTo("REVIEW_REJECT");
+            assertThat(num(n.get("bizId"))).as("通知要能点回原单").isEqualTo(id);
+            assertThat(String.valueOf(n.get("title"))).contains("退回");
+            assertThat(String.valueOf(n.get("content"))).contains("量具编号");
+
+            assertThat(num(post("/api/notices/" + noticeId + "/read", Map.of()).get("code"))).isZero();
+            assertThat(num(data(get("/api/notices/summary")).get("unread"))).as("读过的通知不该再计数").isZero();
+        } finally {
+            token = adminToken;
+        }
+
+        // 通知归属按登录态判定：别人的通知对他而言就是不存在
+        assertThat(num(post("/api/notices/" + noticeId + "/read", Map.of()).get("code")))
+                .as("不能读别人的通知").isNotEqualTo(0);
+    }
+
     // ==================== 填报辅助 ====================
 
     /** 按每行的限值/合格值方向造一套必然合格的实测值 */

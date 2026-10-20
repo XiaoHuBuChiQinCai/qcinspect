@@ -47,7 +47,10 @@ http.interceptors.response.use(
     }
     const body = res.data
     if (body && body.code !== 0) {
-      ElMessage.error(body.msg || '请求失败')
+      // silent：轮询类请求（通知角标）失败不该每分钟弹一次错误框，由调用方自己决定要不要提示
+      if (!res.config.silent) {
+        ElMessage.error(body.msg || '请求失败')
+      }
       return Promise.reject(new Error(body.msg || '请求失败'))
     }
     return body.data
@@ -62,7 +65,9 @@ http.interceptors.response.use(
       ElMessage.error(err.response?.data?.msg || '登录已过期，请重新登录')
       return Promise.reject(err)
     }
-    ElMessage.error(err.response?.data?.msg || err.message || '网络异常')
+    if (!err.config?.silent) {
+      ElMessage.error(err.response?.data?.msg || err.message || '网络异常')
+    }
     return Promise.reject(err)
   }
 )

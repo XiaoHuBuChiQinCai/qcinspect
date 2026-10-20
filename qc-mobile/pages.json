@@ -29,6 +29,12 @@
       "style": {
         "navigationBarTitleText": "待办"
       }
+    },
+    {
+      "path": "pages/notice/notice",
+      "style": {
+        "navigationBarTitleText": "通知"
+      }
     }
   ],
   "globalStyle": {

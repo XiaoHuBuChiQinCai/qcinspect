@@ -677,3 +677,37 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 - **被退回**的判定是「当前是草稿 + 历史上出现过 `REJECT`」。改完重新提交后状态变 `SUBMITTED`，自然从待办消失，不需要已读标记
 - **`actionable`** = 待审核 + 待处置 + 我被退回，**不含**量具超期：量具不是单据，混进去会让人误以为积压了几十张单
 - 量具超期单独立一项。超期量具量出来的数据，体系审核直接判无效，它比「有几张单待审」更要紧
+
+---
+
+## 十三、站内通知
+
+审核退回、让步放行这类**需要对方动一下**的事件落在 `qc_notice` 里，由后端主动写入，
+接收人下次进 App / 打开 PC 就能看到。不做全量消息中心：纯告知的推送会稀释角标，
+吵几次之后没人再看，真正要紧的退回反而被淹没。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/notices?unreadOnly=false&limit=20` | 我的通知，未读优先、新的在前；`limit` 上限 100 |
+| GET | `/notices/summary` | `{ "unread": 2 }`，角标轮询只用这一个接口 |
+| POST | `/notices/{id}/read` | 标记已读；不是自己的通知一律返回「通知不存在」 |
+| POST | `/notices/read-all` | 全部已读，返回 `{ "updated": n }` |
+
+`noticeType` 取值：
+
+| 值 | 触发点 | 接收人 |
+|---|---|---|
+| `REVIEW_REJECT` | 审核退回（`InspectionService.review`，`approve=false`） | 检验单 `created_by` |
+| `CONCESSION` | 让步接收审批（`DefectService.concession`） | 不良记录 `created_by` |
+
+`bizType` / `bizId` 用于点击跳转：`INSPECTION` 进检验单，`DEFECT` 进不良处置。
+
+写通知的三个约束：
+
+- **接收人为空或 `anonymous` 不写**，否则定时任务这类无登录态场景会攒出一堆空通知
+- **接收人就是操作人不写**（例如管理员代审自己的单），自说自话的提醒没有意义
+- **不吞异常**：宁可让退回失败，也不要出现「单子退回去了但没人收到通知」——
+  后者在体系上等于异常未通报，比操作失败更难发现。通知与业务主事务一起提交
+
+前端取数方式：PC 顶栏铃铛每 60 秒轮询 `/notices/summary`（失败静默，不弹错误框），
+点开时才拉列表；移动端在待办页顶部显示未读横幅，进「通知」页看列表。
