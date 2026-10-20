@@ -1,6 +1,14 @@
 // 本地调试时改成电脑内网 IP，例如 http://192.168.1.20:8080/api
 // 小程序真机调试需在开发者工具里勾选「不校验合法域名」
+//
+// H5 端走相对路径 /api：线上由 Nginx 同域反代，本地由 vite.config.js 的 proxy 转 8080，
+// 这样换服务器、换域名都不用改代码。小程序 / APP 端没有同域概念，仍用绝对地址。
+// #ifdef H5
+const BASE = '/api'
+// #endif
+// #ifndef H5
 const BASE = 'http://localhost:8080/api'
+// #endif
 
 /**
  * 后端返回的图片地址在本地存储模式下是相对路径（/api/images/1/raw），

@@ -37,5 +37,12 @@
     },
     "usingComponents": true
   },
+  "h5": {
+    "title": "工件质检",
+    "router": {
+      "base": "/h5/",
+      "mode": "hash"
+    }
+  },
   "vueVersion": "3"
 }

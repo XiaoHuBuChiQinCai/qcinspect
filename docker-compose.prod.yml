@@ -86,6 +86,10 @@ services:
     ports:
       - "80:80"
     mem_limit: 128m
+    volumes:
+      # 移动端 H5 产物（服务器上 cd qc-mobile && npm run build:h5 生成）
+      # 只读挂载：改 H5 不需要重建镜像，构建完重启 web 即可
+      - ./qc-mobile/dist/build/h5:/usr/share/nginx/html/h5:ro
 
 volumes:
   qc-pgdata:
