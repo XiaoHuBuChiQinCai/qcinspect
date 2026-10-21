@@ -229,13 +229,48 @@ docker compose -f docker-compose.prod.yml ps              # 看状态
 docker compose -f docker-compose.prod.yml logs -f app     # 跟后端日志
 docker compose -f docker-compose.prod.yml restart app     # 重启后端
 
-# 备份数据库（建议加进 crontab，每天一次）
-docker exec qc-db pg_dump -U qc qcinspect | gzip > ~/backup-$(date +%F).sql.gz
+# 备份（脚本已放到 scripts/backup.sh，crontab 见下一节）
+/root/qc/qcinspect/scripts/backup.sh
 
 # 照片目录备份
 docker run --rm -v qcinspect_qc-files:/data -v ~:/out alpine \
   tar czf /out/files-$(date +%F).tar.gz -C /data .
 ```
+
+### 数据库备份
+
+`scripts/backup.sh` 做三件事：`pg_dump` 打包成 gzip、校验完整性、清掉超过保留期的旧文件。
+为什么不用自定义格式：出事那天往往不是你在操作，接手的人只需要会 `psql`；
+自定义格式要 `pg_restore`、版本对不上还得折腾。体积换恢复简单，值。
+
+```bash
+# 手动跑一次
+cd /root/qc/qcinspect && ./scripts/backup.sh
+# 默认落 /root/qc/backups/qcinspect-YYYYmmdd-HHMMSS.sql.gz，保留 30 天
+# 可用环境变量覆盖：QC_BACKUP_DIR / QC_BACKUP_KEEP_DAYS / QC_DB_CONTAINER
+```
+
+挂 cron（每天凌晨 2 点，日志单独存一份，方便事后查哪天漏了）：
+
+```bash
+chmod +x /root/qc/qcinspect/scripts/backup.sh
+crontab -e
+# 追加：
+0 2 * * * /root/qc/qcinspect/scripts/backup.sh >> /var/log/qc-backup.log 2>&1
+```
+
+**恢复**（先停应用，别在有人录入的时候灌数据）：
+
+```bash
+docker compose -f docker-compose.prod.yml stop app
+gunzip -c /root/qc/backups/qcinspect-20261021-020000.sql.gz \
+  | docker exec -i qc-db psql -U qc -d qcinspect
+docker compose -f docker-compose.prod.yml start app
+```
+
+备份文件留在服务器本地卷上只能防「误删表」，防不了整机丢。真正的异地备份
+需要对象存储（COS）+ `coscmd`，或者定期 `scp` 到另一台机器——这一步没做，
+**别把服务器上的备份当成最终保障**。
 
 **升级**：`git pull` 之后 `docker compose -f docker-compose.prod.yml up -d --build`。
 新增的 `db/V7__*.sql` 不会自动执行——`docker-entrypoint-initdb.d` 只在数据卷为空时跑一次。
