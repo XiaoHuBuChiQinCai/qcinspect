@@ -21,34 +21,112 @@
             </el-form-item>
           </el-col>
           <el-col :span="8">
+            <el-form-item label="抽样方案">
+              <el-select v-model="form.samplingPlan" style="width: 100%" @change="loadPlan">
+                <el-option label="固定抽样（样本量写死在标准上）" value="FIXED" />
+                <el-option label="AQL 抽样（按批量查国标表）" value="AQL" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
             <el-form-item label="抽样方式">
-              <el-select v-model="form.samplingType" style="width: 100%">
+              <el-input v-if="form.samplingPlan === 'AQL'" disabled
+                        model-value="抽检（样本量由批量决定）" />
+              <el-select v-else v-model="form.samplingType" style="width: 100%">
                 <el-option label="全检（批次每件都验）" value="FULL" />
                 <el-option label="抽检（固定抽 N 件）" value="SAMPLE" />
                 <el-option label="免检（不生成检验单）" value="NONE" />
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="8">
-            <el-form-item label="抽样件数">
-              <el-input-number v-model="form.sampleSize" :min="1" :disabled="form.samplingType !== 'SAMPLE'"
-                               style="width: 100%" />
-            </el-form-item>
-          </el-col>
         </el-row>
-        <el-row :gutter="16">
-          <el-col :span="8">
-            <el-form-item label="允收数 Ac">
-              <el-input-number v-model="form.allowedNgCount" :min="0" style="width: 100%" />
-              <div class="hint">允许的不合格<strong>件</strong>数，超过即整批判不合格</div>
-            </el-form-item>
-          </el-col>
-          <el-col :span="16">
-            <el-form-item label="备注">
-              <el-input v-model="form.remark" placeholder="改版原因、依据图纸版本等" />
-            </el-form-item>
-          </el-col>
-        </el-row>
+
+        <!-- AQL：样本量由批量查表得出，标准上不再写死件数 -->
+        <template v-if="form.samplingPlan === 'AQL'">
+          <el-row :gutter="16">
+            <el-col :span="6">
+              <el-form-item label="AQL">
+                <el-select v-model="form.aql" style="width: 100%" @change="loadPlan">
+                  <el-option v-for="a in planOptions.aqls" :key="a" :value="a"
+                             :label="`AQL ${trimNum(a)}`" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="检验水平">
+                <el-select v-model="form.inspectionLevel" style="width: 100%" @change="loadPlan">
+                  <el-option v-for="l in planOptions.levels" :key="l" :value="l"
+                             :label="levelName(l)" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="试算批量">
+                <el-input-number v-model="previewLot" :min="1" style="width: 100%"
+                                 @change="loadPlan" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="6">
+              <el-form-item label="该批抽检">
+                <div v-if="plan.resolved" class="plan-result">
+                  <el-tag size="small" type="success">字码 {{ plan.resolved.codeLetter }}</el-tag>
+                  <span>抽 <b>{{ plan.resolved.sampleSize }}</b> 件，Ac=<b>{{ plan.resolved.acceptQty }}</b></span>
+                </div>
+                <span v-else class="item-sub">{{ plan.hint || '—' }}</span>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
+          <el-form-item label="方案表">
+            <el-table :data="plan.rows" size="small" border max-height="240" style="width: 100%">
+              <el-table-column label="批量区间" min-width="140">
+                <template #default="{ row }">{{ row.lotSizeMin }} ~ {{ row.lotSizeMax }}</template>
+              </el-table-column>
+              <el-table-column prop="codeLetter" label="字码" width="70" align="center" />
+              <el-table-column prop="sampleSize" label="样本量 n" width="90" align="center" />
+              <el-table-column prop="acceptQty" label="接收 Ac" width="90" align="center" />
+              <el-table-column prop="rejectQty" label="拒收 Re" width="90" align="center" />
+              <el-table-column label="" min-width="90" align="center">
+                <template #default="{ row }">
+                  <el-tag v-if="previewLot >= row.lotSizeMin && previewLot <= row.lotSizeMax"
+                          size="small" type="success">试算命中</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div class="hint">
+              GB/T 2828.1-2012 正常检验一次抽样，一般检验水平 II。方案表是数据不是代码，
+              要加别的 AQL 档照国标补行即可（见 db/V7__sampling_plan.sql），
+              历史单据有自己的抽样依据快照，不受影响。
+            </div>
+          </el-form-item>
+
+          <el-form-item label="备注">
+            <el-input v-model="form.remark" placeholder="改版原因、依据图纸版本等" />
+          </el-form-item>
+        </template>
+
+        <!-- 固定抽样：沿用 V1 的老口径 -->
+        <template v-else>
+          <el-row :gutter="16">
+            <el-col :span="8">
+              <el-form-item label="抽样件数">
+                <el-input-number v-model="form.sampleSize" :min="1"
+                                 :disabled="form.samplingType !== 'SAMPLE'" style="width: 100%" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="允收数 Ac">
+                <el-input-number v-model="form.allowedNgCount" :min="0" style="width: 100%" />
+                <div class="hint">允许的不合格<strong>件</strong>数，超过即整批判不合格</div>
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="备注">
+                <el-input v-model="form.remark" placeholder="改版原因、依据图纸版本等" />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </template>
       </el-form>
     </el-card>
 
@@ -234,11 +312,28 @@ const isDraft = ref(true)
 
 const form = reactive({
   standardCode: '',
+  samplingPlan: 'FIXED',
   samplingType: 'FULL',
+  aql: null,
+  inspectionLevel: null,
   sampleSize: 1,
   allowedNgCount: 0,
   remark: ''
 })
+
+/** 方案表里现有哪些档，下拉框据此生成 */
+const planOptions = reactive({ aqls: [], levels: [], planCodes: [] })
+/** 当前 AQL / 检验水平对应的整张对照表 + 试算结果 */
+const plan = reactive({ rows: [], resolved: null, hint: '' })
+const previewLot = ref(300)
+
+function trimNum(v) {
+  return v === null || v === undefined ? '' : Number(v).toString()
+}
+
+function levelName(l) {
+  return { I: '一般检验水平 I（宽）', II: '一般检验水平 II（常用）', III: '一般检验水平 III（严）' }[l] || l
+}
 
 /** 已配置的检验项，每行带 __item 指向主数据 */
 const rows = ref([])
@@ -254,23 +349,53 @@ function typeName(t) {
 async function load() {
   loading.value = true
   try {
-    const [detail, items] = await Promise.all([
+    const [detail, items, opts] = await Promise.all([
       http.get(`/standards/${standardId.value}`),
-      http.get('/items')
+      http.get('/items'),
+      http.get('/sampling-plans/options').catch(() => null)
     ])
     allItems.value = items
+    if (opts) {
+      Object.assign(planOptions, opts)
+    }
     const std = detail.standard
     Object.assign(form, {
       standardCode: std.standardCode,
+      samplingPlan: std.samplingPlan || 'FIXED',
       samplingType: std.samplingType,
+      aql: std.aql ?? (planOptions.aqls[0] ?? null),
+      inspectionLevel: std.inspectionLevel || (planOptions.levels[0] ?? null),
       sampleSize: std.sampleSize,
       allowedNgCount: std.allowedNgCount,
       remark: std.remark
     })
     isDraft.value = std.status === 'DRAFT'
     rows.value = (detail.items || []).map(si => toRow(si))
+    await loadPlan()
   } finally {
     loading.value = false
+  }
+}
+
+/** 取对照表 + 试算批量命中结果。配错的 AQL 档在保存时会被后端拦下，这里只做预览 */
+async function loadPlan() {
+  if (form.samplingPlan !== 'AQL') {
+    plan.rows = []
+    plan.resolved = null
+    plan.hint = ''
+    return
+  }
+  try {
+    const data = await http.get('/sampling-plans', {
+      params: { aql: form.aql, level: form.inspectionLevel, lot: previewLot.value }
+    })
+    plan.rows = data.rows || []
+    plan.resolved = data.resolved || null
+    plan.hint = data.hint || ''
+  } catch (e) {
+    plan.rows = []
+    plan.resolved = null
+    plan.hint = '抽样方案表读取失败'
   }
 }
 
@@ -438,4 +563,5 @@ onMounted(load)
 .num-input { width: 96px; }
 .sep { color: var(--el-text-color-secondary); }
 .unit { font-size: 12px; color: var(--el-text-color-secondary); }
+.plan-result { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 </style>

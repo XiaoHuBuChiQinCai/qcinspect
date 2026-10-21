@@ -21,7 +21,8 @@ C:\qcinspect
 │   ├── V3__standard_bool_config.sql 增量：标准项的可覆写布尔合格值
 │   ├── V4__gauge_disposition_trace.sql 增量：量具 + 不良处置 + 不良代码 + 出货追溯
 │   ├── V5__review_and_role.sql      增量：审核闭环 + 审核员角色 + 明细量具提示
-│   └── V6__notice.sql               增量：站内通知（审核退回 / 让步放行）
+│   ├── V6__notice.sql               增量：站内通知（审核退回 / 让步放行）
+│   └── V7__sampling_plan.sql        增量：AQL 抽样方案（GB/T 2828.1 一般检验水平 II / AQL 2.5）
 ├── docs\
 │   ├── API.md                接口清单
 │   └── DEPLOY.md             部署指南：镜像选型、2G 内存账、swap 与 OOM、小程序 HTTPS
@@ -42,7 +43,7 @@ C:\qcinspect
 └── qc-mobile\                移动端（uni-app），HBuilderX 或 `npm run build:h5` 均可构建
 ```
 
-> V2~V6 里的 DDL 全部写成 `IF NOT EXISTS` / `DROP ... IF EXISTS`，可以重复执行。
+> V2~V7 里的 DDL 全部写成 `IF NOT EXISTS` / `DROP ... IF EXISTS`，可以重复执行。
 > 所以新库和老库的升级路径是同一条：按文件名顺序跑一遍就行，不需要区分「这是新库还是旧库」。
 
 ---
@@ -65,7 +66,7 @@ docker compose up -d --build
 | MinIO 控制台 | http://localhost:9001 | `minioadmin` / `minioadmin` |
 | PostgreSQL | localhost:5432 / 库 `qcinspect` | `qc` / `qcpass` |
 
-数据库初始化是自动的：`db/` 下 V1~V6 按顺序挂进 PostgreSQL 的 `docker-entrypoint-initdb.d`，首次启动时执行一遍，演示数据（法兰盘 + 标准 + 量具 + 不良代码 + 出货）一并建好。
+数据库初始化是自动的：`db/` 下 V1~V7 按顺序挂进 PostgreSQL 的 `docker-entrypoint-initdb.d`，首次启动时执行一遍，演示数据（法兰盘 + 标准 + 量具 + 不良代码 + 出货）一并建好。
 
 跑一遍端到端冒烟测试，验证整条链路：
 
@@ -180,7 +181,7 @@ npm run dev:h5      # http://localhost:5174，/api 已代理到 8080
 
 ## 三、已经验证过的部分
 
-### 1. 单元测试 + 集成测试：71 个，`mvn test` 一条命令跑完
+### 1. 单元测试 + 集成测试：77 个，`mvn test` 一条命令跑完
 
 ```bash
 cd qc-server
@@ -188,7 +189,7 @@ mvn test
 ```
 
 ```
-Tests run: 71, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 77, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
@@ -197,9 +198,10 @@ BUILD SUCCESS
 | `ItemJudgeTest` | 38 | 四种类型的判定、边界值、测点数量、布尔项合格值方向 | < 0.1 s |
 | `InspectionJudgeTest` | 16 | 两层判定、允收数语义、关键项提示、行数与件数不混用 | < 0.1 s |
 | `JwtUtilTest` | 9 | 验签、篡改、换密钥、过期、弱密钥、BCrypt | < 1 s |
-| `InspectionFlowIT` | 8 | **真实 PostgreSQL + 真实 HTTP + 真实 JWT**：建单 → 填报 → 提交 → 锁定 → 审核归档 → 退回 → 导出 → 待办 → 退回通知与越权读拦截 | ~ 24 s |
+| `SamplingPlanServiceTest` | 5 | AQL 抽样表与国标数值逐行比对、批量区间首尾端点、超范围兜底 | < 0.1 s |
+| `InspectionFlowIT` | 9 | **真实 PostgreSQL + 真实 HTTP + 真实 JWT**：建单 → 填报 → 提交 → 锁定 → 审核归档 → 退回 → 导出 → 待办 → 退回通知与越权读拦截 → AQL 抽样取值 | ~ 24 s |
 
-集成测试用 `io.zonky.test` 的嵌入式 PostgreSQL 起一个真库，按 V1 → V6 顺序执行仓库里的建表脚本，再用 `TestRestTemplate` 走完整的 HTTP + JWT 链路。**不需要 Docker**，`mvn test` 直接跑；`*IT` 已在 surefire 里显式纳入，CI 不会漏。
+集成测试用 `io.zonky.test` 的嵌入式 PostgreSQL 起一个真库，按 V1 → V7 顺序执行仓库里的建表脚本，再用 `TestRestTemplate` 走完整的 HTTP + JWT 链路。**不需要 Docker**，`mvn test` 直接跑；`*IT` 已在 surefire 里显式纳入，CI 不会漏。
 
 为什么不用 H2 图省事：本项目用了 `jsonb`、`timestamptz`、带 `WHERE` 的部分唯一索引和窗口函数，H2 的 PostgreSQL 兼容模式跑不过去；就算跑过了也不能证明生产能跑。宁可多下一个几十兆的二进制包。
 
@@ -220,8 +222,8 @@ BUILD SUCCESS
 | 范围 | 方式 | 结果 |
 |---|---|---|
 | 后端全量 | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
-| 单元 + 集成测试 | `mvn test`（含嵌入式 PostgreSQL） | **71 / 71 通过** |
-| 6 个 SQL 脚本 | 括号配平 + 幂等性核对 + **在真库上实际执行过**（集成测试） | 全部通过 |
+| 单元 + 集成测试 | `mvn test`（含嵌入式 PostgreSQL） | **77 / 77 通过** |
+| 7 个 SQL 脚本 | 括号配平 + 幂等性核对 + **在真库上实际执行过**（集成测试） | 全部通过 |
 | PC 端生产构建 | `npm install` + `npm run build`（Node 22.22.2） | **成功**，dist 1.6 MB，主包 gzip 371 KB |
 | PC + 移动端 21 个 `.vue` | 模板标签配平 + `node --check` 校验 script | **21 / 21 通过**（`qc-mobile/App.vue` 无 template，只校验 script） |
 | Docker 编排 | `docker-compose.yml` 结构、脚本挂载顺序 | 只做了结构与 YAML 校验，**本机无 Docker，没实跑过** |
@@ -402,13 +404,14 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 | `qc_shipment` | 出货记录，追溯的出向 |
 | `qc_image` | 检验照片，本地盘或 MinIO |
 | `qc_notice` | 站内通知，审核退回与让步放行主动落到接收人待办 |
+| `qc_sampling_plan` | AQL 抽样方案表，批量 → 字码 → 样本量 n / 允收数 Ac |
 | `sys_user` | 用户（BCrypt 口令，ADMIN / INSPECTOR / REVIEWER） |
 
 ---
 
 ## 六、下一步
 
-已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出（检验单/不良/明细/帕累托/日合格率）、移动端量具选择·现场拍照·报告查看·续填草稿、待办聚合与角标、站内通知与审核退回主动推送、移动端让步接收、Docker 一键启动、71 个测试（含真库集成测试）、端到端冒烟脚本。
+已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出（检验单/不良/明细/帕累托/日合格率）、移动端量具选择·现场拍照·报告查看·续填草稿、待办聚合与角标、站内通知与审核退回主动推送、移动端让步接收、**AQL 抽样（GB/T 2828.1，样本量与允收数按批量查表）**、Docker 一键启动、77 个测试（含真库集成测试）、端到端冒烟脚本。
 
 按优先级还剩：
 
@@ -419,13 +422,13 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
    现在的 `qc_notice` 就是那条出站队列的源
 4. **单点登录与组织架构**：现在账号是本地表，接客户环境通常要对接他们的 AD / 企业微信通讯录
 
-暂不做：AQL 比例抽样、SPC 控制图、CPK 数值（样本量不足时算出来是错的，宁可不给）。
+暂不做：计数型以外的计量型抽样（GB/T 6378）、SPC 控制图、CPK 数值（样本量不足时算出来是错的，宁可不给）。
 
 ---
 
 ## 七、注意
 
-- **升级**：V2~V5 全部写成幂等 DDL（`ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS` / `CREATE INDEX IF NOT EXISTS`），按 V1 → V6 顺序执行即可，新库老库同一条路径。**但 V1 不是幂等的**（建表用的是普通 `CREATE TABLE`），已经跑过 V1 的库不要再跑一遍
+- **升级**：V2~V7 全部写成幂等 DDL（`ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS` / `CREATE INDEX IF NOT EXISTS`），按 V1 → V7 顺序执行即可，新库老库同一条路径。**但 V1 不是幂等的**（建表用的是普通 `CREATE TABLE`），已经跑过 V1 的库不要再跑一遍
 - **认证**：除 `/api/auth/login`、`/api/images/{id}/raw`、`/actuator/health` 外，所有接口都要 `Authorization: Bearer <token>`，否则返回 401
 - **权限**：主数据维护（标准/量具/检验项/不良代码）与用户管理要 `ADMIN`；审核/归档/作废要 `ADMIN` 或 `REVIEWER`；越权返回 403，前端的菜单隐藏只是体验，真正的边界在 `@PreAuthorize`
 - **JWT 密钥**：`qc.jwt.secret` 至少 32 字节，默认值是开发用的，上线必须用 `JWT_SECRET` 覆盖（启动时会校验长度，不够直接报错）

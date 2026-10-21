@@ -36,6 +36,12 @@ public class QcInspection {
     /** 快照：建单时的允收数 Ac（允许的不合格件数） */
     private Integer acceptQty;
 
+    /** 快照：建单时的批次数量（批量 N） */
+    private Integer lotQty;
+
+    /** 快照：抽样依据，如「GB/T 2828.1 一般检验水平 II / AQL 2.5：批量 300，字码 H，抽 50 件，Ac=3」 */
+    private String samplingBasis;
+
     private Long inspectorId;
     private String inspectorName;
 

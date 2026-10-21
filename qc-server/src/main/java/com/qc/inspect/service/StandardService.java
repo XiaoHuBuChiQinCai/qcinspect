@@ -15,6 +15,8 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -35,6 +37,7 @@ public class StandardService {
     private final QcStandardMapper standardMapper;
     private final QcStandardItemMapper standardItemMapper;
     private final QcItemMapper itemMapper;
+    private final SamplingPlanService samplingPlanService;
     private final ObjectMapper objectMapper;
 
     // ==================== 草稿维护 ====================
@@ -64,6 +67,9 @@ public class StandardService {
         std.setVersion(1);
         std.setStatus("DRAFT");
         std.setSamplingType(req.getSamplingType());
+        std.setSamplingPlan(req.getSamplingPlan());
+        std.setAql(req.getAql());
+        std.setInspectionLevel(req.getInspectionLevel());
         std.setSampleSize(req.getSampleSize());
         std.setAllowedNgCount(req.getAllowedNgCount());
         std.setRemark(req.getRemark());
@@ -81,6 +87,9 @@ public class StandardService {
         normalizeSampling(req);
         std.setStandardCode(req.getStandardCode());
         std.setSamplingType(req.getSamplingType());
+        std.setSamplingPlan(req.getSamplingPlan());
+        std.setAql(req.getAql());
+        std.setInspectionLevel(req.getInspectionLevel());
         std.setSampleSize(req.getSampleSize());
         std.setAllowedNgCount(req.getAllowedNgCount());
         std.setRemark(req.getRemark());
@@ -235,10 +244,43 @@ public class StandardService {
         if (req.getSamplingType() == null) {
             req.setSamplingType("FULL");
         }
+        if (req.getSamplingPlan() == null || req.getSamplingPlan().isBlank()) {
+            req.setSamplingPlan(SamplingPlanService.MODE_FIXED);
+        }
+        if (!SamplingPlanService.MODE_FIXED.equals(req.getSamplingPlan())
+                && !SamplingPlanService.MODE_AQL.equals(req.getSamplingPlan())) {
+            throw BizException.of("未知的抽样方案：" + req.getSamplingPlan());
+        }
+
+        if (SamplingPlanService.MODE_AQL.equals(req.getSamplingPlan())) {
+            // AQL 模式下样本量由批量查表得出，标准上写死的件数和 Ac 都不再参与计算，
+            // 但抽样方式必须落成 SAMPLE——否则「全检 + 按批量抽样」自相矛盾
+            req.setSamplingType("SAMPLE");
+            BigDecimal aql = req.getAql() == null ? SamplingPlanService.DEFAULT_AQL : req.getAql();
+            String level = req.getInspectionLevel() == null || req.getInspectionLevel().isBlank()
+                    ? SamplingPlanService.DEFAULT_LEVEL : req.getInspectionLevel();
+            // 在这里就把方案存在性验掉：配错的 AQL 拖到建单才暴露，那时候货已经在检验台上了
+            if (samplingPlanService.list(aql, level).isEmpty()) {
+                throw BizException.of("抽样方案表里没有 AQL "
+                        + SamplingPlanService.trim(aql.setScale(3, RoundingMode.HALF_UP))
+                        + " / 检验水平 " + level
+                        + " 这一档。请改选一档已有方案，或先按国标把这一档补进方案表");
+            }
+            req.setAql(aql);
+            req.setInspectionLevel(level);
+        } else {
+            req.setAql(null);
+            req.setInspectionLevel(null);
+        }
+
         switch (req.getSamplingType()) {
             case "SAMPLE" -> {
-                if (req.getSampleSize() == null || req.getSampleSize() < 1) {
+                if (!SamplingPlanService.MODE_AQL.equals(req.getSamplingPlan())
+                        && (req.getSampleSize() == null || req.getSampleSize() < 1)) {
                     throw BizException.of("抽检模式必须填写抽样件数");
+                }
+                if (SamplingPlanService.MODE_AQL.equals(req.getSamplingPlan()) && req.getSampleSize() == null) {
+                    req.setSampleSize(1);
                 }
             }
             case "FULL", "NONE" -> req.setSampleSize(1);
@@ -297,6 +339,9 @@ public class StandardService {
         nw.setVersion(maxVersion + 1);
         nw.setStatus("ACTIVE");
         nw.setSamplingType(src.getSamplingType());
+        nw.setSamplingPlan(src.getSamplingPlan());
+        nw.setAql(src.getAql());
+        nw.setInspectionLevel(src.getInspectionLevel());
         nw.setSampleSize(src.getSampleSize());
         nw.setAllowedNgCount(src.getAllowedNgCount());
         nw.setEffectiveFrom(LocalDate.now());

@@ -2,7 +2,8 @@
   <view class="page">
     <view class="top">
       <text class="no">{{ info.inspectionNo }}</text>
-      <text class="std">标准 v{{ info.standardVersion }} · 允收 {{ info.acceptQty }} 件</text>
+      <text class="std">标准 v{{ info.standardVersion }} · 批量 {{ info.lotQty || '-' }} · 抽 {{ info.sampleQty }} · 允收 {{ info.acceptQty }} 件</text>
+      <text v-if="info.samplingBasis" class="basis">{{ info.samplingBasis }}</text>
     </view>
 
     <scroll-view scroll-x class="piece-bar" :scroll-into-view="'piece-' + currentPiece">
@@ -425,6 +426,8 @@ async function submit() {
 .top { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16rpx; }
 .no { font-size: 32rpx; font-weight: 500; }
 .std { font-size: 24rpx; color: #8a9199; }
+/* 抽样依据：一行小字，但它是这张单「凭什么抽这么多件」的唯一说明，别省 */
+.basis { font-size: 22rpx; color: #a8abb2; margin-top: 6rpx; line-height: 1.5; }
 
 .piece-bar { white-space: nowrap; margin-bottom: 12rpx; }
 .piece-chip {

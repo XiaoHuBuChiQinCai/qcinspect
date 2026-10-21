@@ -123,11 +123,12 @@ Base URL：`http://localhost:8080/api`
 | POST | `/standards/{id}/publish` | 以该版本为模板发布新版本（自动生效） |
 | POST | `/standards/{id}/activate` | 启用草稿版本 |
 
-**标准**
+**标准（固定抽样）**
 ```json
 {
   "standardCode": "S-FLANGE-01",
   "productId": 1,
+  "samplingPlan": "FIXED",
   "samplingType": "SAMPLE",
   "sampleSize": 5,
   "allowedNgCount": 1,
@@ -138,6 +139,46 @@ Base URL：`http://localhost:8080/api`
 
 > `allowedNgCount` 是**允收数 Ac**：本批允许的不合格**件数**，不是不合格项数。
 > 抽 5 件、Ac=1，意味着最多容忍 1 件不合格。
+
+**标准（AQL 抽样）**
+```json
+{
+  "standardCode": "S-FLANGE-01",
+  "productId": 1,
+  "samplingPlan": "AQL",
+  "aql": 2.5,
+  "inspectionLevel": "II",
+  "remark": "按 GB/T 2828.1 抽检"
+}
+```
+
+> `samplingPlan=AQL` 时 `samplingType` 强制落成 `SAMPLE`，`sampleSize` / `allowedNgCount`
+> 不再参与计算——样本量与 Ac 由建单时的**批量**查 `qc_sampling_plan` 得出。
+> 保存时就会校验该 `aql + inspectionLevel` 在方案表里是否存在，配错不必等到建单才发现。
+
+## 二·补、抽样方案
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/sampling-plans/options` | 方案表里现有哪些 `aqls` / `levels` / `planCodes`，配置页下拉框用 |
+| GET | `/sampling-plans?aql=2.5&level=II&lot=300` | 返回 `{rows, resolved?, hint?}`；`rows` 是整张对照表，给了 `lot` 就顺带算出命中档 |
+
+```json
+{
+  "aql": 2.500,
+  "inspectionLevel": "II",
+  "planCode": "GB2828-1",
+  "rows": [
+    { "lotSizeMin": 281, "lotSizeMax": 500, "codeLetter": "H",
+      "sampleSize": 50, "acceptQty": 3, "rejectQty": 4 }
+  ],
+  "resolved": { "lotQty": 300, "codeLetter": "H", "sampleSize": 50, "acceptQty": 3 }
+}
+```
+
+内置数据：GB/T 2828.1-2012 正常检验一次抽样、一般检验水平 II、AQL 2.5，11 个批量区间
+（2~8 到 3201~10000）。建单时批量超出 10000 件会直接报错要求拆批——
+宁可让人拆批，也不默默按最大档抽 200 件糊过去。
 
 **保存检验项**（数组，一次提交整个标准的配置）
 ```json

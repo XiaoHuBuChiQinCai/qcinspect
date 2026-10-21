@@ -72,6 +72,7 @@ public class InspectionService {
     private final QcInspectionLogMapper logMapper;
     private final GaugeService gaugeService;
     private final NoticeService noticeService;
+    private final SamplingPlanService samplingPlanService;
     private final ObjectMapper objectMapper;
 
     // ==================== 建单（含标准快照） ====================
@@ -98,12 +99,14 @@ public class InspectionService {
             throw BizException.of("检验标准未配置任何检验项");
         }
 
-        int qty = resolveSampleQty(standard, batch, sampleQty);
+        // 抽样量与允收数由标准决定：固定抽样取标准上写死的值，AQL 模式按批量查国标表
+        SamplingResult sampling = samplingPlanService.resolve(standard, batch.getQty(), sampleQty);
+        int qty = sampling.sampleQty();
         if (qty > MAX_SAMPLE_QTY) {
-            throw BizException.of("全检模式下一单要验 " + qty + " 件，超过单次上限 " + MAX_SAMPLE_QTY
-                    + " 件。请把批次拆小，或把标准改为抽检");
+            throw BizException.of("这一单要验 " + qty + " 件，超过单次上限 " + MAX_SAMPLE_QTY
+                    + " 件。请把批次拆小，或把标准的抽样方案改成按 AQL 抽检");
         }
-        int acceptQty = standard.getAllowedNgCount() == null ? 0 : Math.max(standard.getAllowedNgCount(), 0);
+        int acceptQty = sampling.acceptQty();
 
         QcInspection ins = new QcInspection();
         ins.setInspectionNo(nextNo());
@@ -116,6 +119,9 @@ public class InspectionService {
         ins.setSampleQty(qty);
         // 允收数同期快照：标准日后改 Ac，不影响已建的单
         ins.setAcceptQty(acceptQty);
+        // 抽样依据一并冻在单上：一年后回看，要能答出「当时凭什么抽这么多件」
+        ins.setLotQty(sampling.lotQty());
+        ins.setSamplingBasis(sampling.basis());
         // 检验员是质量记录的责任人，不能由前端随便填：已登录时以登录态为准
         ins.setInspectorName(UserContext.current() != null ? UserContext.username()
                 : (inspectorName == null || inspectorName.isBlank() ? UserContext.ANONYMOUS : inspectorName));
@@ -578,21 +584,6 @@ public class InspectionService {
                 line.getPointCount() == null ? 1 : line.getPointCount(),
                 line.getMinValue(), line.getMaxValue(), options,
                 Boolean.TRUE.equals(line.getBoolPassValue()));
-    }
-
-    private int resolveSampleQty(QcStandard standard, QcBatch batch, Integer sampleQty) {
-        if (sampleQty != null && sampleQty > 0) {
-            return sampleQty;
-        }
-        if ("SAMPLE".equals(standard.getSamplingType()) && standard.getSampleSize() != null) {
-            return standard.getSampleSize();
-        }
-        if ("FULL".equals(standard.getSamplingType())) {
-            // 全检 = 批次里每一件都要验。原来这里写死返回 1，
-            // 导致 100 件的批次只生成 1 件的明细，却对外声称「全检」，是数据失真。
-            return batch.getQty() == null || batch.getQty() <= 0 ? 1 : batch.getQty();
-        }
-        return 1;
     }
 
     private String nextNo() {

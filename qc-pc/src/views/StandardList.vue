@@ -33,8 +33,11 @@
           <span :class="{ warn: !row.itemCount }">{{ row.itemCount }} 项</span>
         </template>
       </el-table-column>
-      <el-table-column label="允收数 Ac" width="100">
-        <template #default="{ row }">{{ row.standard.allowedNgCount }} 件</template>
+      <el-table-column label="允收数 Ac" width="110">
+        <template #default="{ row }">
+          <span v-if="row.standard.samplingPlan === 'AQL'" class="muted">按批量查表</span>
+          <span v-else>{{ row.standard.allowedNgCount }} 件</span>
+        </template>
       </el-table-column>
       <el-table-column label="生效日期" width="120">
         <template #default="{ row }">{{ row.standard.effectiveFrom || '—' }}</template>
@@ -77,6 +80,11 @@ const rows = ref([])
 const loading = ref(false)
 
 function samplingText(std) {
+  // AQL 模式下样本量和 Ac 都是批量算出来的，列表上写具体件数会误导
+  if (std.samplingPlan === 'AQL') {
+    const aql = std.aql == null ? '2.5' : Number(std.aql).toString()
+    return `AQL ${aql} · 水平 ${std.inspectionLevel || 'II'}`
+  }
   if (std.samplingType === 'SAMPLE') return `抽检 ${std.sampleSize} 件`
   if (std.samplingType === 'NONE') return '免检'
   return '全检'
@@ -155,4 +163,5 @@ onMounted(async () => {
 .spacer { flex: 1; }
 .tip { margin-top: 16px; }
 .warn { color: var(--el-color-danger); }
+.muted { color: var(--el-text-color-secondary); }
 </style>

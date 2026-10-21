@@ -38,6 +38,12 @@
       </div>
     </el-alert>
 
+    <!-- 抽样依据：检验员看单第一眼要知道「凭什么抽这么多件、凭什么判接收」 -->
+    <div v-if="info.samplingBasis" class="sampling-basis">
+      <span class="sb-label">抽样依据</span>
+      <span>{{ info.samplingBasis }}</span>
+    </div>
+
     <div class="piece-bar">
       <el-button :disabled="currentPiece <= 1" @click="goPiece(currentPiece - 1)">上一件</el-button>
       <el-select v-model="currentPiece" style="width: 200px" @change="onPieceChange">
@@ -418,6 +424,13 @@ onMounted(load)
 .piece-tag { margin: 0; }
 .piece-bar { display: flex; align-items: center; gap: 8px; margin: 16px 0; flex-wrap: wrap; }
 .piece-stat { color: #909399; font-size: 13px; margin-right: auto; }
+.sampling-basis {
+  display: flex; align-items: center; gap: 8px;
+  margin: 12px 0; padding: 8px 12px;
+  background: #f4f6f9; border-radius: 4px;
+  font-size: 13px; color: #606266;
+}
+.sb-label { font-weight: 600; color: #909399; }
 .group-title { font-weight: 500; }
 .line { padding: 12px 4px; border-bottom: 1px dashed #ebeef5; }
 .line.ng { background: #fef0f0; }

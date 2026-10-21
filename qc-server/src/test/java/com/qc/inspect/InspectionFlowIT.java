@@ -2,6 +2,14 @@ package com.qc.inspect;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.qc.inspect.entity.QcBatch;
+import com.qc.inspect.entity.QcProduct;
+import com.qc.inspect.entity.QcStandard;
+import com.qc.inspect.entity.QcStandardItem;
+import com.qc.inspect.mapper.QcBatchMapper;
+import com.qc.inspect.mapper.QcProductMapper;
+import com.qc.inspect.mapper.QcStandardItemMapper;
+import com.qc.inspect.mapper.QcStandardMapper;
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
@@ -78,9 +86,21 @@ class InspectionFlowIT {
     @Autowired
     private ObjectMapper json;
 
+    /* AQL 抽样用例要造一套自己专属的主数据，直接走 mapper 比连调四五个接口省事，
+       也更接近「数据已经在库里」的真实起点 */
+    @Autowired
+    private QcProductMapper productMapper;
+    @Autowired
+    private QcBatchMapper batchMapper;
+    @Autowired
+    private QcStandardMapper standardMapper;
+    @Autowired
+    private QcStandardItemMapper standardItemMapper;
+
     private static String token;
     private static Long batchId;
     private static Long firstInspectionId;
+    private static Long aqlProductId;
 
     // ==================== 用例 ====================
 
@@ -284,8 +304,90 @@ class InspectionFlowIT {
                 .as("不能读别人的通知").isNotEqualTo(0);
     }
 
-    // ==================== 填报辅助 ====================
+    @Test
+    @Order(9)
+    @DisplayName("AQL 抽样：批量 300 按国标抽 50 件、Ac=3，依据冻在单上")
+    void aqlSamplingFollowsLotSize() {
+        Long bigBatch = aqlBatch("IT-AQL-B300", 300);
+        Long id = num(data(post("/api/inspections", Map.of("batchId", bigBatch)))
+                .get("inspectionId"));
 
+        Map<String, Object> detail = detail(id);
+        Map<String, Object> ins = asMap(detail.get("inspection"));
+
+        // 281~500 档、字码 H：n=50、Ac=3。老逻辑下这里会取标准上写死的 1 件，
+        // 300 件来料只验 1 件就判批，等于没检
+        assertThat(num(ins.get("sampleQty"))).as("批量 300 应抽 50 件").isEqualTo(50L);
+        assertThat(num(ins.get("acceptQty"))).as("批量 300 的 Ac 应为 3").isEqualTo(3L);
+        assertThat(num(ins.get("lotQty"))).as("批量要一起冻在单上").isEqualTo(300L);
+        assertThat(asList(detail.get("pieces"))).as("明细按 50 件展开").hasSize(50);
+
+        // 依据必须能读成人话，否则追溯时只有两个数字，说不清凭什么
+        String basis = String.valueOf(ins.get("samplingBasis"));
+        assertThat(basis).contains("GB/T 2828.1").contains("AQL 2.5")
+                .contains("字码 H").contains("抽 50 件").contains("Ac=3");
+
+        // 批量越大抽得越多：5000 件落到 3201~10000 档（L，n=200，Ac=10）
+        Long hugeButValid = aqlBatch("IT-AQL-B5000", 5000);
+        Map<String, Object> big = asMap(detail(num(data(post("/api/inspections",
+                Map.of("batchId", hugeButValid))).get("inspectionId"))).get("inspection"));
+        assertThat(num(big.get("sampleQty"))).as("批量 5000 应抽 200 件").isEqualTo(200L);
+        assertThat(num(big.get("acceptQty"))).as("批量 5000 的 Ac 应为 10").isEqualTo(10L);
+
+        // 超出表范围必须拦下：宁可让人拆批，也不能默默按最大档抽 200 件糊过去
+        Long tooBig = aqlBatch("IT-AQL-B20000", 20000);
+        assertThat(num(post("/api/inspections", Map.of("batchId", tooBig)).get("code")))
+                .as("批量超出抽样表范围要报错").isNotEqualTo(0);
+    }
+
+    /** AQL 用例夹具：一个专属产品 + AQL 标准 + 指定批量的批次 */
+    private Long aqlBatch(String batchNo, int qty) {
+        if (aqlProductId == null) {
+            QcProduct p = new QcProduct();
+            p.setProductCode("IT-AQL");
+            p.setProductName("AQL 抽样试用件");
+            p.setUnit("件");
+            productMapper.insert(p);
+            aqlProductId = p.getId();
+
+            QcStandard std = new QcStandard();
+            std.setStandardCode("S-IT-AQL");
+            std.setProductId(aqlProductId);
+            std.setVersion(1);
+            std.setStatus("ACTIVE");
+            std.setSamplingType("SAMPLE");
+            std.setSamplingPlan("AQL");
+            std.setAql(new BigDecimal("2.500"));
+            std.setInspectionLevel("II");
+            std.setSampleSize(1);
+            std.setAllowedNgCount(0);
+            standardMapper.insert(std);
+
+            QcStandardItem si = new QcStandardItem();
+            si.setStandardId(std.getId());
+            si.setItemId(1L);
+            si.setSeq(10);
+            si.setIsCritical(true);
+            si.setIsRequired(true);
+            si.setValueMode("SINGLE");
+            si.setPointCount(1);
+            si.setMinValue(new BigDecimal("11.95"));
+            si.setMaxValue(new BigDecimal("12.05"));
+            si.setIsDestructive(false);
+            standardItemMapper.insert(si);
+        }
+
+        QcBatch b = new QcBatch();
+        b.setBatchNo(batchNo);
+        b.setProductId(aqlProductId);
+        b.setInspectType("IQC");
+        b.setQty(qty);
+        b.setStatus("PENDING");
+        batchMapper.insert(b);
+        return b.getId();
+    }
+
+    // ==================== 填报辅助 ====================
     /** 按每行的限值/合格值方向造一套必然合格的实测值 */
     private List<Map<String, Object>> fillCompliant(Map<String, Object> detail) {
         List<Map<String, Object>> lines = new ArrayList<>();

@@ -71,15 +71,20 @@ async function openInspection(row) {
   let sampleQty
   try {
     const { value } = await ElMessageBox.prompt(
-      '本次检验抽几件？留空则取标准里配置的抽样数。全检时填实际件数。',
+      '留空就按标准自动算：AQL 抽样按批量查国标表，固定抽样取标准里配的件数，全检取批次件数。'
+      + '确实要人工指定，填 1~200 的整数（AQL 抽样下会以方案表为准）。',
       `开检验单 · ${row.batchNo}`,
       {
-        inputValue: String(row.qty || 1),
-        inputPattern: /^[1-9]\d{0,2}$/,
-        inputErrorMessage: '件数需为 1 ~ 200 的整数'
+        inputValue: '',
+        inputPlaceholder: `留空自动 · 本批 ${row.qty || '-'} 件`
       }
     )
-    sampleQty = Number(value)
+    const v = String(value ?? '').trim()
+    if (v && !/^[1-9]\d{0,2}$/.test(v)) {
+      ElMessage.warning('件数需为 1 ~ 200 的整数，或留空让系统按标准算')
+      return
+    }
+    sampleQty = v ? Number(v) : undefined
   } catch {
     return
   }
