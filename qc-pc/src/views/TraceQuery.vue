@@ -72,7 +72,8 @@
 
       <el-card>
         <template #header>出货记录（{{ (data.shipments || []).length }} 条）</template>
-        <el-empty v-if="!data.shipments?.length" description="还没出货。没有出货记录，客诉来了就查不到货去了哪" />
+        <el-empty v-if="!data.shipments?.length"
+                  description="还没出货。到「批次」页点「登记出货」录入，否则客诉来了查不到货去了哪" />
         <el-table v-else :data="data.shipments" size="small">
           <el-table-column prop="shipmentNo" label="出货单号" width="180" />
           <el-table-column prop="customer" label="客户" min-width="160" />

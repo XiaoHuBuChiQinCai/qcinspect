@@ -1,10 +1,11 @@
 package com.qc.inspect.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.qc.inspect.common.BizException;
+import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.entity.QcShipment;
 import com.qc.inspect.mapper.QcShipmentMapper;
+import com.qc.inspect.service.ShipmentService;
 import com.qc.inspect.service.TraceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,6 +30,7 @@ public class TraceController {
 
     private final TraceService traceService;
     private final QcShipmentMapper shipmentMapper;
+    private final ShipmentService shipmentService;
 
     /** 正向追溯：批次 → 检验 → 客户 */
     @GetMapping("/trace/batch/{batchId}")
@@ -60,28 +62,20 @@ public class TraceController {
     }
 
     @PostMapping("/shipments")
-    public R<QcShipment> saveShipment(@RequestBody QcShipment shipment) {
-        if (shipment.getBatchId() == null) {
-            throw BizException.of("必须指定批次");
-        }
-        if (shipment.getCustomer() == null || shipment.getCustomer().isBlank()) {
-            throw BizException.of("必须填写客户，否则追溯断了");
-        }
-        if (shipment.getQty() == null || shipment.getQty() <= 0) {
-            throw BizException.of("出货数量必须大于 0");
-        }
-        if (shipment.getId() == null) {
-            if (shipment.getShipmentNo() == null || shipment.getShipmentNo().isBlank()) {
-                shipment.setShipmentNo("SH" + System.currentTimeMillis());
-            }
-            if (shipment.getShippedAt() == null) {
-                shipment.setShippedAt(LocalDateTime.now());
-            }
-            shipment.setCreatedAt(LocalDateTime.now());
-            shipmentMapper.insert(shipment);
-        } else {
-            shipmentMapper.updateById(shipment);
-        }
-        return R.ok(shipment);
+    public R<QcShipment> saveShipment(@RequestBody ShipmentReq req,
+                                     @RequestParam(required = false, defaultValue = "system") String operator) {
+        return R.ok(shipmentService.create(req.batchId(), req.customer(), req.qty(), req.shippedAt(),
+                req.remark(), Boolean.TRUE.equals(req.force()), UserContext.operator(operator)));
+    }
+
+    /** 出货前的前置信息：批次还剩多少可发、最新检验结论是什么、会不会被拦 */
+    @GetMapping("/shipments/context/{batchId}")
+    public R<Map<String, Object>> shipmentContext(@PathVariable Long batchId) {
+        return R.ok(shipmentService.context(batchId));
+    }
+
+    /** 出货请求体。force=true 表示确认「例外放行」（不合格 / 无结论的批次） */
+    public record ShipmentReq(Long batchId, String customer, Integer qty,
+                              LocalDateTime shippedAt, String remark, Boolean force) {
     }
 }

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.dto.InspectionCreateReq;
+import com.qc.inspect.dto.InspectionQuery;
 import com.qc.inspect.dto.InspectionSubmitReq;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcInspectionLog;
@@ -112,19 +113,27 @@ public class InspectionController {
         return R.ok(inspectionService.logs(id));
     }
 
-    /** 检验单分页。批次号/产品名不是表字段，这里一次性补齐，免得前端为一个列表发十次请求 */
+    /**
+     * 检验单分页。批次号/产品名不是表字段，这里一次性补齐，免得前端为一个列表发十次请求。
+     *
+     * <p>筛选条件统一由 {@link InspectionQuery} 定义，CSV 导出走的是同一份逻辑，
+     * 所以「屏幕上有几行、导出的就是几行」不会对不上。
+     */
     @GetMapping("/page")
     public R<Page<QcInspection>> page(@RequestParam(defaultValue = "1") long current,
                                       @RequestParam(defaultValue = "10") long size,
                                       @RequestParam(required = false) String status,
                                       @RequestParam(required = false) Long batchId,
-                                      @RequestParam(required = false) Long productId) {
+                                      @RequestParam(required = false) Long productId,
+                                      @RequestParam(required = false) String keyword,
+                                      @RequestParam(required = false) String inspector,
+                                      @RequestParam(required = false) String result,
+                                      @RequestParam(required = false) String from,
+                                      @RequestParam(required = false) String to) {
         Page<QcInspection> page = new Page<>(current, size);
-        inspectionMapper.selectPage(page, new LambdaQueryWrapper<QcInspection>()
-                .eq(status != null && !status.isBlank(), QcInspection::getStatus, status)
-                .eq(batchId != null, QcInspection::getBatchId, batchId)
-                .eq(productId != null, QcInspection::getProductId, productId)
-                .orderByDesc(QcInspection::getId));
+        InspectionQuery query = new InspectionQuery(status, batchId, productId,
+                keyword, inspector, result, from, to);
+        inspectionMapper.selectPage(page, query.toWrapper().orderByDesc(QcInspection::getId));
         viewService.fill(page.getRecords());
         return R.ok(page);
     }

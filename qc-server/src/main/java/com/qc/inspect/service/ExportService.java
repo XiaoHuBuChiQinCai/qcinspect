@@ -2,6 +2,7 @@ package com.qc.inspect.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qc.inspect.common.BizException;
+import com.qc.inspect.dto.InspectionQuery;
 import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcInspection;
@@ -44,11 +45,9 @@ public class ExportService {
 
     // ==================== 检验单台账 ====================
 
-    public String inspectionLedger(String status, Long productId) {
-        List<QcInspection> list = inspectionMapper.selectList(new LambdaQueryWrapper<QcInspection>()
-                .eq(status != null && !status.isBlank(), QcInspection::getStatus, status)
-                .eq(productId != null, QcInspection::getProductId, productId)
-                .orderByDesc(QcInspection::getId));
+    public String inspectionLedger(InspectionQuery query) {
+        List<QcInspection> list = inspectionMapper.selectList(
+                query.toWrapper().orderByDesc(QcInspection::getId));
         if (list.isEmpty()) {
             throw BizException.of("没有符合条件的检验单可导出");
         }

@@ -1,13 +1,58 @@
 <template>
   <el-card>
-    <div class="bar">
-      <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 160px" @change="reload">
+    <div class="filters">
+      <el-input
+        v-model="filter.keyword"
+        placeholder="单号 / 批次号"
+        clearable
+        style="width: 190px"
+        @keyup.enter="reload"
+        @clear="reload"
+      />
+      <el-select v-model="filter.status" placeholder="全部状态" clearable style="width: 130px" @change="reload">
         <el-option label="草稿" value="DRAFT" />
         <el-option label="待审核" value="SUBMITTED" />
         <el-option label="已归档" value="CLOSED" />
         <el-option label="已作废" value="VOID" />
       </el-select>
-      <el-button @click="reload">刷新</el-button>
+      <el-select v-model="filter.result" placeholder="全部结论" clearable style="width: 120px" @change="reload">
+        <el-option label="合格" value="PASS" />
+        <el-option label="不合格" value="FAIL" />
+        <el-option label="未判定" value="NA" />
+      </el-select>
+      <el-select
+        v-model="filter.productId"
+        placeholder="全部产品"
+        clearable
+        filterable
+        style="width: 170px"
+        @change="reload"
+      >
+        <el-option v-for="p in products" :key="p.id" :label="p.productName" :value="p.id" />
+      </el-select>
+      <el-input
+        v-model="filter.inspector"
+        placeholder="检验员"
+        clearable
+        style="width: 130px"
+        @keyup.enter="reload"
+        @clear="reload"
+      />
+      <el-date-picker
+        v-model="filter.range"
+        type="daterange"
+        value-format="YYYY-MM-DD"
+        start-placeholder="检验起始日"
+        end-placeholder="截止日"
+        style="width: 250px"
+        @change="reload"
+      />
+      <el-button type="primary" @click="reload">查询</el-button>
+      <el-button @click="resetFilters">重置</el-button>
+    </div>
+
+    <div class="bar">
+      <span class="count">共 {{ total }} 张单</span>
       <div class="spacer" />
       <el-tooltip content="导出当前筛选条件下的检验单台账，Excel 可直接打开">
         <el-button type="primary" plain @click="exportLedger">导出台账 CSV</el-button>
@@ -145,8 +190,10 @@ const canReview = computed(() => user.role === 'ADMIN' || user.role === 'REVIEWE
 const rows = ref([])
 const total = ref(0)
 const loading = ref(false)
-const filterStatus = ref('')
+const products = ref([])
 const page = reactive({ current: 1, size: 10 })
+// 筛选条件集中在一处，导出时原样带上，避免「屏幕 3 条、CSV 30 条」
+const filter = reactive({ keyword: '', status: '', result: '', productId: undefined, inspector: '', range: null })
 
 const reviewVisible = ref(false)
 const saving = ref(false)
@@ -173,15 +220,25 @@ function fmt(t) {
   return String(t).replace('T', ' ').slice(0, 19)
 }
 
+/** 当前筛选条件 → 请求参数。列表分页和 CSV 导出共用，保证两边口径一致 */
+function queryParams() {
+  const [from, to] = filter.range || []
+  return {
+    status: filter.status || undefined,
+    result: filter.result || undefined,
+    productId: filter.productId ?? undefined,
+    keyword: filter.keyword.trim() || undefined,
+    inspector: filter.inspector.trim() || undefined,
+    from: from || undefined,
+    to: to || undefined
+  }
+}
+
 async function load() {
   loading.value = true
   try {
     const data = await http.get('/inspections/page', {
-      params: {
-        current: page.current,
-        size: page.size,
-        status: filterStatus.value || undefined
-      }
+      params: { current: page.current, size: page.size, ...queryParams() }
     })
     rows.value = data.records || []
     total.value = data.total || 0
@@ -193,6 +250,11 @@ async function load() {
 function reload() {
   page.current = 1
   load()
+}
+
+function resetFilters() {
+  Object.assign(filter, { keyword: '', status: '', result: '', productId: undefined, inspector: '', range: null })
+  reload()
 }
 
 function open(row) {
@@ -246,14 +308,24 @@ async function voidIt(row) {
 }
 
 async function exportLedger() {
-  await downloadCsv('/export/inspections', { status: filterStatus.value || undefined }, '检验单台账')
+  await downloadCsv('/export/inspections', queryParams(), '检验单台账')
 }
 
-onMounted(load)
+async function loadProducts() {
+  products.value = await http.get('/products')
+}
+
+onMounted(() => {
+  loadProducts()
+  load()
+})
 </script>
 
 <style scoped>
-.bar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+.filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px;
+           padding-bottom: 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
+.bar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.count { font-size: 13px; color: var(--el-text-color-secondary); }
 .spacer { flex: 1; }
 .pager { display: flex; justify-content: flex-end; margin-top: 16px; }
 .ok { color: var(--el-color-success); font-weight: 600; }

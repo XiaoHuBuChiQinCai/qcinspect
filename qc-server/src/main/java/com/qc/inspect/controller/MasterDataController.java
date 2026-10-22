@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 主数据：产品、检验项、批次。
@@ -93,11 +94,23 @@ public class MasterDataController {
 
     @GetMapping("/batches")
     public R<List<QcBatch>> batches(@RequestParam(required = false) String status,
-                                    @RequestParam(required = false) Long productId) {
+                                    @RequestParam(required = false) Long productId,
+                                    @RequestParam(required = false) String keyword) {
         return R.ok(batchMapper.selectList(new LambdaQueryWrapper<QcBatch>()
                 .eq(status != null && !status.isBlank(), QcBatch::getStatus, status)
                 .eq(productId != null, QcBatch::getProductId, productId)
+                .and(keyword != null && !keyword.isBlank(), w -> w
+                        .like(QcBatch::getBatchNo, keyword)
+                        .or().like(QcBatch::getSupplier, keyword)
+                        .or().like(QcBatch::getMaterialBatchNo, keyword)
+                        .or().like(QcBatch::getWorkOrderNo, keyword))
                 .orderByDesc(QcBatch::getId)));
+    }
+
+    /** 供应商来料质量排名。件级合格率最低的排在最前面——好供应商不用管，坏的要 */
+    @GetMapping("/batches/stat/supplier")
+    public R<List<Map<String, Object>>> supplierQuality() {
+        return R.ok(batchMapper.supplierQuality());
     }
 
     @PostMapping("/batches")

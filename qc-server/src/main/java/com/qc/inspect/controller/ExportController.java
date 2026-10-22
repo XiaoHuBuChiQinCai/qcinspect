@@ -1,5 +1,6 @@
 package com.qc.inspect.controller;
 
+import com.qc.inspect.dto.InspectionQuery;
 import com.qc.inspect.service.ExportService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -28,11 +29,18 @@ public class ExportController {
 
     private final ExportService exportService;
 
-    /** 检验单台账 */
+    /** 检验单台账。筛选条件与列表页共用 {@link InspectionQuery}，导出的行数和屏幕一致 */
     @GetMapping("/inspections")
     public ResponseEntity<byte[]> inspections(@RequestParam(required = false) String status,
-                                              @RequestParam(required = false) Long productId) {
-        return csv(exportService.inspectionLedger(status, productId), "inspections");
+                                              @RequestParam(required = false) Long productId,
+                                              @RequestParam(required = false) String keyword,
+                                              @RequestParam(required = false) String inspector,
+                                              @RequestParam(required = false) String result,
+                                              @RequestParam(required = false) String from,
+                                              @RequestParam(required = false) String to) {
+        return csv(exportService.inspectionLedger(
+                new InspectionQuery(status, null, productId, keyword, inspector, result, from, to)),
+                "inspections");
     }
 
     /** 不良台账 */
