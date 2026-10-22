@@ -189,6 +189,151 @@ public class InspectionService {
         return result;
     }
 
+    // ==================== 返工复检 ====================
+
+    /**
+     * 从一条不良记录开复检单。
+     *
+     * <p>为什么需要这个入口：V7 之前系统强制「返工完成后必须挂一张复检单」，
+     * 却没有开复检单的地方——检验员只能去批次页手工开一张普通单，再回来抄单号。
+     * 抄错一个数字，两批货的追溯就链错了。规则拦住了人，却没给人留出路，这不叫管控。
+     *
+     * <p>三个刻意与普通建单不同的取值：
+     * <ul>
+     *   <li><b>件数 = 该不良的返工件数</b>，不按 AQL 重抽。返工了 3 件就验 3 件；
+     *       按批量重新抽 50 件，抽的是早已判过的那批，验了也不能证明返工有效</li>
+     *   <li><b>Ac 固定 0</b>。这不是抽样验收，是返工有效性确认；给一个允收数，
+     *       等于允许返工后还有不合格件流出去</li>
+     *   <li><b>明细从原单复制</b>，不重新读 ACTIVE 标准。标准若已改版，
+     *       复检和原单就不是同一套判据，两级结论没法对比，复检也就白做了</li>
+     * </ul>
+     *
+     * <p>不改批次状态：复检只针对返工的几件，批次整体结论不因复检而回退。
+     */
+    @Transactional
+    public Map<String, Object> createRecheck(Long defectId, String operator) {
+        QcDefect defect = defectMapper.selectById(defectId);
+        if (defect == null) {
+            throw BizException.of("不良记录不存在：" + defectId);
+        }
+        if (defect.getRecheckInspectionId() != null) {
+            // 作废的复检单不算数：开错了（件数、标准选错）本来就该作废重开，
+            // 若照旧拦住，这条不良就永远开不出新单、也永远标不了完成——死锁。
+            QcInspection stale = inspectionMapper.selectById(defect.getRecheckInspectionId());
+            if (stale != null && !"VOID".equals(stale.getStatus())) {
+                throw BizException.of("这条不良已经挂过复检单 " + stale.getInspectionNo()
+                        + "（" + stale.getStatus() + "），请直接在那张单上继续填报，不要重复建单");
+            }
+        }
+        if ("WAIVED".equals(defect.getDispositionStatus())) {
+            throw BizException.of("让步接收的不良不需要复检，它本来就是特采放行的");
+        }
+        if (!"REWORK".equals(defect.getDisposition())) {
+            throw BizException.of("只有返工处置才需要复检，这条不良的处置是「"
+                    + (defect.getDisposition() == null ? "未处置" : defect.getDisposition()) + "」");
+        }
+        // 不良判出来时处置就已经预填成「返工」，但那是建议、不是已执行的动作。
+        // 不校验这一步，就会出现「还没返工就开了复检单」——验的还是原来那批坏件，
+        // 复检结论毫无意义，却会被当成返工有效的证据。
+        if (!"PROCESSING".equals(defect.getDispositionStatus())) {
+            throw BizException.of("这条不良的返工还没开始（当前「"
+                    + ("PENDING".equals(defect.getDispositionStatus()) ? "待处理" : defect.getDispositionStatus())
+                    + "」）。请先点「开始返工」，返工完成后再开复检单");
+        }
+
+        QcInspection origin = require(defect.getInspectionId());
+        if (!"SUBMITTED".equals(origin.getStatus()) && !"CLOSED".equals(origin.getStatus())) {
+            throw BizException.of("原单还没提交（当前 " + origin.getStatus()
+                    + "），结论随时会变，现在开复检没有意义");
+        }
+
+        int qty = defect.getDefectQty() == null || defect.getDefectQty() <= 0 ? 1 : defect.getDefectQty();
+        if (qty > MAX_SAMPLE_QTY) {
+            throw BizException.of("这一条不良涉及 " + qty + " 件，超过单次上限 " + MAX_SAMPLE_QTY
+                    + " 件。请按工位或班次拆成多张复检单，一次验完记不清哪件是哪件");
+        }
+
+        // 模板取原单第 1 件的整套明细行——原单每一件的检验项都一样，取一件即可
+        List<QcInspectionLine> template = lineMapper.selectList(new LambdaQueryWrapper<QcInspectionLine>()
+                .eq(QcInspectionLine::getInspectionId, origin.getId())
+                .eq(QcInspectionLine::getPieceNo, 1)
+                .orderByAsc(QcInspectionLine::getSeq));
+        if (template.isEmpty()) {
+            throw BizException.of("原单没有明细行，无法生成复检单");
+        }
+
+        QcInspection ins = new QcInspection();
+        ins.setInspectionNo(nextNo());
+        ins.setBatchId(origin.getBatchId());
+        ins.setStandardId(origin.getStandardId());
+        ins.setStandardVersion(origin.getStandardVersion());
+        ins.setProductId(origin.getProductId());
+        ins.setInspectType(origin.getInspectType());
+        ins.setSamplingType("SAMPLE");
+        ins.setSampleQty(qty);
+        ins.setAcceptQty(0);
+        ins.setLotQty(qty);
+        ins.setSamplingBasis("返工复检：原单 " + origin.getInspectionNo() + " 第 " + defect.getPieceNo()
+                + " 件「" + defect.getDefectName() + "」返工 " + qty + " 件，逐件全检，Ac=0");
+        ins.setRecheckOfId(origin.getId());
+        ins.setRecheckDefectId(defect.getId());
+        ins.setInspectorName(UserContext.current() != null ? UserContext.username() : UserContext.ANONYMOUS);
+        ins.setStatus("DRAFT");
+        ins.setResult("NA");
+        ins.setPassedQty(0);
+        ins.setFailedQty(0);
+        ins.setNgCount(0);
+        ins.setCriticalNgCount(0);
+        ins.setRemark("返工复检");
+        ins.setCreatedBy(operator);
+        ins.setCreatedAt(LocalDateTime.now());
+        inspectionMapper.insert(ins);
+
+        int seq = 0;
+        for (int piece = 1; piece <= qty; piece++) {
+            for (QcInspectionLine t : template) {
+                QcInspectionLine line = new QcInspectionLine();
+                line.setInspectionId(ins.getId());
+                line.setPieceNo(piece);
+                line.setItemId(t.getItemId());
+                line.setItemCode(t.getItemCode());
+                line.setItemName(t.getItemName());
+                line.setGroupName(t.getGroupName());
+                line.setValueType(t.getValueType());
+                line.setValueMode(t.getValueMode());
+                line.setPointCount(t.getPointCount());
+                line.setUnit(t.getUnit());
+                line.setMinValue(t.getMinValue());
+                line.setMaxValue(t.getMaxValue());
+                line.setOptionsJson(t.getOptionsJson());
+                line.setBoolPassValue(t.getBoolPassValue());
+                line.setIsCritical(t.getIsCritical());
+                line.setSeq(seq += 10);
+                line.setMeasureTool(t.getMeasureTool());
+                line.setResult("PENDING");
+                line.setCreatedAt(LocalDateTime.now());
+                lineMapper.insert(line);
+            }
+        }
+
+        defect.setRecheckInspectionId(ins.getId());
+        defectMapper.updateById(defect);
+
+        writeLog(ins.getId(), "CREATE", null, "DRAFT", operator,
+                "由原单 " + origin.getInspectionNo() + " 的不良「" + defect.getDefectName()
+                        + "」返工后开复检，共 " + qty + " 件全检，Ac=0", null);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("inspectionId", ins.getId());
+        result.put("inspectionNo", ins.getInspectionNo());
+        result.put("sampleQty", qty);
+        result.put("acceptQty", 0);
+        result.put("originInspectionId", origin.getId());
+        result.put("originInspectionNo", origin.getInspectionNo());
+        result.put("lineCount", qty * template.size());
+        return result;
+    }
+
     // ==================== 草稿暂存 ====================
 
     /**
@@ -519,6 +664,13 @@ public class InspectionService {
         result.put("pieceCount", byPiece.size());
         // 已锁定的单据前端只读
         result.put("locked", "SUBMITTED".equals(ins.getStatus()) || "CLOSED".equals(ins.getStatus()));
+        // 复检单要能说出「我是谁的复检」：只给一个内部 id，报告上印出来没人看得懂
+        if (ins.getRecheckOfId() != null) {
+            QcInspection origin = inspectionMapper.selectById(ins.getRecheckOfId());
+            if (origin != null) {
+                result.put("recheckOfNo", origin.getInspectionNo());
+            }
+        }
         return result;
     }
 

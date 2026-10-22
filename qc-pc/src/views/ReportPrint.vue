@@ -53,6 +53,14 @@
             <th>检验员</th>
             <td>{{ data.inspection.inspectorName || '-' }}</td>
           </tr>
+          <!-- 复检单必须在报告上自报家门：客户拿到报告，看到 Ac=0 才知道这不是普通抽检 -->
+          <tr v-if="data.inspection.recheckOfId">
+            <th>单据性质</th>
+            <td colspan="3">
+              返工复检单 —— 源单 {{ data.recheckOfNo || ('#' + data.inspection.recheckOfId) }}
+              的不良返工后复检，逐件全检（Ac=0）
+            </td>
+          </tr>
           <!-- 抽样依据要印在报告上：客户或审核员看报告时，第一个会问「为什么只抽 50 件」 -->
           <tr v-if="data.inspection.samplingBasis">
             <th>抽样依据</th>

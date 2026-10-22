@@ -441,6 +441,25 @@ Base URL：`http://localhost:8080/api`
 
 > 这两个字段由控制器一次性补齐（按批次的 productId 批量查），不是为了好看——前端列表每行都发一次请求查批次，十个分页就是几十次往返。
 
+全部筛选参数：
+
+| 参数 | 说明 |
+|---|---|
+| `status` | `DRAFT` / `SUBMITTED` / `CLOSED` / `VOID` |
+| `result` | `PASS` / `FAIL` / `NA` |
+| `batchId` / `productId` | 精确匹配 |
+| `keyword` | **同时模糊匹配检验单号和批次号**——主管找人时手里通常只有一个号，记不清是哪一种 |
+| `inspector` | 检验员姓名模糊匹配 |
+| `from` / `to` | 日期区间（`yyyy-MM-dd`，含首尾），按 `coalesce(inspected_at, created_at)` 过滤 |
+| `current` / `size` | 分页 |
+
+> 日期为什么用 `coalesce`：草稿还没有检验时间，但翻旧账时也得能被捞出来，
+> 否则草稿在列表里是隐形的。
+>
+> 这套条件定义在 `dto/InspectionQuery` 里，**列表分页和 CSV 导出共用同一个 `toWrapper()`**。
+> 以前两处各写一遍，加条件时只改了一处，就会出现「屏幕上 3 条、导出的 CSV 里 30 条」——
+> 这种账对不上，比没有导出更糟。
+
 ---
 
 ## 四、统计
@@ -449,6 +468,16 @@ Base URL：`http://localhost:8080/api`
 |---|---|---|
 | GET | `/inspections/stat/daily` | 近 30 天检验量、单级与件级合格数 |
 | GET | `/inspections/stat/defect` | 缺陷分布（帕累托数据源） |
+| GET | `/batches/stat/supplier` | 供应商来料质量排名（按件级合格率升序，差的在前） |
+
+`stat/supplier` 响应：
+```json
+[{ "supplier": "宁波精铸一厂", "batches": 12, "lots": 14, "lots_pass": 11, "lots_fail": 3,
+   "piece_total": 1240, "piece_pass": 1198 }]
+```
+
+> IQC 真正要回答的不是「今天合格率多少」，而是「哪家厂的货在拖后腿」，所以排序朝下。
+> 没填供应商的批次归到「（未填供应商）」单独一行，不丢弃——这行数字本身就是个待办。
 
 `stat/daily` 响应：
 ```json
@@ -495,7 +524,8 @@ Base URL：`http://localhost:8080/api`
 | GET | `/defects?inspectionId=1&status=PENDING` | 不良列表 |
 | POST | `/defects/{id}/dispose` | 提交处置 |
 | POST | `/defects/{id}/concession` | 让步接收审批 |
-| POST | `/defects/{id}/recheck` | 挂返工后的复检单 |
+| POST | `/defects/{id}/recheck` | 挂一张**已有**的复检单（补录用） |
+| POST | `/defects/{id}/recheck/open` | **开复检单**：按返工件数自动建单并回填关联 |
 | GET | `/defects/pareto?productId=1&from=2026-07-01` | 不良帕累托（含占比与累计占比） |
 | GET | `/defect-codes?category=外观` | 不良代码字典 |
 | POST | `/defect-codes` | 新增 / 修改不良代码 |
@@ -515,8 +545,48 @@ Base URL：`http://localhost:8080/api`
 
 额外两条硬规则：
 
-- 返工单 → `DONE` 时**必须已有 `recheckInspectionId`**，否则报「返工完成后必须挂一张复检单」
+- 返工单 → `DONE` 时**必须挂着一张复检单，且该单已判定 PASS**。挂单还不够：
+  复检单没提交、判定不合格的，一律不放行——返工没修好却标成已完成，
+  就是在质量记录上写「已处理」，而实物还是坏的
 - `disposition = CONCESSION` 走 `dispose` 会被拒，必须走 `/concession` 并带理由和授权人（DB 层还有 CHECK 约束兜底）
+
+**返工复检闭环**
+
+```
+判 NG → 不良记录（disposition 预填 REWORK / PENDING）
+  → 开始返工（PROCESSING）
+  → 开复检单（recheck/open）
+  → 填报 → 提交 → 审核
+  → 复检 PASS → 完成返工（DONE）
+  → 复检 FAIL → 不许 DONE，重新返工或改判报废
+```
+
+`POST /defects/{id}/recheck/open` 无请求体，返回：
+```json
+{
+  "inspectionId": 12, "inspectionNo": "QC202610210004",
+  "sampleQty": 3, "acceptQty": 0,
+  "originInspectionId": 9, "originInspectionNo": "QC202610210002",
+  "lineCount": 3
+}
+```
+
+三个与普通建单不同的取值，都是有意的：
+
+| 项 | 取值 | 原因 |
+|---|---|---|
+| 件数 | 该不良的 `defectQty` | 返工 3 件就验 3 件。按批量重新抽 50 件，抽的是早已判过的那批，验了也证明不了返工有效 |
+| 允收数 Ac | **恒定 0** | 这不是抽样验收，是返工有效性确认。给一个允收数，等于允许返工后还有不合格件流出去 |
+| 明细判据 | 复制**原单快照** | 标准若已改版，复检和原单就不是同一套判据，两级结论没法对比 |
+
+其它约束：
+
+- 返工未开始（`PENDING`）不许开复检单——没返工就复检，验的还是原来那批坏件
+- 一条不良只许一张**有效**复检单（`status <> 'VOID'` 的部分唯一索引兜底）。复检单开错作废后可以重开，不会被永久卡死
+- 批量上限 200 件，超过要求按工位/班次拆单
+
+复检单在 `qc_inspection` 上有 `recheck_of_id`（源单）与 `recheck_defect_id`（针对哪条不良），
+详情接口额外返回 `recheckOfNo`（源单号），检验单页与报告打印都会标注「返工复检单」。
 
 **让步接收**
 ```json
@@ -539,7 +609,53 @@ Base URL：`http://localhost:8080/api`
 | GET | `/trace/shipment/{shipmentNo}` | 反向：出货单号 → 批次 → 检验单 → 量具与实测值 |
 | GET | `/trace/customer?customer=苏州德茂` | 某客户收到过的所有批次 |
 | GET | `/shipments?batchId=1` | 出货记录 |
-| POST | `/shipments` | 新增出货 |
+| GET | `/shipments/context/{batchId}` | 出货前置信息：批次数量、已出货、还能出、最新检验结论、拦截理由 |
+| POST | `/shipments` | 登记出货（带校验） |
+
+### 出货登记
+
+```json
+{
+  "batchId": 1,
+  "customer": "苏州德茂机械",
+  "qty": 300,
+  "shippedAt": "2026-10-21T10:00:00",
+  "remark": "客户催货，让步放行已由质量经理批准",
+  "force": true
+}
+```
+
+`force` 是「例外放行」开关。以下三条会把出货拦下来，只有 `force=true` 才能过：
+
+| 拦截条件 | 提示 |
+|---|---|
+| 该批次最新检验结论为 `FAIL` | 该批次最新检验结论为不合格（单号） |
+| 该批次最新检验结论为 `NA`（提交了但没判定） | 该批次检验单尚未判定（单号） |
+| 该批次没有任何已提交/已归档的检验单 | 该批次还没有任何检验结论 |
+
+另外两条**任何情况下都不放行**（`force` 也过不去）：
+
+- **客户为空** —— 没有客户名字，这张出货记录在客诉时等于没用
+- **累计超发** —— 批次 100 件、已出 80 件，再报 30 件直接拒绝
+
+> 尺度是「默认关门，允许显式开」：一刀切禁止会逼车间绕过系统手工记账，
+> 默默放行则是质量事故的温床。例外放行的记录会在 `remark` 前打上 `[例外放行]`，
+> 一年后翻出来能一眼认出它当年是带着问题出去的。
+
+`GET /shipments/context/1` 响应：
+
+```json
+{
+  "batchId": 1, "batchNo": "B20261019001",
+  "batchQty": 500, "shippedQty": 200, "remainingQty": 300,
+  "inspectionNo": "QC202610190001", "result": "PASS",
+  "blocking": null
+}
+```
+
+> `remainingQty` 必须由后端算：并发登记时两边都以为还有余量，靠前端自己减会超发。
+
+出货单号格式 `SH + yyyyMMdd + 3 位日流水`（如 `SH20261021001`），和检验单号一样按日计数、删除后不复用。
 
 返回结构（`/trace/batch/1`）：
 

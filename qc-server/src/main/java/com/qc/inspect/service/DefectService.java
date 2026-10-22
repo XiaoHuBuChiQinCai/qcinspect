@@ -13,7 +13,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 不良处置闭环。
@@ -34,10 +37,41 @@ public class DefectService {
     private final NoticeService noticeService;
 
     public List<QcDefect> list(Long inspectionId, String status) {
-        return defectMapper.selectList(new LambdaQueryWrapper<QcDefect>()
+        List<QcDefect> list = defectMapper.selectList(new LambdaQueryWrapper<QcDefect>()
                 .eq(inspectionId != null, QcDefect::getInspectionId, inspectionId)
                 .eq(status != null && !status.isBlank(), QcDefect::getDispositionStatus, status)
                 .orderByDesc(QcDefect::getId));
+        fillRecheck(list);
+        return list;
+    }
+
+    /**
+     * 把复检单的单号/状态/结论贴回不良记录。
+     *
+     * <p>为什么不在 SQL 里 join：列表是「一屏看完」的场景，一次批量查询比
+     * N 次 join 更好控；更重要的是，处置列表页最常被问的一句话是
+     * 「这条返工到底修好了没有」——只给一个内部 id，等于让人再去搜一次。
+     */
+    private void fillRecheck(List<QcDefect> list) {
+        if (list.isEmpty()) {
+            return;
+        }
+        Set<Long> ids = list.stream().map(QcDefect::getRecheckInspectionId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return;
+        }
+        Map<Long, QcInspection> map = inspectionMapper.selectBatchIds(ids).stream()
+                .collect(Collectors.toMap(QcInspection::getId, Function.identity(), (a, b) -> a));
+        for (QcDefect d : list) {
+            QcInspection r = map.get(d.getRecheckInspectionId());
+            if (r == null) {
+                continue;
+            }
+            d.setRecheckInspectionNo(r.getInspectionNo());
+            d.setRecheckStatus(r.getStatus());
+            d.setRecheckResult(r.getResult());
+        }
     }
 
     /**
@@ -74,9 +108,28 @@ public class DefectService {
         }
         validateTransition(d, target);
 
-        if ("DONE".equals(target) && "REWORK".equals(d.getDisposition())
-                && d.getRecheckInspectionId() == null) {
-            throw BizException.of("返工完成后必须挂一张复检单，否则无法证明返工后的产品是合格的");
+        if ("DONE".equals(target) && "REWORK".equals(d.getDisposition())) {
+            if (d.getRecheckInspectionId() == null) {
+                throw BizException.of("返工完成后必须挂一张复检单，否则无法证明返工后的产品是合格的");
+            }
+            // 挂了复检单不等于复检合格。返工没修好却把不良标成 DONE，
+            // 等于在质量记录上写「已处理」，而实物还是坏的——这是最危险的一种数据失真。
+            QcInspection recheck = inspectionMapper.selectById(d.getRecheckInspectionId());
+            if (recheck == null) {
+                throw BizException.of("挂的复检单不存在（ID " + d.getRecheckInspectionId() + "），请重新挂接");
+            }
+            if ("DRAFT".equals(recheck.getStatus())) {
+                throw BizException.of("复检单 " + recheck.getInspectionNo()
+                        + " 还没提交，现在标完成没有依据。请先填完复检并提交");
+            }
+            if ("FAIL".equals(recheck.getResult())) {
+                throw BizException.of("复检单 " + recheck.getInspectionNo()
+                        + " 判定为不合格：返工没修好，不能算闭环。请重新返工，或把处置改为报废");
+            }
+            if (!"PASS".equals(recheck.getResult())) {
+                throw BizException.of("复检单 " + recheck.getInspectionNo()
+                        + " 没有判定结论（" + recheck.getResult() + "），无法作为返工合格的依据");
+            }
         }
 
         d.setDispositionStatus(target);

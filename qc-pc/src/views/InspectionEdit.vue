@@ -38,6 +38,18 @@
       </div>
     </el-alert>
 
+    <!-- 返工复检：单独一条，不能只藏在抽样依据的文字里。
+         复检单和普通单在判定时完全不同（Ac=0），看单的人必须先知道自己在看哪种 -->
+    <el-alert v-if="info.recheckOfId" type="warning" :closable="false" class="recheck-bar">
+      <template #title>
+        本单是返工复检单 —— 源单
+        <el-link type="primary" @click="$router.push(`/inspection/${info.recheckOfId}`)">
+          {{ info.recheckOfNo || ('#' + info.recheckOfId) }}
+        </el-link>
+        的不良返工后复检，逐件全检、Ac=0
+      </template>
+    </el-alert>
+
     <!-- 抽样依据：检验员看单第一眼要知道「凭什么抽这么多件、凭什么判接收」 -->
     <div v-if="info.samplingBasis" class="sampling-basis">
       <span class="sb-label">抽样依据</span>
@@ -173,6 +185,37 @@
       </div>
     </div>
 
+    <!--
+      操作轨迹：审核员和主管最常问的两个问题——「谁退回来的」「当时怎么说的」。
+      退回理由必须原样完整显示，不能截断，否则等于没记。
+    -->
+    <div class="log-block">
+      <div class="log-head">
+        <span class="log-title">操作轨迹</span>
+        <span class="log-tip">状态每变一次都会留痕，不可编辑、不可删除</span>
+      </div>
+      <el-empty v-if="!logs.length" description="暂无操作记录" :image-size="60" />
+      <el-timeline v-else class="log-timeline">
+        <el-timeline-item
+          v-for="l in timeline"
+          :key="l.id"
+          :type="logType(l.action)"
+          :hollow="l.action === 'CREATE'"
+          :timestamp="fmtTime(l.createdAt)"
+          placement="top"
+        >
+          <div class="log-row">
+            <span class="log-action">{{ logText(l.action) }}</span>
+            <span class="log-who">{{ l.operator || '—' }}</span>
+            <el-tag v-if="l.fromStatus" size="small" type="info" effect="plain">
+              {{ statusText(l.fromStatus) }} → {{ statusText(l.toStatus) }}
+            </el-tag>
+          </div>
+          <div v-if="l.reason" class="log-reason">{{ l.reason }}</div>
+        </el-timeline-item>
+      </el-timeline>
+    </div>
+
     <div class="footer">
       <el-button @click="$router.push(`/report/${route.params.id}`)">检验报告</el-button>
       <div class="spacer" />
@@ -202,6 +245,38 @@ const locked = ref(false)
 const gauges = ref([])
 const images = ref([])
 const uploading = ref(false)
+const logs = ref([])
+
+// 后端按 id 倒序返回（新的在前），时间线从旧到新读起来才顺
+const timeline = computed(() => [...logs.value].reverse())
+
+const LOG_TEXT = {
+  CREATE: '创建检验单',
+  SUBMIT: '提交判定',
+  REOPEN: '解锁退回录入',
+  CLOSE: '归档',
+  REVIEW: '审核通过',
+  REJECT: '审核退回',
+  VOID: '作废'
+}
+const LOG_TYPE = {
+  CREATE: 'primary',
+  SUBMIT: 'primary',
+  REVIEW: 'success',
+  CLOSE: 'success',
+  REJECT: 'danger',
+  VOID: 'info',
+  REOPEN: 'warning'
+}
+const STATUS_TEXT = { DRAFT: '草稿', SUBMITTED: '待审核', CLOSED: '已归档', VOID: '已作废' }
+
+const logText = a => LOG_TEXT[a] || a || '—'
+const logType = a => LOG_TYPE[a] || 'primary'
+const statusText = s => STATUS_TEXT[s] || s || '—'
+
+function fmtTime(t) {
+  return t ? String(t).replace('T', ' ').slice(0, 19) : ''
+}
 
 const imageUrls = computed(() => images.value.map(i => i.url))
 
@@ -266,16 +341,25 @@ async function load() {
   loading.value = true
   try {
     const data = await http.get(`/inspections/${route.params.id}`)
-    info.value = data.inspection
+    info.value = { ...data.inspection, recheckOfNo: data.recheckOfNo }
     pieces.value = data.pieces
     locked.value = !!data.locked
     activeGroups.value = Object.keys(data.pieces[0]?.groups || {})
     currentPiece.value = data.pieces[0]?.pieceNo || 1
     initLines()
     gauges.value = await http.get('/gauges', { params: { status: 'ACTIVE' } })
-    await loadImages()
+    await Promise.all([loadImages(), loadLogs()])
   } finally {
     loading.value = false
+  }
+}
+
+async function loadLogs() {
+  try {
+    logs.value = await http.get(`/inspections/${route.params.id}/logs`)
+  } catch {
+    // 日志接口挂了不该让人录不了数据，但也不能假装有日志
+    logs.value = []
   }
 }
 
@@ -431,6 +515,7 @@ onMounted(load)
   font-size: 13px; color: #606266;
 }
 .sb-label { font-weight: 600; color: #909399; }
+.recheck-bar { margin-bottom: 12px; }
 .group-title { font-weight: 500; }
 .line { padding: 12px 4px; border-bottom: 1px dashed #ebeef5; }
 .line.ng { background: #fef0f0; }
@@ -454,4 +539,20 @@ onMounted(load)
 
 .footer { display: flex; align-items: center; margin-top: 24px; }
 .footer .spacer { flex: 1; }
+
+.log-block { margin-top: 24px; padding-top: 16px; border-top: 1px solid #ebeef5; }
+.log-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.log-title { font-weight: 600; }
+.log-tip { font-size: 12px; color: #909399; }
+.log-timeline { padding-left: 2px; }
+.log-row { display: flex; align-items: center; gap: 8px; }
+.log-action { font-weight: 500; }
+.log-who { font-size: 12px; color: #909399; }
+/* 退回理由整段展示，超长只换行不省略——截断就等于把证据藏起来 */
+.log-reason {
+  margin-top: 6px; padding: 8px 10px;
+  background: #fdf6ec; border-left: 3px solid #e6a23c; border-radius: 2px;
+  font-size: 13px; color: #606266; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
 </style>

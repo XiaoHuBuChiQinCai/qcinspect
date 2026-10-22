@@ -8,6 +8,7 @@ import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcDefectCode;
 import com.qc.inspect.mapper.QcDefectCodeMapper;
 import com.qc.inspect.service.DefectService;
+import com.qc.inspect.service.InspectionService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,6 +29,7 @@ import java.util.Map;
 public class DefectController {
 
     private final DefectService defectService;
+    private final InspectionService inspectionService;
     private final QcDefectCodeMapper defectCodeMapper;
 
     // ---------------- 不良记录 ----------------
@@ -50,10 +52,21 @@ public class DefectController {
         return R.ok(defectService.concession(id, req.reason(), req.approvedBy()));
     }
 
-    /** 挂复检单 */
+    /** 挂已有的复检单（补录用；正常流程请用下面的「开复检单」） */
     @PostMapping("/defects/{id}/recheck")
     public R<QcDefect> recheck(@PathVariable Long id, @RequestBody RecheckReq req) {
         return R.ok(defectService.linkRecheck(id, req.recheckInspectionId()));
+    }
+
+    /**
+     * 开复检单：按这条不良的返工件数自动建一张复检单并回填关联。
+     *
+     * <p>与 {@code POST /defects/{id}/recheck} 的区别：那个是「我手上已经有一张单，把它挂上」，
+     * 这个是「现在就给我开一张」。返工完成后检验员该走的是这一条。
+     */
+    @PostMapping("/defects/{id}/recheck/open")
+    public R<Map<String, Object>> openRecheck(@PathVariable Long id) {
+        return R.ok(inspectionService.createRecheck(id, UserContext.operator(null)));
     }
 
     /** 不良帕累托 */

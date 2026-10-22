@@ -55,11 +55,20 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="复检单" width="100">
+        <el-table-column label="复检单" width="160">
           <template #default="{ row }">
-            <el-link v-if="row.recheckInspectionId" type="primary" @click="goInspection(row.recheckInspectionId)">
-              {{ row.recheckInspectionId }}
-            </el-link>
+            <template v-if="row.recheckInspectionNo">
+              <el-link type="primary" @click="goInspection(row.recheckInspectionId)">
+                {{ row.recheckInspectionNo }}
+              </el-link>
+              <div class="sub">
+                <el-tag v-if="row.recheckStatus === 'DRAFT'" size="small" type="info">未提交</el-tag>
+                <el-tag v-else-if="row.recheckResult === 'PASS'" size="small" type="success">复检合格</el-tag>
+                <el-tag v-else-if="row.recheckResult === 'FAIL'" size="small" type="danger">复检不合格</el-tag>
+                <el-tag v-else-if="row.recheckStatus === 'VOID'" size="small" type="info">已作废</el-tag>
+                <el-tag v-else size="small" type="warning">{{ row.recheckStatus }}</el-tag>
+              </div>
+            </template>
             <span v-else class="empty-inline">—</span>
           </template>
         </el-table-column>
@@ -69,14 +78,48 @@
             <div class="sub">{{ row.concessionReason || row.dispositionNote || '' }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
-            <template v-if="row.dispositionStatus === 'PENDING' || row.dispositionStatus === 'PROCESSING'">
+            <!-- 还没定处置方式 -->
+            <template v-if="!row.disposition">
               <el-button size="small" @click="dispose(row, 'REWORK', 'PROCESSING')">返工</el-button>
               <el-button size="small" @click="dispose(row, 'RETURN', 'PROCESSING')">退货</el-button>
               <el-button size="small" type="warning" @click="dispose(row, 'SCRAP', 'DONE')">报废</el-button>
               <el-button size="small" type="danger" @click="openConcession(row)">让步接收</el-button>
             </template>
+
+            <!-- 返工待开始：缺陷判出来时处置就预填成「返工」了，但那只是建议 -->
+            <template v-else-if="row.disposition === 'REWORK' && row.dispositionStatus === 'PENDING'">
+              <el-button size="small" type="primary" @click="dispose(row, 'REWORK', 'PROCESSING')">开始返工</el-button>
+              <el-button size="small" type="warning" @click="dispose(row, 'SCRAP', 'DONE')">改报废</el-button>
+              <el-button size="small" @click="dispose(row, 'RETURN', 'PROCESSING')">改退货</el-button>
+              <el-button size="small" type="danger" @click="openConcession(row)">让步接收</el-button>
+            </template>
+
+            <!-- 返工中：开复检 → 填报提交 → 回来标完成 -->
+            <template v-else-if="row.disposition === 'REWORK' && isOpen(row)">
+              <el-button v-if="!row.recheckInspectionNo" size="small" type="primary" @click="openRecheck(row)">
+                开复检单
+              </el-button>
+              <el-button v-else size="small" type="primary" plain @click="goInspection(row.recheckInspectionId)">
+                去复检
+              </el-button>
+              <el-button size="small" type="success" @click="finishRework(row)">完成返工</el-button>
+              <el-button size="small" type="warning" @click="dispose(row, 'SCRAP', 'DONE')">改报废</el-button>
+            </template>
+
+            <!-- 退货中 -->
+            <template v-else-if="row.disposition === 'RETURN' && isOpen(row)">
+              <el-button size="small" type="success" @click="dispose(row, 'RETURN', 'DONE')">完成退货</el-button>
+              <el-button size="small" type="warning" @click="dispose(row, 'SCRAP', 'DONE')">改报废</el-button>
+            </template>
+
+            <template v-else-if="isOpen(row)">
+              <el-button size="small" type="success" @click="dispose(row, row.disposition, 'DONE')">
+                标为完成
+              </el-button>
+            </template>
+
             <el-button v-else size="small" disabled>已闭环</el-button>
           </template>
         </el-table-column>
@@ -159,6 +202,48 @@ async function dispose(row, disposition, status) {
   }
   ElMessage.success('已提交处置')
   await load()
+}
+
+/**
+ * 开复检单。
+ *
+ * 件数不是用户填的，而是这条不良的返工件数——返工了 3 件就验 3 件。
+ * 也不给用户改允收数：复检是返工有效性确认，不是抽样验收，Ac 恒为 0。
+ */
+async function openRecheck(row) {
+  const qty = row.defectQty && row.defectQty > 0 ? row.defectQty : 1
+  try {
+    await ElMessageBox.confirm(
+      `将按返工 ${qty} 件建复检单：逐件全检、Ac=0，判据沿用原单的标准快照。` +
+      `复检不合格的，返工不能标完成。`,
+      '开复检单',
+      { confirmButtonText: '开单并去填报', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  const r = await http.post(`/defects/${row.id}/recheck/open`)
+  ElMessage.success(`已建复检单 ${r.inspectionNo}，共 ${r.sampleQty} 件`)
+  router.push(`/inspection/${r.inspectionId}`)
+}
+
+async function finishRework(row) {
+  try {
+    await ElMessageBox.confirm(
+      '确认返工已完成？系统会核对复检单：没提交、或判定不合格的，不允许标完成。',
+      '完成返工',
+      { confirmButtonText: '确认完成', cancelButtonText: '再等等' }
+    )
+  } catch {
+    return
+  }
+  await http.post(`/defects/${row.id}/dispose`, { disposition: 'REWORK', status: 'DONE' })
+  ElMessage.success('返工已闭环')
+  await load()
+}
+
+function isOpen(row) {
+  return row.dispositionStatus === 'PENDING' || row.dispositionStatus === 'PROCESSING'
 }
 
 function openConcession(row) {

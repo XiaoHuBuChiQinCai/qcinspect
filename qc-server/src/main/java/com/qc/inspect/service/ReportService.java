@@ -96,6 +96,13 @@ public class ReportService {
         r.put("logs", logs);
         r.put("printedBy", UserContext.username());
         r.put("printedAt", LocalDateTime.now());
+        // 复检单的报告要印出来源单号：报告是给客户和审核员看的，他们不认内部 id
+        if (ins.getRecheckOfId() != null) {
+            QcInspection origin = inspectionMapper.selectById(ins.getRecheckOfId());
+            if (origin != null) {
+                r.put("recheckOfNo", origin.getInspectionNo());
+            }
+        }
         return r;
     }
 }

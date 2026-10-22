@@ -1,6 +1,7 @@
 package com.qc.inspect.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -47,4 +48,17 @@ public class QcDefect {
 
     private String createdBy;
     private LocalDateTime createdAt;
+
+    /* ---------- 非表字段：处置列表展示用 ---------- */
+
+    /** 复检单单号。只给前端看 id 没有意义——人在群里说的是单号 */
+    @TableField(exist = false)
+    private String recheckInspectionNo;
+
+    /** 复检单状态与结论，用来在列表上直接看出「返工到底修好没有」 */
+    @TableField(exist = false)
+    private String recheckStatus;
+
+    @TableField(exist = false)
+    private String recheckResult;
 }

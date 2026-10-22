@@ -14,6 +14,7 @@ spring:
         - classpath:db/V5__review_and_role.sql
         - classpath:db/V6__notice.sql
         - classpath:db/V7__sampling_plan.sql
+        - classpath:db/V8__recheck.sql
       continue-on-error: false
 
 mybatis-plus:

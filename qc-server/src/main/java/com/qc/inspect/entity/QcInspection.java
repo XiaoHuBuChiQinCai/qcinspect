@@ -77,6 +77,14 @@ public class QcInspection {
     private LocalDateTime inspectedAt;
     private String remark;
 
+    /* ---------- 返工复检：本单若为复检，指向原单与它要验证的那条不良 ---------- */
+
+    /** 复检来源单 ID，普通单为空 */
+    private Long recheckOfId;
+
+    /** 复检针对的不良记录 id */
+    private Long recheckDefectId;
+
     @TableLogic
     private Integer delFlag;
 

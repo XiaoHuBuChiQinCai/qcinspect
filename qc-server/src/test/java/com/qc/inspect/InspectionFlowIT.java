@@ -1,12 +1,15 @@
 package com.qc.inspect;
 
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qc.inspect.entity.QcBatch;
+import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcProduct;
 import com.qc.inspect.entity.QcStandard;
 import com.qc.inspect.entity.QcStandardItem;
 import com.qc.inspect.mapper.QcBatchMapper;
+import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcProductMapper;
 import com.qc.inspect.mapper.QcStandardItemMapper;
 import com.qc.inspect.mapper.QcStandardMapper;
@@ -96,11 +99,14 @@ class InspectionFlowIT {
     private QcStandardMapper standardMapper;
     @Autowired
     private QcStandardItemMapper standardItemMapper;
+    @Autowired
+    private QcDefectMapper defectMapper;
 
     private static String token;
     private static Long batchId;
     private static Long firstInspectionId;
     private static Long aqlProductId;
+    private static Long rkProductId;
 
     // ==================== 用例 ====================
 
@@ -340,6 +346,243 @@ class InspectionFlowIT {
                 .as("批量超出抽样表范围要报错").isNotEqualTo(0);
     }
 
+    @Test
+    @Order(10)
+    @DisplayName("出货登记：累计出货不得超发，单号按日流水，客户不能为空")
+    void shipmentGuardsOverShip() {
+        // 自带一个干净批次：V1 的示例批次 3 件已经全部出完（剩余 0），拿它测不出正常路径
+        Long okBatch = aqlBatch("IT-SHIP-OK", 100);
+        Long okIns = num(data(post("/api/inspections", Map.of("batchId", okBatch)))
+                .get("inspectionId"));
+        data(post("/api/inspections/" + okIns + "/submit",
+                Map.of("lines", fillCompliant(detail(okIns)))));
+
+        Map<String, Object> ctx = data(get("/api/shipments/context/" + okBatch));
+        assertThat(num(ctx.get("batchQty"))).isEqualTo(100L);
+        assertThat(num(ctx.get("shippedQty"))).isZero();
+        assertThat(num(ctx.get("remainingQty"))).isEqualTo(100L);
+        // 已提交且判合格的批次，出货不该被拦
+        assertThat(ctx.get("result")).isEqualTo("PASS");
+        assertThat(ctx.get("blocking")).as("合格批次不该有拦截理由").isNull();
+
+        Map<String, Object> s = data(post("/api/shipments",
+                Map.of("batchId", okBatch, "customer", "IT 客户", "qty", 30)));
+        // 单号必须可读可检索：客诉时人手里只有这个号
+        assertThat(String.valueOf(s.get("shipmentNo"))).matches("SH\\d{11}");
+
+        Map<String, Object> after = data(get("/api/shipments/context/" + okBatch));
+        assertThat(num(after.get("shippedQty"))).isEqualTo(30L);
+        assertThat(num(after.get("remainingQty"))).isEqualTo(70L);
+
+        // 30 + 80 = 110 > 100：超发必须拦，出货记录是追溯终点，数量对不上追溯结论就不可信
+        Map<String, Object> over = post("/api/shipments",
+                Map.of("batchId", okBatch, "customer", "IT 客户", "qty", 80));
+        assertThat(over.get("code")).as("累计超发要被拦住").isNotEqualTo(0);
+
+        // 客户留空等于没有追溯终点，force 也放不过去
+        assertThat(post("/api/shipments",
+                Map.of("batchId", okBatch, "customer", "  ", "qty", 1, "force", true)).get("code"))
+                .as("客户不能为空").isNotEqualTo(0);
+
+        // 剩余量刚好用完是允许的，边界不做「少一件」的保守处理
+        Map<String, Object> fill = data(post("/api/shipments",
+                Map.of("batchId", okBatch, "customer", "IT 客户", "qty", 70)));
+        assertThat(fill.get("shipmentNo")).isNotNull();
+        assertThat(num(data(get("/api/shipments/context/" + okBatch)).get("remainingQty"))).isZero();
+    }
+
+    @Test
+    @Order(11)
+    @DisplayName("没有检验结论的批次默认不许出货，例外放行必须留痕")
+    void shipmentRequiresConclusion() {
+        // aqlBatch 只建批次不开单，正好是「货到了但还没检」的状态
+        Long raw = aqlBatch("IT-SHIP-NOCHK", 100);
+
+        Map<String, Object> ctx = data(get("/api/shipments/context/" + raw));
+        assertThat(ctx.get("result")).isNull();
+        assertThat(String.valueOf(ctx.get("blocking"))).contains("还没有任何检验结论");
+
+        Map<String, Object> blocked = post("/api/shipments",
+                Map.of("batchId", raw, "customer", "IT 客户", "qty", 10));
+        assertThat(blocked.get("code")).as("没结论不能直接出货").isNotEqualTo(0);
+
+        Map<String, Object> forced = data(post("/api/shipments",
+                Map.of("batchId", raw, "customer", "IT 客户", "qty", 10, "force", true)));
+        // 一年后看到这张单，要能一眼认出它当年是带着问题出去的
+        assertThat(String.valueOf(forced.get("remark")))
+                .contains("[例外放行]").contains("还没有任何检验结论");
+    }
+
+    @Test
+    @Order(12)
+    @DisplayName("筛选口径：列表、导出、供应商统计三处必须对得上")
+    void filtersAndSupplierStat() {
+        // 单号/批次号同一个输入框：主管手里通常只有一个号，记不清是哪一种
+        Map<String, Object> byKeyword = data(
+                get("/api/inspections/page?current=1&size=50&keyword=IT-AQL-B300"));
+        List<Map<String, Object>> recs = asList(byKeyword.get("records"));
+        assertThat(recs).isNotEmpty();
+        for (Map<String, Object> r : recs) {
+            assertThat(String.valueOf(r.get("batchNo"))).contains("IT-AQL-B300");
+        }
+
+        Map<String, Object> passOnly = data(get("/api/inspections/page?current=1&size=50&result=PASS"));
+        List<Map<String, Object>> passRecs = asList(passOnly.get("records"));
+        assertThat(passRecs).isNotEmpty();
+        for (Map<String, Object> r : passRecs) {
+            assertThat(r.get("result")).isEqualTo("PASS");
+        }
+
+        // 导出走的是同一份 InspectionQuery：屏幕上 3 条，CSV 里也必须是 3 条 + 表头
+        ResponseEntity<byte[]> resp = rest.exchange("/api/export/inspections?keyword=IT-AQL-B300",
+                HttpMethod.GET, new HttpEntity<>(authHeaders()), byte[].class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        byte[] body = resp.getBody();
+        assertThat(body).isNotNull();
+        String csv = new String(body, 3, body.length - 3, StandardCharsets.UTF_8);
+        long dataLines = csv.lines().filter(l -> l.startsWith("QC")).count();
+        assertThat(dataLines).as("导出条数应与列表一致").isEqualTo(recs.size());
+
+        // 供应商统计：件级合格率升序，最差的排前面
+        List<Map<String, Object>> sup = asList(get("/api/batches/stat/supplier").get("data"));
+        assertThat(sup).isNotEmpty();
+        assertThat(sup).as("没填供应商的批次要单独成组，不能吞掉")
+                .anyMatch(r -> "（未填供应商）".equals(r.get("supplier")));
+
+        double prev = -1;
+        for (Map<String, Object> r : sup) {
+            long total = num(r.get("piece_total"));
+            if (total == 0) {
+                continue;
+            }
+            double rate = (double) num(r.get("piece_pass")) / total;
+            assertThat(rate).as("供应商应按件级合格率升序，差的在前").isGreaterThanOrEqualTo(prev);
+            prev = rate;
+        }
+    }
+
+    @Test
+    @Order(13)
+    @DisplayName("返工复检：未返工不许开复检，复检不合格不许算返工完成")
+    void reworkRecheckLoop() {
+        Long rkBatch = rkBatch("IT-RK-B1");
+        Long id = num(data(post("/api/inspections", Map.of("batchId", rkBatch))).get("inspectionId"));
+
+        // 先判一张 NG 单：不良记录是复检闭环的起点，没有它整条链无从谈起
+        data(post("/api/inspections/" + id + "/submit",
+                Map.of("lines", fillViolating(detail(id)))));
+        assertThat(asMap(detail(id).get("inspection")).get("result")).isEqualTo("FAIL");
+
+        List<Map<String, Object>> defects = asList(get("/api/defects?inspectionId=" + id).get("data"));
+        assertThat(defects).as("判 NG 必须落一条不良").hasSize(1);
+        Long defectId = num(defects.get(0).get("id"));
+        // 缺陷判出来时处置就预填成 REWORK，但那只是「建议怎么处理」，不是已执行
+        assertThat(defects.get(0).get("disposition")).isEqualTo("REWORK");
+        assertThat(defects.get(0).get("dispositionStatus")).isEqualTo("PENDING");
+
+        // 还没返工就开复检单 —— 验的还是原来那批坏件，结论会被当成返工有效的证据
+        assertThat(num(post("/api/defects/" + defectId + "/recheck/open", Map.of()).get("code")))
+                .as("返工开始前不许开复检单").isNotEqualTo(0);
+
+        data(post("/api/defects/" + defectId + "/dispose",
+                Map.of("disposition", "REWORK", "status", "PROCESSING")));
+
+        // 模拟「这一条不良涉及 3 件返工」，用来验证复检件数跟着不良件数走
+        defectMapper.update(null, new LambdaUpdateWrapper<QcDefect>()
+                .eq(QcDefect::getId, defectId).set(QcDefect::getDefectQty, 3));
+
+        Map<String, Object> rk = data(post("/api/defects/" + defectId + "/recheck/open", Map.of()));
+        Long recheckId = num(rk.get("inspectionId"));
+        assertThat(num(rk.get("sampleQty"))).as("返工 3 件就验 3 件，不按批量重抽").isEqualTo(3L);
+        assertThat(num(rk.get("acceptQty"))).as("复检 Ac 恒为 0").isZero();
+        assertThat(num(rk.get("originInspectionId"))).isEqualTo(id);
+
+        Map<String, Object> rdetail = detail(recheckId);
+        Map<String, Object> rins = asMap(rdetail.get("inspection"));
+        assertThat(num(rins.get("recheckOfId"))).as("复检单必须能追回原单").isEqualTo(id);
+        assertThat(num(rins.get("recheckDefectId"))).isEqualTo(defectId);
+        assertThat(asList(rdetail.get("pieces"))).as("按返工件数展开明细").hasSize(3);
+        // 判据沿用原单快照：标准日后改版，复检和原单也必须能对比
+        assertThat(String.valueOf(rins.get("samplingBasis"))).contains("返工复检").contains("Ac=0");
+
+        // 重复开单会造出没人管的孤儿单
+        assertThat(num(post("/api/defects/" + defectId + "/recheck/open", Map.of()).get("code")))
+                .as("一条不良只许一张复检单").isNotEqualTo(0);
+
+        // 复检单还是草稿，返工不能标完成
+        assertThat(num(post("/api/defects/" + defectId + "/dispose",
+                Map.of("disposition", "REWORK", "status", "DONE")).get("code")))
+                .as("复检没提交不许标完成").isNotEqualTo(0);
+
+        // 复检不合格：返工没修好，同样不许闭环
+        data(post("/api/inspections/" + recheckId + "/submit",
+                Map.of("lines", fillViolating(detail(recheckId)))));
+        assertThat(asMap(detail(recheckId).get("inspection")).get("result")).isEqualTo("FAIL");
+        assertThat(num(post("/api/defects/" + defectId + "/dispose",
+                Map.of("disposition", "REWORK", "status", "DONE")).get("code")))
+                .as("复检不合格不许标完成").isNotEqualTo(0);
+
+        // 重新返工后复检合格：解锁补录正确值再提交
+        data(post("/api/inspections/" + recheckId + "/reopen?reason=返工后复检补录",
+                Map.of()));
+        data(post("/api/inspections/" + recheckId + "/submit",
+                Map.of("lines", fillCompliant(detail(recheckId)))));
+        assertThat(asMap(detail(recheckId).get("inspection")).get("result")).isEqualTo("PASS");
+
+        data(post("/api/defects/" + defectId + "/dispose",
+                Map.of("disposition", "REWORK", "status", "DONE")));
+        Map<String, Object> done = asList(get("/api/defects?inspectionId=" + id).get("data")).get(0);
+        assertThat(done.get("dispositionStatus")).isEqualTo("DONE");
+        // 列表上要能直接看出复检结论，否则还得再点进单据才敢说返工修好了
+        assertThat(String.valueOf(done.get("recheckInspectionNo"))).startsWith("QC");
+        assertThat(done.get("recheckResult")).isEqualTo("PASS");
+    }
+
+    /** 复检用例夹具：固定抽样 1 件、Ac=0 的独立产品，判 NG 后正好落一条可返工的不良 */
+    private Long rkBatch(String batchNo) {
+        if (rkProductId == null) {
+            QcProduct p = new QcProduct();
+            p.setProductCode("IT-RK");
+            p.setProductName("返工复检试用件");
+            p.setUnit("件");
+            productMapper.insert(p);
+            rkProductId = p.getId();
+
+            QcStandard std = new QcStandard();
+            std.setStandardCode("S-IT-RK");
+            std.setProductId(rkProductId);
+            std.setVersion(1);
+            std.setStatus("ACTIVE");
+            std.setSamplingType("SAMPLE");
+            std.setSamplingPlan("FIXED");
+            std.setSampleSize(1);
+            std.setAllowedNgCount(0);
+            standardMapper.insert(std);
+
+            QcStandardItem si = new QcStandardItem();
+            si.setStandardId(std.getId());
+            si.setItemId(1L);
+            si.setSeq(10);
+            si.setIsCritical(true);
+            si.setIsRequired(true);
+            si.setValueMode("SINGLE");
+            si.setPointCount(1);
+            si.setMinValue(new BigDecimal("11.95"));
+            si.setMaxValue(new BigDecimal("12.05"));
+            si.setIsDestructive(false);
+            standardItemMapper.insert(si);
+        }
+
+        QcBatch b = new QcBatch();
+        b.setBatchNo(batchNo);
+        b.setProductId(rkProductId);
+        b.setInspectType("IQC");
+        b.setQty(1);
+        b.setStatus("PENDING");
+        batchMapper.insert(b);
+        return b.getId();
+    }
+
     /** AQL 用例夹具：一个专属产品 + AQL 标准 + 指定批量的批次 */
     private Long aqlBatch(String batchNo, int qty) {
         if (aqlProductId == null) {
@@ -414,6 +657,45 @@ class InspectionFlowIT {
                 }
                 case "ENUM" -> line.put("values", List.of(passOption(row)));
                 default -> line.put("textValue", "外观检查无异常");
+            }
+            lines.add(line);
+        }
+        return lines;
+    }
+
+    /**
+     * 造一套必然不合格的值，用来判出 NG。
+     *
+     * <p>数值项一律顶到上限之外，而不是给空值——空值走的是「必填未填」那条分支，
+     * 测不出限值比较本身是否生效。
+     */
+    private List<Map<String, Object>> fillViolating(Map<String, Object> detail) {
+        List<Map<String, Object>> lines = new ArrayList<>();
+        for (Map<String, Object> row : rows(detail)) {
+            String type = String.valueOf(row.get("valueType"));
+            int points = row.get("pointCount") == null ? 1
+                    : Math.max(1, ((Number) row.get("pointCount")).intValue());
+
+            Map<String, Object> line = new LinkedHashMap<>();
+            line.put("lineId", num(row.get("id")));
+
+            switch (type) {
+                case "NUMBER" -> {
+                    BigDecimal max = dec(row.get("maxValue"));
+                    BigDecimal min = dec(row.get("minValue"));
+                    BigDecimal bad = max != null ? max.add(BigDecimal.TEN)
+                            : (min != null ? min.subtract(BigDecimal.TEN) : BigDecimal.valueOf(-999));
+                    List<String> values = new ArrayList<>();
+                    for (int i = 0; i < points; i++) {
+                        values.add(bad.toPlainString());
+                    }
+                    line.put("values", values);
+                }
+                case "BOOL" -> {
+                    boolean passTrue = !Boolean.FALSE.equals(row.get("boolPassValue"));
+                    line.put("values", List.of(passTrue ? "false" : "true"));
+                }
+                default -> line.put("values", List.of());
             }
             lines.add(line);
         }

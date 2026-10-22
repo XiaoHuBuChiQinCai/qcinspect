@@ -273,14 +273,20 @@ docker compose -f docker-compose.prod.yml start app
 **别把服务器上的备份当成最终保障**。
 
 **升级**：`git pull` 之后 `docker compose -f docker-compose.prod.yml up -d --build`。
-新增的 `db/V7__*.sql` 不会自动执行——`docker-entrypoint-initdb.d` 只在数据卷为空时跑一次。
-存量库升级要手动执行：
+新增的 `db/VN__*.sql` 不会自动执行——`docker-entrypoint-initdb.d` 只在数据卷为空时跑一次。
+存量库升级要手动执行（`docker exec qc-db` 里的 `psql` 不认宿主路径，必须重定向进去）：
 
 ```bash
-docker exec -i qc-db psql -U qc -d qcinspect < db/V7__xxx.sql
+cd /root/qc/qcinspect
+docker exec -i qc-db psql -U qc -d qcinspect -v ON_ERROR_STOP=1 < db/V8__recheck.sql
 ```
 
-（`V2`~`V6` 都是幂等脚本，重复执行安全；`V1` 不是，别对已有库重跑。）
+只补你缺的那几个：装上就一直没升过的老库，从 `V2` 一路补到 `V8` 即可。
+
+（`V2`~`V8` 都是幂等脚本，重复执行安全；`V1` 不是，别对已有库重跑。）
+
+> 建议顺序：**先备份 → 跑 SQL → 再重建容器**。反过来的话，新代码先上线、
+> 列还没加，接口会在第一笔请求上 500。备份用 `scripts/backup.sh`，几秒钟的事。
 
 ---
 
