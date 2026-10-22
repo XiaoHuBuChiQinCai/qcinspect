@@ -79,6 +79,18 @@
           <el-table-column prop="customer" label="客户" min-width="160" />
           <el-table-column prop="qty" label="数量" width="90" />
           <el-table-column prop="shippedAt" label="出货时间" width="180" />
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }">
+              <el-tooltip
+                v-if="row.status === 'VOID'"
+                :content="`${row.voidedBy || '—'} 作废：${row.voidReason || '未填理由'}`"
+                placement="top"
+              >
+                <el-tag type="danger" size="small">已作废</el-tag>
+              </el-tooltip>
+              <el-tag v-else type="success" size="small">正常</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="remark" label="备注" min-width="160" />
         </el-table>
       </el-card>
@@ -88,9 +100,11 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import http from '../api/http'
 
+const route = useRoute()
 const shipmentNo = ref('')
 const batchId = ref(null)
 const batches = ref([])
@@ -123,6 +137,12 @@ async function traceByBatch() {
 onMounted(async () => {
   batches.value = await http.get('/batches')
   if (batches.value.length) batchId.value = batches.value[0].id
+  // 从「出货记录」页点「追溯」过来时带 shipmentNo，进来直接出结果，省一次手打
+  const preset = route.query.shipmentNo
+  if (preset) {
+    shipmentNo.value = String(preset)
+    await traceByShipment()
+  }
 })
 </script>
 

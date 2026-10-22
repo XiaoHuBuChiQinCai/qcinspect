@@ -38,7 +38,7 @@
         </div>
       </template>
 
-      <el-table :data="rows" v-loading="loading">
+      <el-table :data="rows" v-loading="loading" :row-class-name="rowClass">
         <el-table-column label="检验单" width="160">
           <template #default="{ row }">#{{ row.inspectionId }} / 第 {{ row.pieceNo }} 件</template>
         </el-table-column>
@@ -149,11 +149,12 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
 
 const router = useRouter()
+const route = useRoute()
 const rows = ref([])
 const pareto = ref([])
 const loading = ref(false)
@@ -271,6 +272,16 @@ function goInspection(id) {
   router.push(`/inspection/${id}`)
 }
 
+/**
+ * 工作台点「去处置」会带 ?focus=<id> 过来。
+ * 列表本来就是全量加载，直接把那一行标出来即可，不必再写一个详情页。
+ */
+const focusId = ref(route.query.focus || '')
+
+function rowClass({ row }) {
+  return String(row.id) === String(focusId.value) ? 'focus-row' : ''
+}
+
 onMounted(async () => {
   await load()
   await loadPareto()
@@ -292,4 +303,5 @@ onMounted(async () => {
 .qty { width: 50px; text-align: right; }
 .pct { width: 60px; text-align: right; font-weight: 600; }
 .cum { width: 100px; color: var(--el-text-color-secondary); }
+:deep(.focus-row) { background: var(--el-color-warning-light-9); }
 </style>

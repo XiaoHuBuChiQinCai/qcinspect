@@ -131,48 +131,8 @@
       />
     </div>
 
-    <!-- 审核 -->
-    <el-dialog v-model="reviewVisible" title="审核检验单" width="520px">
-      <el-descriptions :column="2" border size="small" class="mb">
-        <el-descriptions-item label="检验单">{{ target.inspectionNo }}</el-descriptions-item>
-        <el-descriptions-item label="批次">{{ target.batchNo }}</el-descriptions-item>
-        <el-descriptions-item label="判定">{{ resultText(target.result) }}</el-descriptions-item>
-        <el-descriptions-item label="检验员">{{ target.inspectorName }}</el-descriptions-item>
-        <el-descriptions-item label="合格 / 不合格">{{ target.passedQty }} / {{ target.failedQty }}</el-descriptions-item>
-        <el-descriptions-item label="NG 行数">{{ target.ngCount }}</el-descriptions-item>
-      </el-descriptions>
-
-      <el-alert
-        v-if="selfReview"
-        type="warning"
-        :closable="false"
-        class="mb"
-        title="这是你本人录入的单据。允许代审，但会在日志中标注「管理员代审本人录入单据」"
-      />
-
-      <el-radio-group v-model="review.approve" class="mb">
-        <el-radio :value="true">审核通过并归档</el-radio>
-        <el-radio :value="false">退回检验员修正</el-radio>
-      </el-radio-group>
-
-      <el-input
-        v-model="review.comment"
-        type="textarea"
-        :rows="3"
-        :placeholder="review.approve ? '审核意见（选填）' : '退回原因（必填，检验员按此修改）'"
-      />
-
-      <div class="hint">
-        {{ review.approve
-          ? '通过后单据锁定为「已归档」，批次状态同步为已完成，后续如需更正只能由管理员解锁。'
-          : '退回后单据回到草稿，判定结果清空，检验员修正后可重新提交。' }}
-      </div>
-
-      <template #footer>
-        <el-button @click="reviewVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="doReview">确认</el-button>
-      </template>
-    </el-dialog>
+    <!-- 审核（与工作台共用同一份对话框，规则只写一遍） -->
+    <ReviewDialog v-model="reviewVisible" :row="target" @done="load" />
   </el-card>
 </template>
 
@@ -182,6 +142,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http, { getStoredUser } from '../api/http'
 import { downloadCsv } from '../api/download'
+import ReviewDialog from '../components/ReviewDialog.vue'
 
 const router = useRouter()
 const user = getStoredUser() || {}
@@ -196,17 +157,7 @@ const page = reactive({ current: 1, size: 10 })
 const filter = reactive({ keyword: '', status: '', result: '', productId: undefined, inspector: '', range: null })
 
 const reviewVisible = ref(false)
-const saving = ref(false)
 const target = ref({})
-const review = reactive({ approve: true, comment: '' })
-
-const selfReview = computed(
-  () => !!target.value.inspectorName && target.value.inspectorName === displayName()
-)
-
-function displayName() {
-  return user.realName || user.username || ''
-}
 
 const resultText = r => ({ PASS: '合格', FAIL: '不合格', NA: '未判定' }[r] || r || '—')
 const resultType = r => ({ PASS: 'success', FAIL: 'danger', NA: 'info' }[r] || 'info')
@@ -267,28 +218,7 @@ function print(row) {
 
 function openReview(row) {
   target.value = row
-  review.approve = true
-  review.comment = ''
   reviewVisible.value = true
-}
-
-async function doReview() {
-  if (!review.approve && !review.comment.trim()) {
-    ElMessage.warning('退回必须写明原因，否则检验员不知道要改什么')
-    return
-  }
-  saving.value = true
-  try {
-    await http.post(`/inspections/${target.value.id}/review`, {
-      approve: review.approve,
-      comment: review.comment.trim() || null
-    })
-    ElMessage.success(review.approve ? '已审核通过并归档' : '已退回检验员')
-    reviewVisible.value = false
-    await load()
-  } finally {
-    saving.value = false
-  }
 }
 
 async function voidIt(row) {

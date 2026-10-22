@@ -1,6 +1,7 @@
 package com.qc.inspect.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.entity.QcShipment;
@@ -74,8 +75,36 @@ public class TraceController {
         return R.ok(shipmentService.context(batchId));
     }
 
+    /** 出货记录分页。关键字同时匹配出货单号、客户、批次号 */
+    @GetMapping("/shipments/page")
+    public R<Page<QcShipment>> shipmentPage(@RequestParam(defaultValue = "1") long current,
+                                            @RequestParam(defaultValue = "10") long size,
+                                            @RequestParam(required = false) String status,
+                                            @RequestParam(required = false) String keyword,
+                                            @RequestParam(required = false) String from,
+                                            @RequestParam(required = false) String to) {
+        return R.ok(shipmentService.page(current, size, status, keyword, from, to));
+    }
+
+    /**
+     * 作废出货单（红冲）。理由必填；非管理员只能销自己登记的单。
+     *
+     * <p>为什么要红冲而不是删除：客诉排查时，「这批货本来要发、后来客户取消」
+     * 和「压根没发过」是两件完全不同的事，删掉就再也分不清了。
+     */
+    @PostMapping("/shipments/{id}/void")
+    public R<QcShipment> voidShipment(@PathVariable Long id, @RequestBody VoidReq req,
+                                      @RequestParam(required = false, defaultValue = "system") String operator) {
+        return R.ok(shipmentService.voidShipment(id, req.reason(),
+                UserContext.operator(operator), UserContext.isAdmin()));
+    }
+
     /** 出货请求体。force=true 表示确认「例外放行」（不合格 / 无结论的批次） */
     public record ShipmentReq(Long batchId, String customer, Integer qty,
                               LocalDateTime shippedAt, String remark, Boolean force) {
+    }
+
+    /** 作废请求体：reason 必填 */
+    public record VoidReq(String reason) {
     }
 }

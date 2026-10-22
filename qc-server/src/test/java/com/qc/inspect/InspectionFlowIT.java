@@ -538,6 +538,150 @@ class InspectionFlowIT {
         assertThat(done.get("recheckResult")).isEqualTo("PASS");
     }
 
+    @Test
+    @Order(14)
+    @DisplayName("出货作废（红冲）：理由必填，作废后批次额度回退且能重新出货")
+    void shipmentVoidRollsBackQuota() {
+        Long b = aqlBatch("IT-SHIP-VOID", 100);
+        Long ins = num(data(post("/api/inspections", Map.of("batchId", b))).get("inspectionId"));
+        data(post("/api/inspections/" + ins + "/submit",
+                Map.of("lines", fillCompliant(detail(ins)))));
+
+        Map<String, Object> s = data(post("/api/shipments",
+                Map.of("batchId", b, "customer", "IT 客户", "qty", 100)));
+        Long sid = num(s.get("id"));
+        assertThat(s.get("status")).isEqualTo("NORMAL");
+        assertThat(num(data(get("/api/shipments/context/" + b)).get("remainingQty"))).isZero();
+
+        // 作废是抹掉一条出货事实，不写理由等于留下一笔没人看得懂的账
+        assertThat(num(post("/api/shipments/" + sid + "/void", Map.of("reason", "   ")).get("code")))
+                .as("作废不写理由要拦").isNotEqualTo(0);
+
+        Map<String, Object> v = data(post("/api/shipments/" + sid + "/void",
+                Map.of("reason", "客户取消订单")));
+        assertThat(v.get("status")).isEqualTo("VOID");
+        assertThat(v.get("voidReason")).isEqualTo("客户取消订单");
+        assertThat(String.valueOf(v.get("voidedBy"))).isNotBlank();
+
+        // 额度回退：这是作废的全部意义。若不回退，作废完还是出不了第二单，
+        // 现场只能改用纸单，等于系统被绕过去
+        Map<String, Object> ctx = data(get("/api/shipments/context/" + b));
+        assertThat(num(ctx.get("shippedQty"))).isZero();
+        assertThat(num(ctx.get("remainingQty"))).isEqualTo(100L);
+
+        // 两个人同时点、或者手滑点两下，第二次必须被拦
+        assertThat(num(post("/api/shipments/" + sid + "/void", Map.of("reason", "再销一次")).get("code")))
+                .as("不能重复作废").isNotEqualTo(0);
+
+        // 作废不是删除：列表里按状态还能筛出来，红冲痕迹要留
+        List<Map<String, Object>> voids = asList(data(
+                get("/api/shipments/page?current=1&size=20&status=VOID&keyword=IT-SHIP-VOID")).get("records"));
+        assertThat(voids).as("作废单仍可检索").hasSize(1);
+        assertThat(voids.get(0).get("batchNo")).isEqualTo("IT-SHIP-VOID");
+        assertThat(voids.get(0).get("voidReason")).isEqualTo("客户取消订单");
+
+        // 额度腾出来后可以重新登记
+        Map<String, Object> again = data(post("/api/shipments",
+                Map.of("batchId", b, "customer", "IT 客户", "qty", 100)));
+        assertThat(again.get("status")).isEqualTo("NORMAL");
+        assertThat(num(data(get("/api/shipments/context/" + b)).get("remainingQty"))).isZero();
+    }
+
+    @Test
+    @Order(15)
+    @DisplayName("主数据：编号不许撞车，枚举项没选项、布尔项没说合格值都不许存")
+    void masterDataGuards() {
+        Map<String, Object> p = data(post("/api/products",
+                Map.of("productCode", "IT-MD-P1", "productName", "主数据试用件", "unit", "件")));
+        Long pid = num(p.get("id"));
+
+        // 唯一索引也会拦，但抛出来的是 duplicate key value violates...
+        // 车间的人看不懂，只会当成系统坏了又回去用 Excel
+        assertThat(num(post("/api/products",
+                Map.of("productCode", "IT-MD-P1", "productName", "重复编号")).get("code")))
+                .as("产品编号不能重复").isNotEqualTo(0);
+
+        // 产品一览要能回答「这个产品能不能开单」——没有启用标准就是不能
+        List<Map<String, Object>> ov = asList(get("/api/products/overview?keyword=IT-MD-P1").get("data"));
+        assertThat(ov).hasSize(1);
+        assertThat(num(ov.get(0).get("active_standard_count"))).as("新产品还没有启用标准").isZero();
+        assertThat(num(ov.get(0).get("batch_count"))).isZero();
+
+        // 检验类型不填默认 FQC，填了就得是那四个之一
+        Map<String, Object> b = data(post("/api/batches",
+                Map.of("batchNo", "IT-MD-B1", "productId", pid, "qty", 10)));
+        assertThat(b.get("inspectType")).isEqualTo("FQC");
+        assertThat(b.get("status")).isEqualTo("PENDING");
+
+        assertThat(num(post("/api/batches",
+                Map.of("batchNo", "IT-MD-B1", "productId", pid, "qty", 10)).get("code")))
+                .as("同一批料重复登记要拦").isNotEqualTo(0);
+        assertThat(num(post("/api/batches",
+                Map.of("batchNo", "IT-MD-B2", "productId", 99999999L, "qty", 10)).get("code")))
+                .as("产品不存在要拦").isNotEqualTo(0);
+        assertThat(num(post("/api/batches",
+                Map.of("batchNo", "IT-MD-B3", "productId", pid, "qty", 10,
+                        "inspectType", "XYZ")).get("code")))
+                .as("检验类型只能是 IQC/IPQC/FQC/OQC").isNotEqualTo(0);
+
+        // 枚举项没选项，录入时无值可选；布尔项没说合格值，判定层只能猜方向
+        assertThat(num(post("/api/items",
+                Map.of("itemCode", "IT-I-ENUM", "itemName", "枚举项", "valueType", "ENUM")).get("code")))
+                .as("枚举项缺选项要拦").isNotEqualTo(0);
+        assertThat(num(post("/api/items",
+                Map.of("itemCode", "IT-I-BOOL", "itemName", "布尔项", "valueType", "BOOL")).get("code")))
+                .as("布尔项没说合格值要拦").isNotEqualTo(0);
+
+        Map<String, Object> it = data(post("/api/items", Map.of(
+                "itemCode", "IT-I-ENUM", "itemName", "表面划伤", "valueType", "ENUM",
+                "optionsJson", "[{\"code\":\"NONE\",\"name\":\"无\",\"pass\":true},"
+                        + "{\"code\":\"HEAVY\",\"name\":\"严重\",\"pass\":false}]")));
+        assertThat(num(it.get("id"))).isNotNull();
+    }
+
+    @Test
+    @Order(16)
+    @DisplayName("工作台：数字与列表同源，待处置带批次号，草稿只算自己的")
+    void todoWorkbench() {
+        // 一张刚提交的单，必然躺在「待审核」里
+        Long b = aqlBatch("IT-TODO-PASS", 20);
+        Long passIns = num(data(post("/api/inspections", Map.of("batchId", b))).get("inspectionId"));
+        data(post("/api/inspections/" + passIns + "/submit",
+                Map.of("lines", fillCompliant(detail(passIns)))));
+
+        Map<String, Object> sum = data(get("/api/todo/summary"));
+        assertThat(num(sum.get("pendingReview"))).as("刚提交的单必须进待审核").isPositive();
+        // actionable 只由「要人动手」的三项相加，量具超期不算单据，混进来会让人以为有几十张单没处理
+        assertThat(num(sum.get("actionable")))
+                .as("角标总数口径")
+                .isEqualTo(num(sum.get("pendingReview")) + num(sum.get("pendingDefect"))
+                        + num(sum.get("myRejected")));
+
+        List<Map<String, Object>> reviews = asList(get("/api/todo/reviews").get("data"));
+        assertThat(reviews).extracting(r -> num(r.get("id"))).contains(passIns);
+        // 工作台只看头部，全量翻页去检验单列表；不加限制时单量大了一次拉几千行
+        assertThat(asList(get("/api/todo/reviews?limit=1").get("data"))).hasSize(1);
+
+        // 待处置不良必须带批次号：处置人拿着它去现场找料，只有检验单号还得再点进去看
+        Long ngBatch = aqlBatch("IT-TODO-NG", 20);
+        Long ngIns = num(data(post("/api/inspections", Map.of("batchId", ngBatch))).get("inspectionId"));
+        data(post("/api/inspections/" + ngIns + "/submit",
+                Map.of("lines", fillViolating(detail(ngIns)))));
+
+        Map<String, Object> ngDefect = asList(get("/api/todo/defects").get("data")).stream()
+                .filter(d -> ngIns.equals(num(d.get("inspectionId"))))
+                .findFirst().orElseThrow();
+        assertThat(ngDefect.get("batchNo")).isEqualTo("IT-TODO-NG");
+
+        // 草稿是检验员自己的活，不该出现在别人的待办里
+        Long draftBatch = aqlBatch("IT-TODO-DRAFT", 20);
+        Long draftIns = num(data(post("/api/inspections",
+                Map.of("batchId", draftBatch))).get("inspectionId"));
+        Map<String, Object> mine = data(get("/api/todo/mine"));
+        assertThat(asList(mine.get("drafts"))).extracting(r -> num(r.get("id"))).contains(draftIns);
+        assertThat(num(data(get("/api/todo/summary")).get("myDraft"))).isPositive();
+    }
+
     /** 复检用例夹具：固定抽样 1 件、Ac=0 的独立产品，判 NG 后正好落一条可返工的不良 */
     private Long rkBatch(String batchNo) {
         if (rkProductId == null) {

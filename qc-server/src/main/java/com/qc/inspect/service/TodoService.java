@@ -1,9 +1,11 @@
 package com.qc.inspect.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcGauge;
 import com.qc.inspect.entity.QcInspection;
+import com.qc.inspect.mapper.QcBatchMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcGaugeMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
@@ -42,6 +44,7 @@ public class TodoService {
     private final QcInspectionMapper inspectionMapper;
     private final QcDefectMapper defectMapper;
     private final QcGaugeMapper gaugeMapper;
+    private final QcBatchMapper batchMapper;
     private final InspectionViewService viewService;
 
     /** 首页角标 */
@@ -71,11 +74,13 @@ public class TodoService {
         return m;
     }
 
-    /** 待审核：已提交但还没人放行的单 */
-    public List<QcInspection> pendingReviews() {
+    /** 待审核：已提交但还没人放行的单。工作台只看前 N 条，剩下的去检验单列表筛 */
+    public List<QcInspection> pendingReviews(int limit) {
+        int n = Math.max(1, Math.min(limit, 200));
         List<QcInspection> list = inspectionMapper.selectList(new LambdaQueryWrapper<QcInspection>()
                 .eq(QcInspection::getStatus, "SUBMITTED")
-                .orderByAsc(QcInspection::getId));
+                .orderByAsc(QcInspection::getId)
+                .last("LIMIT " + n));
         viewService.fill(list);
         return list;
     }
@@ -95,13 +100,22 @@ public class TodoService {
                 : inspectionMapper.selectBatchIds(ids).stream()
                 .collect(Collectors.toMap(QcInspection::getId, Function.identity(), (a, b) -> a));
 
+        // 处置人要拿着批次号去现场找料，只给检验单号还得再点进去看一眼
+        Set<Long> batchIds = inspections.values().stream().map(QcInspection::getBatchId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, QcBatch> batches = batchIds.isEmpty() ? Map.of()
+                : batchMapper.selectBatchIds(batchIds).stream()
+                .collect(Collectors.toMap(QcBatch::getId, Function.identity(), (a, b) -> a));
+
         List<Map<String, Object>> rows = new ArrayList<>(list.size());
         for (QcDefect d : list) {
             QcInspection ins = inspections.get(d.getInspectionId());
+            QcBatch batch = ins == null ? null : batches.get(ins.getBatchId());
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", d.getId());
             row.put("inspectionId", d.getInspectionId());
             row.put("inspectionNo", ins == null ? null : ins.getInspectionNo());
+            row.put("batchNo", batch == null ? null : batch.getBatchNo());
             row.put("pieceNo", d.getPieceNo());
             row.put("defectCode", d.getDefectCode());
             row.put("defectName", d.getDefectName());

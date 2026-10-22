@@ -65,11 +65,36 @@ Base URL：`http://localhost:8080/api`
 | 方法 | 路径 | 说明 | 参数 |
 |---|---|---|---|
 | GET | `/products` | 产品列表 | `keyword` 可选，匹配编号或名称 |
-| POST | `/products` | 新增 / 修改产品 | body 见下 |
+| GET | `/products/overview` | 产品一览：带 `standard_count` / `active_standard_count` / `batch_count` | `keyword` 可选 |
+| POST | `/products` | 新增 / 修改产品（仅 ADMIN） | body 见下 |
 | GET | `/items` | 检验项列表 | `groupName` 可选 |
-| POST | `/items` | 新增 / 修改检验项 | body 见下 |
-| GET | `/batches` | 批次列表 | `status` / `productId` 可选 |
-| POST | `/batches` | 新增 / 修改批次 | body 见下 |
+| POST | `/items` | 新增 / 修改检验项（仅 ADMIN） | body 见下 |
+| GET | `/batches` | 批次列表 | `status` / `productId` / `keyword` 可选 |
+| POST | `/batches` | 新增 / 修改批次（ADMIN / INSPECTOR） | body 见下 |
+
+**保存时的前置校验**（错误信息是给人看的，不是把唯一索引的报错原样抛出来）：
+
+| 场景 | 提示 |
+|---|---|
+| 产品编号为空 / 重复 | 「产品编号不能为空」/「产品编号 X 已被占用，换一个」 |
+| 产品名称为空 | 「产品名称不能为空，光有编号看不出这是什么东西」 |
+| 检验项编号重复 | 「检验项编号 X 已被占用，换一个」 |
+| ENUM 缺 `optionsJson`、JSON 坏、选项缺 code/name、全部不合格 | 「枚举选项格式不对，应为 …」等 |
+| BOOL 缺 `boolPassValue` | 「布尔型必须指明合格值：是「有」算合格，还是「无」算合格」 |
+| 批次号为空 / 重复 | 「批次号不能为空…」/「批次号 X 已存在，同一批料不要重复登记」 |
+| 批次的产品不存在 | 「产品不存在，请先在主数据里建产品」 |
+| `inspectType` 不在四类之内 | 「检验类型只能是 IQC / IPQC / FQC / OQC」 |
+
+> 为什么要前置校验：唯一索引抛的是 `duplicate key value violates unique constraint "uk_batch_no"`，
+> 车间的人看不懂，只会判断成「系统又坏了」，然后回去用 Excel。
+
+`GET /products/overview` 响应（`active_standard_count = 0` 意味着这个产品开不了检验单）：
+
+```json
+[{ "id": 1, "product_code": "P-FLANGE-DN50", "product_name": "法兰盘",
+   "spec": "DN50 PN16", "unit": "件",
+   "standard_count": 2, "active_standard_count": 1, "batch_count": 12 }]
+```
 
 **产品**
 ```json
@@ -608,9 +633,11 @@ Base URL：`http://localhost:8080/api`
 | GET | `/trace/batch/{batchId}` | 正向：批次 → 检验单 → 不良 → 出货 |
 | GET | `/trace/shipment/{shipmentNo}` | 反向：出货单号 → 批次 → 检验单 → 量具与实测值 |
 | GET | `/trace/customer?customer=苏州德茂` | 某客户收到过的所有批次 |
-| GET | `/shipments?batchId=1` | 出货记录 |
+| GET | `/shipments?batchId=1` | 出货记录（不分页，按批次/客户过滤） |
+| GET | `/shipments/page?current=1&size=10` | 出货记录分页：`keyword`（单号/客户/批次号）、`status`、`from`、`to` |
 | GET | `/shipments/context/{batchId}` | 出货前置信息：批次数量、已出货、还能出、最新检验结论、拦截理由 |
 | POST | `/shipments` | 登记出货（带校验） |
+| POST | `/shipments/{id}/void` | 作废（红冲）出货单，`reason` 必填 |
 
 ### 出货登记
 
@@ -656,6 +683,36 @@ Base URL：`http://localhost:8080/api`
 > `remainingQty` 必须由后端算：并发登记时两边都以为还有余量，靠前端自己减会超发。
 
 出货单号格式 `SH + yyyyMMdd + 3 位日流水`（如 `SH20261021001`），和检验单号一样按日计数、删除后不复用。
+
+### 出货作废（红冲）
+
+`POST /shipments/{id}/void`
+
+```json
+{ "reason": "客户取消订单" }
+```
+
+作废**不是删除**：单据留着，`status` 改为 `VOID` 并记下 `void_reason / voided_by / voided_at`。
+理由必须写——「客户临时取消」和「压根没发过」在客诉时是两件完全不同的事，删掉就分不清了。
+
+| 情况 | 结果 |
+|---|---|
+| `reason` 为空或全空格 | 拒绝：作废必须写理由 |
+| 非管理员且不是登记人 | 拒绝：只能作废自己登记的单 |
+| 单已 `VOID` | 拒绝：不需要重复作废 |
+| 两人同时点作废 | 带 `status = 'NORMAL'` 条件更新，只有一个成功，另一个拿到「刚被其他人作废」 |
+
+**作废后批次累计出货量会回退**：`shippedQty` 统计排除 `VOID`，
+所以作废掉 100 件之后，批次又能重新出 100 件。不回退的话作废等于白作废，
+现场只能改回纸单。
+
+### 出货记录分页
+
+`GET /shipments/page?current=1&size=10&keyword=SH2026&status=VOID&from=2026-10-01&to=2026-10-31`
+
+- `keyword` 同时匹配出货单号、客户、批次号（客诉电话里客户不会报出货单号）
+- `status`：`NORMAL` / `VOID`
+- 返回记录已补齐 `batchNo`、`productName`，前端不必再为每行发请求
 
 返回结构（`/trace/batch/1`）：
 
@@ -805,15 +862,19 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 
 ## 十二、待办
 
-手机端首页角标和工作台都从这里取数。五个数字一次给全，避免前端为角标发五次请求。
+手机端首页角标、移动端待办页和 PC 工作台都从这里取数。五个数字一次给全，避免前端为角标发五次请求。
 
 | 方法 | 路径 | 返回 |
 |---|---|---|
 | GET | `/todo/summary` | 见下 |
-| GET | `/todo/reviews` | 待审核的检验单（`SUBMITTED`），已补 `batchNo` / `productName` |
-| GET | `/todo/defects` | 待处置不良（`PENDING` + `PROCESSING`），带 `inspectionNo` |
+| GET | `/todo/reviews?limit=50` | 待审核的检验单（`SUBMITTED`），已补 `batchNo` / `productName`；`limit` 默认 50、上限 200 |
+| GET | `/todo/defects` | 待处置不良（`PENDING` + `PROCESSING`），带 `inspectionNo` / `batchNo` |
 | GET | `/todo/mine` | `{ drafts: [...], rejected: [...] }`，按登录人过滤 |
 | GET | `/todo/gauges` | 超期未校准量具，带 `overdueDays` |
+
+`/todo/reviews` 的 `limit` 是给工作台用的（只铺头部几条）；要全量翻页去
+`/inspections/page?status=SUBMITTED`。`/todo/defects` 带 `batchNo` 是因为处置人要拿着批次号
+去现场找料，只给检验单号还得再点进单据看一眼。
 
 `/todo/summary`：
 

@@ -7,6 +7,7 @@ import com.qc.inspect.service.TodoService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -28,10 +29,10 @@ public class TodoController {
         return R.ok(todoService.summary(UserContext.username()));
     }
 
-    /** 待审核单据 */
+    /** 待审核单据；limit 默认 50，工作台只看头部，全量去检验单列表筛 */
     @GetMapping("/reviews")
-    public R<List<QcInspection>> reviews() {
-        return R.ok(todoService.pendingReviews());
+    public R<List<QcInspection>> reviews(@RequestParam(required = false, defaultValue = "50") int limit) {
+        return R.ok(todoService.pendingReviews(limit));
     }
 
     /** 待处置不良（含所属检验单号，省得前端再查一次） */

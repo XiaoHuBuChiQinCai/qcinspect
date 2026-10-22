@@ -19,7 +19,17 @@ public interface QcShipmentMapper extends BaseMapper<QcShipment> {
     @Select("SELECT count(*) FROM qc_shipment WHERE shipment_no LIKE CONCAT('SH', CAST(#{day} AS text), '%')")
     long countByDayPrefix(@Param("day") String day);
 
-    /** 某批次累计已出货数量，用于拦住超发 */
-    @Select("SELECT coalesce(sum(qty), 0) FROM qc_shipment WHERE batch_id = #{batchId} AND del_flag = 0")
+    /**
+     * 某批次累计已出货数量，用于拦住超发。
+     *
+     * <p>必须排除已作废的单：作废的意义就是「这单不算数」，
+     * 如果作废后还占着批次数量的额度，等于作废完了仍然出不了第二单。
+     *
+     * <p>{@code coalesce(status, 'NORMAL')} 是给 V9 之前的存量行兜底——
+     * 那些行在加列时会被 DEFAULT 填成 NORMAL，这里再兜一层防止手工插的数据为 NULL。
+     */
+    @Select("SELECT coalesce(sum(qty), 0) FROM qc_shipment"
+            + " WHERE batch_id = #{batchId} AND del_flag = 0"
+            + " AND coalesce(status, 'NORMAL') <> 'VOID'")
     int shippedQty(@Param("batchId") Long batchId);
 }

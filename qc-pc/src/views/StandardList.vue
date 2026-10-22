@@ -68,11 +68,12 @@
 
 <script setup>
 import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
 
 const router = useRouter()
+const route = useRoute()
 
 const products = ref([])
 const productId = ref(null)
@@ -154,6 +155,11 @@ async function publish(row) {
 
 onMounted(async () => {
   await loadProducts()
+  // 从主数据页「去配标准」过来时带 productId，省得再选一次
+  const preset = Number(route.query.productId)
+  if (preset && products.value.some(p => p.id === preset)) {
+    productId.value = preset
+  }
   await load()
 })
 </script>
