@@ -2,8 +2,11 @@ package com.qc.inspect.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qc.inspect.common.BizException;
+import com.qc.inspect.dto.AuditQuery;
+import com.qc.inspect.dto.ComplaintQuery;
 import com.qc.inspect.dto.InspectionQuery;
 import com.qc.inspect.entity.QcBatch;
+import com.qc.inspect.entity.QcComplaint;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcInspectionLine;
@@ -42,6 +45,8 @@ public class ExportService {
     private final QcDefectMapper defectMapper;
     private final QcBatchMapper batchMapper;
     private final QcProductMapper productMapper;
+    private final AuditService auditService;
+    private final ComplaintService complaintService;
 
     // ==================== 检验单台账 ====================
 
@@ -261,6 +266,136 @@ public class ExportService {
         }
         return loader.apply(new ArrayList<>(clean)).stream()
                 .collect(Collectors.toMap(idOf, Function.identity(), (a, b) -> a));
+    }
+
+    // ==================== 操作日志 ====================
+
+    /**
+     * 操作日志导出。内审时最常见的动作就是「把上季度作废/解锁的记录打一份出来」，
+     * 一页一页截图不现实。
+     */
+    public String auditLedger(AuditQuery query) {
+        List<AuditService.AuditRow> list = auditService.list(query, 50000);
+        if (list.isEmpty()) {
+            throw BizException.of("没有符合条件的操作日志可导出");
+        }
+
+        Csv csv = new Csv();
+        csv.header("发生时间", "动作", "检验单号", "批次号", "产品",
+                "原状态", "新状态", "操作人", "理由/意见", "结果摘要");
+
+        for (AuditService.AuditRow r : list) {
+            csv.row(fmt(r.createdAt()),
+                    actionText(r.action()),
+                    r.inspectionNo(),
+                    r.batchNo(),
+                    r.productName(),
+                    statusText(r.fromStatus()),
+                    statusText(r.toStatus()),
+                    r.operator(),
+                    r.reason(),
+                    r.summary());
+        }
+        return csv.toString();
+    }
+
+    // ==================== 客户投诉 ====================
+
+    /**
+     * 客诉台账导出。
+     *
+     * <p>体系审核每年必问的三件事：投诉几起、关闭了几起、根因分布是什么。
+     * 这三件事用屏幕翻页回答不了，必须能一次性打出来。
+     * 根因、措施、责任方三列留着空白也是有用的信号——那是还没闭环的单。
+     */
+    public String complaintLedger(ComplaintQuery query) {
+        List<QcComplaint> list = complaintService.list(query, 50000);
+        if (list.isEmpty()) {
+            throw BizException.of("没有符合条件的客户投诉可导出");
+        }
+
+        Csv csv = new Csv();
+        csv.header("客诉单号", "客诉日期", "客户", "批次号", "产品", "出货单号",
+                "类别", "严重度", "涉及数量", "问题描述", "处理状态",
+                "根本原因", "纠正预防措施", "责任归属",
+                "登记人", "关闭人", "关闭时间", "备注");
+
+        for (QcComplaint c : list) {
+            csv.row(c.getComplaintNo(),
+                    c.getComplaintDate() == null ? null : c.getComplaintDate().toString(),
+                    c.getCustomer(),
+                    c.getBatchNo(),
+                    c.getProductName(),
+                    c.getShipmentNo(),
+                    categoryText(c.getCategory()),
+                    severityText(c.getSeverity()),
+                    c.getQty(),
+                    c.getDescription(),
+                    complaintStatusText(c.getStatus()),
+                    c.getRootCause(),
+                    c.getAction(),
+                    c.getResponsibility(),
+                    c.getCreatedBy(),
+                    c.getClosedBy(),
+                    fmt(c.getClosedAt()),
+                    c.getRemark());
+        }
+        return csv.toString();
+    }
+
+    private String categoryText(String c) {
+        if (c == null) {
+            return null;
+        }
+        return switch (c) {
+            case "APP" -> "外观";
+            case "SIZE" -> "尺寸";
+            case "PERF" -> "性能";
+            case "PACK" -> "包装";
+            case "MARK" -> "标识";
+            case "OTHER" -> "其他";
+            default -> c;
+        };
+    }
+
+    private String severityText(String s) {
+        if (s == null) {
+            return null;
+        }
+        return switch (s) {
+            case "HIGH" -> "严重";
+            case "MEDIUM" -> "一般";
+            case "LOW" -> "轻微";
+            default -> s;
+        };
+    }
+
+    private String complaintStatusText(String s) {
+        if (s == null) {
+            return null;
+        }
+        return switch (s) {
+            case "OPEN" -> "待处理";
+            case "PROCESSING" -> "处理中";
+            case "CLOSED" -> "已关闭";
+            default -> s;
+        };
+    }
+
+    private String actionText(String a) {
+        if (a == null) {
+            return null;
+        }
+        return switch (a) {
+            case "CREATE" -> "建单";
+            case "SUBMIT" -> "提交";
+            case "REVIEW" -> "审核通过";
+            case "REJECT" -> "审核退回";
+            case "REOPEN" -> "解锁重开";
+            case "CLOSE" -> "归档";
+            case "VOID" -> "作废";
+            default -> a;
+        };
     }
 
     private String fmt(LocalDateTime t) {

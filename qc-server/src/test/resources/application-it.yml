@@ -16,6 +16,8 @@ spring:
         - classpath:db/V7__sampling_plan.sql
         - classpath:db/V8__recheck.sql
         - classpath:db/V9__shipment_void.sql
+        - classpath:db/V10__gauge_calibration.sql
+        - classpath:db/V11__complaint.sql
       continue-on-error: false
 
 mybatis-plus:

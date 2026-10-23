@@ -250,13 +250,51 @@ cd /root/qc/qcinspect && ./scripts/backup.sh
 # 可用环境变量覆盖：QC_BACKUP_DIR / QC_BACKUP_KEEP_DAYS / QC_DB_CONTAINER
 ```
 
-挂 cron（每天凌晨 2 点，日志单独存一份，方便事后查哪天漏了）：
+挂定时任务（每天凌晨 2 点，日志进 journal，方便事后查哪天漏了）：
+
+**用 systemd timer，不要用 crontab。** 原因不是偏好，是踩过的坑：腾讯云轻量的登录用户是
+`ubuntu`，`/root` 是 `drwx------`，`ubuntu` 既进不去 `/root/qc`、也不在 `docker` 组，
+所以 `ubuntu` 名下的 crontab 到点必然报 Permission denied——条目装上了、日志里也看不出
+它没干活，最容易以为「已经配好」。root 的 crontab 又要 `sudo crontab -e` 手动敲。
+systemd timer 由 root 跑、`Persistent=true` 能在关机错过时补跑，一行都不用 sudo。
 
 ```bash
+cat > /etc/systemd/system/qc-backup.service <<'EOF'
+[Unit]
+Description=QcInspect daily backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/root/qc/qcinspect/scripts/backup.sh
+EOF
+
+cat > /etc/systemd/system/qc-backup.timer <<'EOF'
+[Unit]
+Description=QcInspect backup at 02:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+EOF
+
 chmod +x /root/qc/qcinspect/scripts/backup.sh
-crontab -e
-# 追加：
-0 2 * * * /root/qc/qcinspect/scripts/backup.sh >> /var/log/qc-backup.log 2>&1
+systemctl daemon-reload
+systemctl enable --now qc-backup.timer
+systemctl list-timers qc-backup.timer     # 看 NEXT 有没有排上
+systemctl start qc-backup.service         # 手动跑一次，验证退出码 0 且出了新文件
+```
+
+如果之前已经往某个用户 crontab 里塞过这一行，清掉（否则每天凌晨它都会失败一次，
+看着像备份出了问题，其实是那条根本跑不了）：
+
+```bash
+crontab -l | grep -v 'qcinspect/scripts/backup.sh' | crontab -    # 清 ubuntu 自己的
 ```
 
 **恢复**（先停应用，别在有人录入的时候灌数据）：
@@ -278,12 +316,12 @@ docker compose -f docker-compose.prod.yml start app
 
 ```bash
 cd /root/qc/qcinspect
-docker exec -i qc-db psql -U qc -d qcinspect -v ON_ERROR_STOP=1 < db/V9__shipment_void.sql
+docker exec -i qc-db psql -U qc -d qcinspect -v ON_ERROR_STOP=1 < db/V11__complaint.sql
 ```
 
-只补你缺的那几个：装上就一直没升过的老库，从 `V2` 一路补到 `V9` 即可。
+只补你缺的那几个：装上就一直没升过的老库，从 `V2` 一路补到 `V11` 即可。
 
-（`V2`~`V9` 都是幂等脚本，重复执行安全；`V1` 不是，别对已有库重跑。）
+（`V2`~`V11` 都是幂等脚本，重复执行安全；`V1` 不是，别对已有库重跑。）
 
 > 建议顺序：**先备份 → 跑 SQL → 再重建容器**。反过来的话，新代码先上线、
 > 列还没加，接口会在第一笔请求上 500。备份用 `scripts/backup.sh`，几秒钟的事。

@@ -18,8 +18,12 @@ const routes = [
   { path: '/master-data', component: () => import('../views/MasterData.vue'), meta: { roles: ['ADMIN'] } },
   { path: '/defect-codes', component: () => import('../views/DefectCodeList.vue'), meta: { roles: ['ADMIN'] } },
   { path: '/users', component: () => import('../views/UserList.vue'), meta: { roles: ['ADMIN'] } },
+  // 日志里有作废理由、退回意见，等于把争议记录摊开给人看，只给管理员
+  { path: '/audit', component: () => import('../views/AuditLog.vue'), meta: { roles: ['ADMIN'] } },
   { path: '/trace', component: () => import('../views/TraceQuery.vue') },
   { path: '/shipments', component: () => import('../views/ShipmentList.vue') },
+  // 客诉登记对所有登录用户开放：客诉往往是销售、客服先接到的
+  { path: '/complaints', component: () => import('../views/ComplaintList.vue') },
   { path: '/stat', component: () => import('../views/StatDashboard.vue') }
 ]
 

@@ -9,6 +9,7 @@ import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcProduct;
 import com.qc.inspect.entity.QcShipment;
 import com.qc.inspect.mapper.QcBatchMapper;
+import com.qc.inspect.mapper.QcComplaintMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
 import com.qc.inspect.mapper.QcProductMapper;
 import com.qc.inspect.mapper.QcShipmentMapper;
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +50,7 @@ public class ShipmentService {
     private final QcInspectionMapper inspectionMapper;
     private final QcShipmentMapper shipmentMapper;
     private final QcProductMapper productMapper;
+    private final QcComplaintMapper complaintMapper;
 
     /** 出货前置信息：前端弹窗用来显示「还剩多少可发」「检验结论是什么」 */
     public Map<String, Object> context(Long batchId) {
@@ -64,7 +67,8 @@ public class ShipmentService {
         m.put("remainingQty", Math.max(total - shipped, 0));
         m.put("inspectionNo", latest == null ? null : latest.getInspectionNo());
         m.put("result", latest == null ? null : latest.getResult());
-        m.put("blocking", blockingReason(latest));
+        m.put("openComplaints", complaintMapper.countOpen(batchId));
+        m.put("blocking", blockingReason(latest, batchId));
         return m;
     }
 
@@ -91,7 +95,7 @@ public class ShipmentService {
         }
 
         QcInspection latest = latestConclusion(batchId);
-        String blocking = blockingReason(latest);
+        String blocking = blockingReason(latest, batchId);
         if (blocking != null && !force) {
             throw BizException.of(blocking + "。确认要出的话，勾选「例外放行」再提交");
         }
@@ -217,22 +221,31 @@ public class ShipmentService {
     }
 
     /**
-     * 放行判断。返回 null 表示可以直接出货，返回字符串表示拦下的原因。
+     * 放行判断。返回 null 表示可以直接出货，返回字符串表示拦下的原因（多条用分号连）。
      *
-     * <p>只看最新一张已提交/已归档的检验单：批次可能返工后重检，
-     * 早期那张 FAIL 已经被后续 PASS 覆盖，不该继续拦着。
+     * <p>两个来源合起来看：
+     * <ol>
+     *   <li><b>检验结论</b>——只看最新一张已提交/已归档的检验单。批次可能返工后重检，
+     *       早期那张 FAIL 已经被后续 PASS 覆盖，不该继续拦着</li>
+     *   <li><b>未关闭客诉</b>——客户已经投诉了这批货、问题还没查清楚，又接着发给下一个客户，
+     *       等于把同一个问题复制出去。内部不良品有 qc_defect 闭环拦着，客户侧同样得拦</li>
+     * </ol>
      */
-    private String blockingReason(QcInspection latest) {
+    private String blockingReason(QcInspection latest, Long batchId) {
+        List<String> blocks = new ArrayList<>();
         if (latest == null) {
-            return "该批次还没有任何检验结论";
+            blocks.add("该批次还没有任何检验结论");
+        } else if ("FAIL".equals(latest.getResult())) {
+            blocks.add("该批次最新检验结论为不合格（" + latest.getInspectionNo() + "）");
+        } else if ("NA".equals(latest.getResult())) {
+            blocks.add("该批次检验单尚未判定（" + latest.getInspectionNo() + "）");
         }
-        if ("FAIL".equals(latest.getResult())) {
-            return "该批次最新检验结论为不合格（" + latest.getInspectionNo() + "）";
+
+        long openComplaints = complaintMapper.countOpen(batchId);
+        if (openComplaints > 0) {
+            blocks.add("该批次有 " + openComplaints + " 条未关闭的客户投诉");
         }
-        if ("NA".equals(latest.getResult())) {
-            return "该批次检验单尚未判定（" + latest.getInspectionNo() + "）";
-        }
-        return null;
+        return blocks.isEmpty() ? null : String.join("；", blocks);
     }
 
     private QcInspection latestConclusion(Long batchId) {

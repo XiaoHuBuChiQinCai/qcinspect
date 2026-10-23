@@ -2,6 +2,7 @@ package com.qc.inspect.controller;
 
 import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
+import com.qc.inspect.entity.QcComplaint;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.service.TodoService;
 import lombok.RequiredArgsConstructor;
@@ -45,6 +46,12 @@ public class TodoController {
     @GetMapping("/mine")
     public R<Map<String, Object>> mine() {
         return R.ok(todoService.mine(UserContext.username()));
+    }
+
+    /** 未关闭客诉；limit 默认 50，HIGH 排在前面 */
+    @GetMapping("/complaints")
+    public R<List<QcComplaint>> complaints(@RequestParam(required = false, defaultValue = "50") int limit) {
+        return R.ok(todoService.pendingComplaints(limit));
     }
 
     /** 超期未校准量具 */

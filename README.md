@@ -24,7 +24,9 @@ C:\qcinspect
 │   ├── V6__notice.sql               增量：站内通知（审核退回 / 让步放行）
 │   ├── V7__sampling_plan.sql        增量：AQL 抽样方案（GB/T 2828.1 一般检验水平 II / AQL 2.5）
 │   ├── V8__recheck.sql              增量：返工复检闭环（复检单来源字段 + 部分唯一索引）
-│   └── V9__shipment_void.sql        增量：出货单作废（红冲）状态与理由
+│   ├── V9__shipment_void.sql        增量：出货单作废（红冲）状态与理由
+│   ├── V10__gauge_calibration.sql   增量：量具校准履历（证书/机构/结论）+ 停用状态
+│   └── V11__complaint.sql           增量：客户投诉登记与闭环（追溯的回向）
 ├── docs\
 │   ├── API.md                接口清单
 │   └── DEPLOY.md             部署指南：镜像选型、2G 内存账、swap 与 OOM、小程序 HTTPS
@@ -68,7 +70,7 @@ docker compose up -d --build
 | MinIO 控制台 | http://localhost:9001 | `minioadmin` / `minioadmin` |
 | PostgreSQL | localhost:5432 / 库 `qcinspect` | `qc` / `qcpass` |
 
-数据库初始化是自动的：`db/` 下 V1~V9 按顺序挂进 PostgreSQL 的 `docker-entrypoint-initdb.d`，首次启动时执行一遍，演示数据（法兰盘 + 标准 + 量具 + 不良代码 + 出货）一并建好。
+数据库初始化是自动的：`db/` 下 V1~V11 按顺序挂进 PostgreSQL 的 `docker-entrypoint-initdb.d`，首次启动时执行一遍，演示数据（法兰盘 + 标准 + 量具 + 不良代码 + 出货）一并建好。
 
 跑一遍端到端冒烟测试，验证整条链路：
 
@@ -183,7 +185,7 @@ npm run dev:h5      # http://localhost:5174，/api 已代理到 8080
 
 ## 三、已经验证过的部分
 
-### 1. 单元测试 + 集成测试：84 个，`mvn test` 一条命令跑完
+### 1. 单元测试 + 集成测试：87 个，`mvn test` 一条命令跑完
 
 ```bash
 cd qc-server
@@ -191,7 +193,7 @@ mvn test
 ```
 
 ```
-Tests run: 84, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 87, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
@@ -201,9 +203,9 @@ BUILD SUCCESS
 | `InspectionJudgeTest` | 16 | 两层判定、允收数语义、关键项提示、行数与件数不混用 | < 0.1 s |
 | `JwtUtilTest` | 9 | 验签、篡改、换密钥、过期、弱密钥、BCrypt | < 1 s |
 | `SamplingPlanServiceTest` | 5 | AQL 抽样表与国标数值逐行比对、批量区间首尾端点、超范围兜底 | < 0.1 s |
-| `InspectionFlowIT` | 16 | **真实 PostgreSQL + 真实 HTTP + 真实 JWT**：建单 → 填报 → 提交 → 锁定 → 审核归档 → 退回 → 导出 → 待办 → 退回通知与越权读拦截 → AQL 抽样取值 → 出货超发拦截与例外放行 → 筛选/导出/统计三处口径一致 → 返工复检闭环 → 出货红冲与额度回退 → 主数据编号唯一与枚举/布尔校验 → 工作台待办口径与批次号回填 | ~ 24 s |
+| `InspectionFlowIT` | 19 | **真实 PostgreSQL + 真实 HTTP + 真实 JWT**：建单 → 填报 → 提交 → 锁定 → 审核归档 → 退回 → 导出 → 待办 → 退回通知与越权读拦截 → AQL 抽样取值 → 出货超发拦截与例外放行 → 筛选/导出/统计三处口径一致 → 返工复检闭环 → 出货红冲与额度回退 → 主数据编号唯一与枚举/布尔校验 → 工作台待办口径与批次号回填 → 量具校准履历（同日不重登/补录不动有效期/不合格停用） → 操作日志全局检索与权限 → 客诉登记校验/未关闭拦出货/关闭三项必填/追溯可见 | ~ 26 s |
 
-集成测试用 `io.zonky.test` 的嵌入式 PostgreSQL 起一个真库，按 V1 → V9 顺序执行仓库里的建表脚本，再用 `TestRestTemplate` 走完整的 HTTP + JWT 链路。**不需要 Docker**，`mvn test` 直接跑；`*IT` 已在 surefire 里显式纳入，CI 不会漏。
+集成测试用 `io.zonky.test` 的嵌入式 PostgreSQL 起一个真库，按 V1 → V11 顺序执行仓库里的建表脚本，再用 `TestRestTemplate` 走完整的 HTTP + JWT 链路。**不需要 Docker**，`mvn test` 直接跑；`*IT` 已在 surefire 里显式纳入，CI 不会漏。
 
 为什么不用 H2 图省事：本项目用了 `jsonb`、`timestamptz`、带 `WHERE` 的部分唯一索引和窗口函数，H2 的 PostgreSQL 兼容模式跑不过去；就算跑过了也不能证明生产能跑。宁可多下一个几十兆的二进制包。
 
@@ -224,10 +226,10 @@ BUILD SUCCESS
 | 范围 | 方式 | 结果 |
 |---|---|---|
 | 后端全量 | `mvn -DskipTests compile`（Maven 3.9.9 + JDK 21） | **BUILD SUCCESS** |
-| 单元 + 集成测试 | `mvn test`（含嵌入式 PostgreSQL） | **84 / 84 通过** |
-| 8 个 SQL 脚本 | 括号配平 + 幂等性核对 + **在真库上实际执行过**（集成测试） | 全部通过 |
+| 单元 + 集成测试 | `mvn test`（含嵌入式 PostgreSQL） | **87 / 87 通过** |
+| 11 个 SQL 脚本 | 括号配平 + 幂等性核对 + **在真库上实际执行过**（集成测试） | 全部通过 |
 | PC 端生产构建 | `npm install` + `npm run build`（Node 22.22.2） | **成功**，dist 1.6 MB，主包 gzip 371 KB |
-| PC + 移动端 21 个 `.vue` | 模板标签配平 + `node --check` 校验 script | **21 / 21 通过**（`qc-mobile/App.vue` 无 template，只校验 script） |
+| PC + 移动端 26 个 `.vue` | 模板标签配平 + `node --check` 校验 script | **26 / 26 通过**（`qc-mobile/App.vue` 无 template，只校验 script） |
 | Docker 编排 | `docker-compose.yml` 结构、脚本挂载顺序 | 只做了结构与 YAML 校验，**本机无 Docker，没实跑过** |
 
 > 现在唯一还悬着的是 Docker 那条路：`docker compose up` 里的 `docker-entrypoint-initdb.d` 用 psql 执行脚本，与集成测试用的 Spring 脚本执行器不是同一条路径（这正是缺陷 1 的成因），所以两者都值得各跑一次。
@@ -413,7 +415,7 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 
 ## 六、下一步
 
-已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出（检验单/不良/明细/帕累托/日合格率）、移动端量具选择·现场拍照·报告查看·续填草稿、待办聚合与角标、站内通知与审核退回主动推送、移动端让步接收、**AQL 抽样（GB/T 2828.1，样本量与允收数按批量查表）**、**出货登记与超发拦截**、**检验单多条件筛选（单号/批次号/产品/检验员/结论/日期区间，列表与导出同口径）**、**检验单操作轨迹时间线**、**供应商来料合格率排名**、**返工复检闭环（未返工不许开复检、复检不合格不许闭环）**、**出货单红冲（理由必填、额度回退、保留痕迹）**、**主数据录入闭环（产品·检验项维护页 + 新建批次 + 保存前置校验）**、**PC 工作台（待审核/待处置/超期量具/我的草稿一处集中，登录即首页）**、Docker 一键启动、84 个测试（含真库集成测试）、端到端冒烟脚本。
+已闭环：件粒度、两层判定、提交锁定、草稿暂存、件级合格率、标准配置编辑页、量具校准、NG 处置、不良代码帕累托与字典维护、双向追溯、认证与三角色权限、审核放行闭环、图片上传、检验报告打印、CSV 导出（检验单/不良/明细/帕累托/日合格率）、移动端量具选择·现场拍照·报告查看·续填草稿、待办聚合与角标、站内通知与审核退回主动推送、移动端让步接收、**AQL 抽样（GB/T 2828.1，样本量与允收数按批量查表）**、**出货登记与超发拦截**、**检验单多条件筛选（单号/批次号/产品/检验员/结论/日期区间，列表与导出同口径）**、**检验单操作轨迹时间线**、**供应商来料合格率排名**、**返工复检闭环（未返工不许开复检、复检不合格不许闭环）**、**出货单红冲（理由必填、额度回退、保留痕迹）**、**主数据录入闭环（产品·检验项维护页 + 新建批次 + 保存前置校验）**、**PC 工作台（待审核/待处置/超期量具/我的草稿一处集中，登录即首页）**、**量具校准履历（证书号/校准机构/结论，同日不重登、补录不动有效期、不合格自动停用）**、**操作日志全局检索（按动作/操作人/单号批次/日期筛，可导出，仅管理员）**、**客户投诉闭环（登记必填批次/客户/描述；未关闭客诉拦住该批次后续出货；关闭需根因+措施+责任方；追溯页可见；可导出）**、Docker 一键启动、87 个测试（含真库集成测试）、端到端冒烟脚本。
 
 按优先级还剩：
 
@@ -430,7 +432,7 @@ JWT 里带 `id / username / realName / role`，落库的 `created_by`、`operato
 
 ## 七、注意
 
-- **升级**：V2~V9 全部写成幂等 DDL（`ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS` / `CREATE INDEX IF NOT EXISTS`），按 V1 → V9 顺序执行即可，新库老库同一条路径。**但 V1 不是幂等的**（建表用的是普通 `CREATE TABLE`），已经跑过 V1 的库不要再跑一遍
+- **升级**：V2~V11 全部写成幂等 DDL（`ADD COLUMN IF NOT EXISTS` / `DROP ... IF EXISTS` / `CREATE INDEX IF NOT EXISTS`），按 V1 → V11 顺序执行即可，新库老库同一条路径。**但 V1 不是幂等的**（建表用的是普通 `CREATE TABLE`），已经跑过 V1 的库不要再跑一遍
 - **认证**：除 `/api/auth/login`、`/api/images/{id}/raw`、`/actuator/health` 外，所有接口都要 `Authorization: Bearer <token>`，否则返回 401
 - **权限**：主数据维护（标准/量具/检验项/不良代码）与用户管理要 `ADMIN`；审核/归档/作废要 `ADMIN` 或 `REVIEWER`；越权返回 403，前端的菜单隐藏只是体验，真正的边界在 `@PreAuthorize`
 - **JWT 密钥**：`qc.jwt.secret` 至少 32 字节，默认值是开发用的，上线必须用 `JWT_SECRET` 覆盖（启动时会校验长度，不够直接报错）

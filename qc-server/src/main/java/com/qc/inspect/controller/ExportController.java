@@ -1,11 +1,14 @@
 package com.qc.inspect.controller;
 
+import com.qc.inspect.dto.AuditQuery;
+import com.qc.inspect.dto.ComplaintQuery;
 import com.qc.inspect.dto.InspectionQuery;
 import com.qc.inspect.service.ExportService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -66,6 +69,30 @@ public class ExportController {
     @GetMapping("/daily-yield")
     public ResponseEntity<byte[]> dailyYield() {
         return csv(exportService.dailyYield(), "daily-yield");
+    }
+
+    /** 操作日志，条件与列表页共用 {@link AuditQuery}。内审要的就是这份「谁动过单」 */
+    @GetMapping("/audit-logs")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<byte[]> auditLogs(@RequestParam(required = false) String action,
+                                            @RequestParam(required = false) String operator,
+                                            @RequestParam(required = false) String keyword,
+                                            @RequestParam(required = false) String from,
+                                            @RequestParam(required = false) String to) {
+        return csv(exportService.auditLedger(new AuditQuery(action, operator, keyword, from, to)),
+                "audit-logs");
+    }
+
+    /** 客户投诉台账，条件与列表页共用 {@link ComplaintQuery}。体系审核每年必打这一份 */
+    @GetMapping("/complaints")
+    public ResponseEntity<byte[]> complaints(@RequestParam(required = false) String status,
+                                             @RequestParam(required = false) String severity,
+                                             @RequestParam(required = false) String keyword,
+                                             @RequestParam(required = false) String from,
+                                             @RequestParam(required = false) String to,
+                                             @RequestParam(required = false) Boolean open) {
+        return csv(exportService.complaintLedger(
+                new ComplaintQuery(status, severity, keyword, from, to, open)), "complaints");
     }
 
     private ResponseEntity<byte[]> csv(String content, String name) {

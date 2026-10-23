@@ -73,6 +73,43 @@
       </el-table>
     </el-card>
 
+    <!-- 未关闭客诉 -->
+    <el-card id="sec-complaint" class="block">
+      <template #header>
+        <div class="head">
+          <span>未关闭客诉 <el-tag v-if="complaints.length" type="danger" size="small">{{ complaints.length }}</el-tag></span>
+          <div class="spacer" />
+          <el-button link type="primary" @click="router.push('/complaints')">去客户反馈</el-button>
+        </div>
+      </template>
+      <el-table :data="complaints" size="small" v-loading="loading" empty-text="没有未关闭的客户投诉">
+        <el-table-column prop="complaintNo" label="客诉单号" width="150" />
+        <el-table-column prop="customer" label="客户" min-width="130" />
+        <el-table-column prop="batchNo" label="批次号" width="140" />
+        <el-table-column label="严重度" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" :type="severityType(row.severity)">{{ severityText(row.severity) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="问题" min-width="220" show-overflow-tooltip />
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.status === 'OPEN' ? 'danger' : 'warning'">
+              {{ row.status === 'OPEN' ? '待处理' : '处理中' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="客诉日期" width="110">
+          <template #default="{ row }">{{ row.complaintDate || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" plain @click="goComplaint(row)">去处理</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+
     <!-- 待处置不良 -->
     <el-card id="sec-defect" class="block">
       <template #header>
@@ -211,6 +248,7 @@ const reviews = ref([])
 const defects = ref([])
 const gauges = ref([])
 const mine = ref([])
+const complaints = ref([])
 
 const reviewVisible = ref(false)
 const reviewTarget = ref({})
@@ -244,6 +282,10 @@ const stats = computed(() => {
     })
   }
   base.push(
+    {
+      key: 'complaint', label: '未关闭客诉', sec: 'sec-complaint', cls: 'danger',
+      count: summary.value.openComplaint || 0, hint: '客户在等答复'
+    },
     {
       key: 'defect', label: '待处置不良', sec: 'sec-defect', cls: 'danger',
       count: summary.value.pendingDefect || 0, hint: '含处理中未闭环'
@@ -306,6 +348,18 @@ function goDispose(row) {
   router.push({ path: '/defects', query: { focus: row.id } })
 }
 
+function goComplaint(row) {
+  router.push({ path: '/complaints', query: { focus: row.id } })
+}
+
+function severityText(s) {
+  return { HIGH: '严重', MEDIUM: '一般', LOW: '轻微' }[s] || s || '—'
+}
+
+function severityType(s) {
+  return { HIGH: 'danger', MEDIUM: 'warning', LOW: 'info' }[s] || 'info'
+}
+
 async function loadAll() {
   loading.value = true
   try {
@@ -317,14 +371,16 @@ async function loadAll() {
     summary.value = { ...s, __rejected: m.rejected || [] }
     mine.value = m.drafts || []
 
-    const [r, d, g] = await Promise.all([
+    const [r, d, g, c] = await Promise.all([
       canReview.value ? http.get('/todo/reviews', { params: { limit: 50 } }) : Promise.resolve([]),
       http.get('/todo/defects'),
-      http.get('/todo/gauges')
+      http.get('/todo/gauges'),
+      http.get('/todo/complaints', { params: { limit: 50 } })
     ])
     reviews.value = r || []
     defects.value = d || []
     gauges.value = g || []
+    complaints.value = c || []
   } finally {
     loading.value = false
   }

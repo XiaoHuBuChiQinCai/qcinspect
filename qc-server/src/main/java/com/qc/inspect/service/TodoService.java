@@ -2,10 +2,12 @@ package com.qc.inspect.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qc.inspect.entity.QcBatch;
+import com.qc.inspect.entity.QcComplaint;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcGauge;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.mapper.QcBatchMapper;
+import com.qc.inspect.mapper.QcComplaintMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcGaugeMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
@@ -45,6 +47,7 @@ public class TodoService {
     private final QcDefectMapper defectMapper;
     private final QcGaugeMapper gaugeMapper;
     private final QcBatchMapper batchMapper;
+    private final QcComplaintMapper complaintMapper;
     private final InspectionViewService viewService;
 
     /** 首页角标 */
@@ -62,6 +65,9 @@ public class TodoService {
                 .eq(QcInspection::getStatus, "DRAFT")
                 .eq(QcInspection::getCreatedBy, operator));
         long myRejected = inspectionMapper.countRejectedDrafts(operator);
+        // 未关闭客诉：客户已经投诉了，还没给答复。这是最不能压的一件事
+        long openComplaint = complaintMapper.selectCount(new LambdaQueryWrapper<QcComplaint>()
+                .ne(QcComplaint::getStatus, QcComplaint.STATUS_CLOSED));
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("pendingReview", pendingReview);
@@ -69,9 +75,35 @@ public class TodoService {
         m.put("overdueGauge", overdueGauge);
         m.put("myDraft", myDraft);
         m.put("myRejected", myRejected);
+        m.put("openComplaint", openComplaint);
         // 角标总数不含量具超期：它不是「单据」，混在一起会让人以为有几十张单没处理
-        m.put("actionable", pendingReview + pendingDefect + myRejected);
+        m.put("actionable", pendingReview + pendingDefect + myRejected + openComplaint);
         return m;
+    }
+
+    /** 未关闭客诉。工作台只看前 N 条，全量去客户反馈页筛 */
+    public List<QcComplaint> pendingComplaints(int limit) {
+        int n = Math.max(1, Math.min(limit, 200));
+        List<QcComplaint> list = complaintMapper.selectList(new LambdaQueryWrapper<QcComplaint>()
+                .ne(QcComplaint::getStatus, QcComplaint.STATUS_CLOSED)
+                // 严重客诉排最前：压一天 HIGH 和压一天 LOW，代价完全不同。
+                // 用 last 拼原生 ORDER BY，因为 severity 是字母序（HIGH/MEDIUM/LOW）排不出轻重
+                .last("ORDER BY CASE WHEN severity = 'HIGH' THEN 0 ELSE 1 END,"
+                        + " complaint_date DESC, id DESC LIMIT " + n));
+        if (list.isEmpty()) {
+            return list;
+        }
+        // 处理人要拿着批次号去查那批货，只给客诉单号还得再点进去看一眼
+        Set<Long> batchIds = list.stream().map(QcComplaint::getBatchId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, QcBatch> batches = batchIds.isEmpty() ? Map.of()
+                : batchMapper.selectBatchIds(batchIds).stream()
+                .collect(Collectors.toMap(QcBatch::getId, Function.identity(), (a, b) -> a));
+        for (QcComplaint c : list) {
+            QcBatch b = batches.get(c.getBatchId());
+            c.setBatchNo(b == null ? null : b.getBatchNo());
+        }
+        return list;
     }
 
     /** 待审核：已提交但还没人放行的单。工作台只看前 N 条，剩下的去检验单列表筛 */

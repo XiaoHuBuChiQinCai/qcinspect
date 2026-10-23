@@ -38,6 +38,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -680,6 +681,287 @@ class InspectionFlowIT {
         Map<String, Object> mine = data(get("/api/todo/mine"));
         assertThat(asList(mine.get("drafts"))).extracting(r -> num(r.get("id"))).contains(draftIns);
         assertThat(num(data(get("/api/todo/summary")).get("myDraft"))).isPositive();
+    }
+
+    @Test
+    @Order(17)
+    @DisplayName("量具校准履历：同日不许重登、补录不动有效期、不合格停用且不许用于检验")
+    void gaugeCalibrationHistory() {
+        LocalDate today = LocalDate.now();
+
+        // ---- 量具 A：正常送检 ----
+        Long a = num(data(post("/api/gauges", Map.of(
+                "gaugeCode", "IT-G-A", "gaugeName", "IT 数显卡尺", "gaugeType", "卡尺",
+                "calibrateDate", today.minusDays(300).toString(), "calibrateCycleDays", 365))).get("id"));
+
+        // 建档时填的校准日期也必须成为一条履历，否则新量具在履历页上跟「从没校准过」一样
+        assertThat(asList(get("/api/gauges/" + a + "/calibrations").get("data")))
+                .as("建档即落一条履历").hasSize(1);
+
+        Map<String, Object> after = data(post("/api/gauges/" + a + "/calibrate", Map.of(
+                "calibrateDate", today.toString(), "cycleDays", 180, "result", "PASS",
+                "certificateNo", "JL-2026-0888", "agency", "市计量院")));
+        assertThat(after.get("nextCalibrateDate")).isEqualTo(today.plusDays(180).toString());
+        assertThat(after.get("status")).isEqualTo("ACTIVE");
+
+        List<Map<String, Object>> his = asList(get("/api/gauges/" + a + "/calibrations").get("data"));
+        assertThat(his).hasSize(2);
+        // 倒序：最新那次在最前，外审翻履历第一眼看到的就是当前的
+        assertThat(his.get(0).get("certificateNo")).isEqualTo("JL-2026-0888");
+        assertThat(String.valueOf(his.get(0).get("calibrateBy"))).isNotBlank();
+
+        // 手抖点两下、两个人同时登记，都不能长出两条一样的记录
+        assertThat(num(post("/api/gauges/" + a + "/calibrate",
+                Map.of("calibrateDate", today.toString())).get("code")))
+                .as("同一天不许重复登记").isNotEqualTo(0);
+
+        // 校准证书晚到一个月是常态，补录去年的记录不该把当前有效期改回去
+        data(post("/api/gauges/" + a + "/calibrate", Map.of(
+                "calibrateDate", today.minusDays(500).toString(), "cycleDays", 365,
+                "certificateNo", "JL-2024-0001")));
+        assertThat(asList(get("/api/gauges/" + a + "/calibrations").get("data")))
+                .as("补录进了履历").hasSize(3);
+        assertThat(gauge(a).get("nextCalibrateDate"))
+                .as("补录旧记录不动当前有效期").isEqualTo(today.plusDays(180).toString());
+
+        // ---- 量具 B：校准不合格 ----
+        Long b = num(data(post("/api/gauges", Map.of(
+                "gaugeCode", "IT-G-B", "gaugeName", "IT 千分尺", "gaugeType", "千分尺",
+                "calibrateDate", today.minusDays(100).toString(), "calibrateCycleDays", 365))).get("id"));
+        String expiry = String.valueOf(gauge(b).get("nextCalibrateDate"));
+
+        // 限用不写清范围，下一个人会拿它去测本来不该测的尺寸
+        assertThat(num(post("/api/gauges/" + b + "/calibrate",
+                Map.of("calibrateDate", today.minusDays(2).toString(), "result", "LIMITED")).get("code")))
+                .as("限用必须写清限制范围").isNotEqualTo(0);
+
+        Map<String, Object> failed = data(post("/api/gauges/" + b + "/calibrate", Map.of(
+                "calibrateDate", today.toString(), "result", "FAIL",
+                "certificateNo", "JL-2026-0999", "agency", "市计量院",
+                "remark", "示值超差 0.03mm")));
+        assertThat(failed.get("status")).as("校准不合格必须停用").isEqualTo("SUSPENDED");
+        assertThat(failed.get("nextCalibrateDate")).as("不合格不顺延有效期").isEqualTo(expiry);
+
+        // 停用的量具不能出现在「可用」列表里（录入页就是按 ACTIVE 取数）
+        assertThat(asList(get("/api/gauges?status=ACTIVE").get("data")))
+                .extracting(g -> num(g.get("id"))).doesNotContain(b);
+
+        // 真正的闸门在提交：拿停用量具量出来的数据不许入账
+        Long nb = aqlBatch("IT-G-BATCH", 20);
+        Long ins = num(data(post("/api/inspections", Map.of("batchId", nb))).get("inspectionId"));
+        List<Map<String, Object>> lines = fillCompliant(detail(ins));
+        lines.get(0).put("gaugeId", b);
+        Map<String, Object> blocked = post("/api/inspections/" + ins + "/submit", Map.of("lines", lines));
+        assertThat(num(blocked.get("code"))).as("停用量具不许用于检验").isNotEqualTo(0);
+        assertThat(String.valueOf(blocked.get("msg"))).contains("停用");
+
+        // 修好重新校准合格（哪怕日期比上次登记早，只要更新就恢复）
+        Map<String, Object> fixed = data(post("/api/gauges/" + b + "/calibrate", Map.of(
+                "calibrateDate", today.minusDays(1).toString(), "cycleDays", 180, "result", "PASS",
+                "certificateNo", "JL-2026-1001", "agency", "市计量院", "remark", "维修后复校")));
+        assertThat(fixed.get("status")).as("重新校准合格即恢复可用").isEqualTo("ACTIVE");
+        assertThat(fixed.get("nextCalibrateDate")).isEqualTo(today.minusDays(1).plusDays(180).toString());
+    }
+
+    @Test
+    @Order(18)
+    @DisplayName("操作日志：动作可筛、按批次号可查、非管理员看不到、可导出")
+    void auditLogs() {
+        Long b = aqlBatch("IT-AUDIT", 20);
+        Long ins = num(data(post("/api/inspections", Map.of("batchId", b))).get("inspectionId"));
+        data(post("/api/inspections/" + ins + "/submit",
+                Map.of("lines", fillCompliant(detail(ins)))));
+        data(post("/api/inspections/" + ins + "/void?reason=IT 重复建单，作废", Map.of()));
+        assertThat(String.valueOf(asMap(detail(ins).get("inspection")).get("status"))).isEqualTo("VOID");
+
+        // 按批次号查：来查的人手里常常只有一个号，记不清是单号还是批次号
+        List<Map<String, Object>> rows = asList(
+                data(get("/api/audit/logs?current=1&size=50&keyword=IT-AUDIT")).get("records"));
+        assertThat(rows).as("这张单的一串动作都要能捞出来").isNotEmpty();
+        assertThat(rows).extracting(r -> r.get("action"))
+                .as("建单/提交/作废三次留痕").contains("CREATE", "SUBMIT", "VOID");
+        assertThat(rows).allSatisfy(r -> assertThat(String.valueOf(r.get("batchNo"))).isEqualTo("IT-AUDIT"));
+
+        // 查日志的人要能直接看到哪张单、哪个批次，而不是一个光秃秃的 id
+        Map<String, Object> create = rows.stream()
+                .filter(r -> "CREATE".equals(r.get("action"))).findFirst().orElseThrow();
+        assertThat(create.get("inspectionNo")).isNotNull();
+        assertThat(create.get("productName")).isNotNull();
+        assertThat(num(create.get("inspectionId"))).isEqualTo(ins);
+
+        // 作废理由是复核的关键，必须原样留在这条记录上
+        Map<String, Object> voidRow = rows.stream()
+                .filter(r -> "VOID".equals(r.get("action"))).findFirst().orElseThrow();
+        assertThat(String.valueOf(voidRow.get("reason"))).contains("重复建单");
+        assertThat(voidRow.get("toStatus")).isEqualTo("VOID");
+        assertThat(String.valueOf(voidRow.get("operator"))).isNotBlank();
+
+        // 动作筛选与服务端一致
+        assertThat(asList(data(get("/api/audit/logs?current=1&size=20&action=VOID")).get("records")))
+                .allSatisfy(r -> assertThat(r.get("action")).isEqualTo("VOID"));
+
+        // 导出：内审要的是能打印的凭证，不是让人一页页截图
+        ResponseEntity<byte[]> resp = rest.exchange("/api/export/audit-logs?keyword=IT-AUDIT",
+                HttpMethod.GET, new HttpEntity<>(authHeaders()), byte[].class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        byte[] body = resp.getBody();
+        assertThat(body).isNotNull();
+        assertThat(new byte[]{body[0], body[1], body[2]})
+                .isEqualTo(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
+        String csv = new String(body, 3, body.length - 3, StandardCharsets.UTF_8);
+        assertThat(csv).startsWith("发生时间").contains("作废").contains("IT 重复建单");
+
+        // 日志里有作废理由和退回意见，等于把争议记录摊开，不是所有人都该随手翻
+        String adminToken = token;
+        token = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        try {
+            assertThat(statusOf("/api/audit/logs")).as("非管理员看不了操作日志").isEqualTo(403);
+            assertThat(statusOf("/api/export/audit-logs")).isEqualTo(403);
+        } finally {
+            token = adminToken;
+        }
+    }
+
+    @Test
+    @Order(19)
+    @DisplayName("客户投诉：登记校验、未关闭拦出货、追溯可见、关闭需根因/措施/责任方、可导出")
+    void customerComplaints() {
+        Long b = aqlBatch("IT-TS", 40);
+        // 先做出一个合格结论：否则出货拦截会被「还没有检验结论」顶掉，
+        // 这条用例真正要验的「客诉拦出货」就测不到了
+        Long ins = num(data(post("/api/inspections", Map.of("batchId", b))).get("inspectionId"));
+        data(post("/api/inspections/" + ins + "/submit",
+                Map.of("lines", fillCompliant(detail(ins)))));
+
+        // ---- 登记门槛 ----
+        // 没批次的客诉无法追溯也没法定责，只能算抱怨，不许入库
+        assertBizFail(post("/api/complaints",
+                Map.of("customer", "苏州某机械", "description", "外径超差")), "批次");
+        assertBizFail(post("/api/complaints",
+                Map.of("batchId", b, "description", "外径超差")), "客户");
+        assertBizFail(post("/api/complaints",
+                Map.of("batchId", b, "customer", "苏州某机械")), "描述");
+        assertBizFail(post("/api/complaints", Map.of("batchId", b, "customer", "苏州某机械",
+                "description", "外径超差", "complaintDate", LocalDate.now().plusDays(1).toString())),
+                "不能晚于今天");
+        // 类别是质量体系的固定用语，不能现场自造
+        assertBizFail(post("/api/complaints", Map.of("batchId", b, "customer", "苏州某机械",
+                "description", "外径超差", "category", "UGLY")), "取值不合法");
+
+        Map<String, Object> created = data(post("/api/complaints", Map.of(
+                "batchId", b, "customer", "苏州某机械", "description", "外径超差，装配后卡死",
+                "severity", "HIGH", "category", "SIZE", "qty", 3)));
+        Long cid = num(created.get("id"));
+        assertThat(String.valueOf(created.get("complaintNo"))).startsWith("TS");
+        assertThat(created.get("status")).isEqualTo("OPEN");
+        // 登记完直接能看出是哪一批，不必再点一次换取批次号
+        assertThat(created.get("batchNo")).isEqualTo("IT-TS");
+
+        // ---- 追溯链的第五块 ----
+        assertThat(asList(get("/api/complaints?batchId=" + b).get("data"))).hasSize(1);
+        Map<String, Object> trace = data(get("/api/trace/batch/" + b));
+        assertThat(asList(trace.get("complaints"))).as("追溯页要能看到客诉").hasSize(1);
+        assertThat(num(trace.get("openComplaints"))).isEqualTo(1L);
+
+        // ---- 未关闭客诉拦出货 ----
+        // 客户已经投诉了这批货、还没查清又发给下一个客户，等于把同一个问题复制出去
+        assertBizFail(post("/api/shipments",
+                Map.of("batchId", b, "customer", "无锡某厂", "qty", 5)), "未关闭的客户投诉");
+        assertThat(num(data(get("/api/shipments/context/" + b)).get("openComplaints"))).isEqualTo(1L);
+
+        // 例外放行能出，但必须留痕：一年后看这张单要知道它当年是带着客诉出去的
+        Map<String, Object> forced = data(post("/api/shipments",
+                Map.of("batchId", b, "customer", "无锡某厂", "qty", 5, "force", true)));
+        assertThat(String.valueOf(forced.get("remark")))
+                .contains("[例外放行]").contains("未关闭的客户投诉");
+
+        // ---- 关闭：三项缺一不可 ----
+        assertBizFail(post("/api/complaints/" + cid + "/close",
+                Map.of("action", "加严抽检", "responsibility", "本厂制程")), "根本原因");
+        assertBizFail(post("/api/complaints/" + cid + "/close",
+                Map.of("rootCause", "车刀磨损", "responsibility", "本厂制程")), "措施");
+        assertBizFail(post("/api/complaints/" + cid + "/close",
+                Map.of("rootCause", "车刀磨损", "action", "加严抽检")), "责任归属");
+
+        Map<String, Object> closed = data(post("/api/complaints/" + cid + "/close", Map.of(
+                "rootCause", "车刀磨损未按周期更换",
+                "action", "换刀频次由 500 件改为 300 件，首件必测",
+                "responsibility", "本厂制程")));
+        assertThat(closed.get("status")).isEqualTo("CLOSED");
+        assertThat(String.valueOf(closed.get("closedBy"))).isNotBlank();
+        assertThat(closed.get("closedAt")).isNotNull();
+
+        // 关闭记录一旦落定，不许被重复关闭覆盖根因分析
+        assertBizFail(post("/api/complaints/" + cid + "/close",
+                Map.of("rootCause", "随便写", "action", "随便写", "responsibility", "供应商")), "已关闭");
+
+        // 关掉之后这个批次才恢复可以正常出货
+        assertThat(num(data(get("/api/shipments/context/" + b)).get("openComplaints"))).isZero();
+        data(post("/api/shipments", Map.of("batchId", b, "customer", "无锡某厂", "qty", 5)));
+
+        // ---- 列表与导出同口径 ----
+        List<Map<String, Object>> openRows = asList(data(
+                get("/api/complaints/page?current=1&size=20&open=true")).get("records"));
+        assertThat(openRows).allSatisfy(r -> assertThat(r.get("status")).isNotEqualTo("CLOSED"));
+        List<Map<String, Object>> kwRows = asList(data(
+                get("/api/complaints/page?current=1&size=20&keyword=IT-TS")).get("records"));
+        assertThat(kwRows).as("按批次号也要能搜到客诉").hasSize(1);
+
+        ResponseEntity<byte[]> resp = rest.exchange("/api/export/complaints?keyword=IT-TS",
+                HttpMethod.GET, new HttpEntity<>(authHeaders()), byte[].class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        byte[] body = resp.getBody();
+        assertThat(body).isNotNull();
+        assertThat(new byte[]{body[0], body[1], body[2]})
+                .isEqualTo(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
+        String csv = new String(body, 3, body.length - 3, StandardCharsets.UTF_8);
+        assertThat(csv).startsWith("客诉单号").contains("苏州某机械").contains("车刀磨损");
+
+        // ---- 谁能关闭 ----
+        // 「问题解决了」这句话不能由接电话的人自己说，检验员关不了
+        Map<String, Object> second = data(post("/api/complaints", Map.of(
+                "batchId", b, "customer", "常州某厂", "description", "包装破损", "category", "PACK")));
+        Long cid2 = num(second.get("id"));
+        String adminToken = token;
+        token = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        try {
+            assertThat(statusOfPost("/api/complaints/" + cid2 + "/close",
+                    Map.of("rootCause", "a", "action", "b", "responsibility", "c")))
+                    .as("检验员不能关闭客诉").isEqualTo(403);
+            // 但登记对所有人开放：客诉往往是销售、客服先接到的，只有质检能录就会烂在微信里
+            Map<String, Object> byInspector = data(post("/api/complaints", Map.of(
+                    "batchId", b, "customer", "常州某厂", "description", "标识贴反")));
+            assertThat(String.valueOf(byInspector.get("complaintNo"))).startsWith("TS");
+        } finally {
+            token = adminToken;
+        }
+    }
+
+    /** 业务失败要拦下并说清原因，不能悄无声息地按默认值存进去 */
+    private void assertBizFail(Map<String, Object> resp, String msgFragment) {
+        assertThat(num(resp.get("code"))).as("应当被拦下: %s", resp.get("msg")).isNotZero();
+        assertThat(String.valueOf(resp.get("msg"))).contains(msgFragment);
+    }
+
+    /** POST 的状态码（403 的响应体不是业务 JSON，走 String 反序列化） */
+    private int statusOfPost(String path, Object body) {
+        return rest.exchange(path, HttpMethod.POST, new HttpEntity<>(body, authHeaders()), String.class)
+                .getStatusCode().value();
+    }
+
+    /** 只关心 HTTP 状态码时用（403 的响应体不是业务 JSON，走反序列化容易踩坑） */
+    private int statusOf(String path) {
+        return rest.exchange(path, HttpMethod.GET, new HttpEntity<>(authHeaders()), String.class)
+                .getStatusCode().value();
+    }
+
+    /** 从列表里取一把量具的最新状态（没有单条查询接口，列表本来就是全量） */
+    private Map<String, Object> gauge(Long id) {
+        return asList(get("/api/gauges").get("data")).stream()
+                .filter(g -> id.equals(num(g.get("id"))))
+                .findFirst().orElseThrow();
     }
 
     /** 复检用例夹具：固定抽样 1 件、Ac=0 的独立产品，判 NG 后正好落一条可返工的不良 */

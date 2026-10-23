@@ -3,11 +3,13 @@ package com.qc.inspect.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.entity.QcBatch;
+import com.qc.inspect.entity.QcComplaint;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcProduct;
 import com.qc.inspect.entity.QcShipment;
 import com.qc.inspect.mapper.QcBatchMapper;
+import com.qc.inspect.mapper.QcComplaintMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
 import com.qc.inspect.mapper.QcProductMapper;
@@ -39,6 +41,7 @@ public class TraceService {
     private final QcInspectionMapper inspectionMapper;
     private final QcDefectMapper defectMapper;
     private final QcShipmentMapper shipmentMapper;
+    private final QcComplaintMapper complaintMapper;
 
     /** 按批次追溯 */
     public Map<String, Object> byBatch(Long batchId) {
@@ -86,6 +89,16 @@ public class TraceService {
         m.put("shipments", shipmentMapper.selectList(new LambdaQueryWrapper<QcShipment>()
                 .eq(QcShipment::getBatchId, batch.getId())
                 .orderByDesc(QcShipment::getShippedAt)));
+        // 客诉是追溯链的第五块，也是最容易被漏掉的一块：
+        // 只看到「货发给了谁」，看不到「谁抱怨过」，召回判断就会漏。
+        List<QcComplaint> complaints = complaintMapper.selectList(
+                new LambdaQueryWrapper<QcComplaint>()
+                        .eq(QcComplaint::getBatchId, batch.getId())
+                        .orderByDesc(QcComplaint::getComplaintDate));
+        m.put("complaints", complaints);
+        m.put("openComplaints", complaints.stream()
+                .filter(c -> !QcComplaint.STATUS_CLOSED.equals(c.getStatus()))
+                .count());
         return m;
     }
 

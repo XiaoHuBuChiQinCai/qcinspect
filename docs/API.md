@@ -525,14 +525,48 @@ Base URL：`http://localhost:8080/api`
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/gauges?status=ACTIVE` | 量具台账 |
-| GET | `/gauges/expiring?days=30` | 已过期 + N 天内到期 |
+| GET | `/gauges/expiring?days=30` | 已过期 + N 天内到期（只查 `ACTIVE`） |
 | POST | `/gauges` | 新增 / 修改（`nextCalibrateDate` 由后端算，不用传） |
-| POST | `/gauges/{id}/calibrate?calibrateDate=2026-10-19&cycleDays=365` | 送检后登记新校准日 |
+| POST | `/gauges/{id}/calibrate` | 登记一次校准，JSON body 见下 |
+| GET | `/gauges/{id}/calibrations` | 校准履历，按校准日倒序 |
 | POST | `/gauges/{id}/scrap?reason=跌落损坏` | 报废 |
 
-**提交检验单时**，每个 `line` 可带 `gaugeId`。带了就会被校验：
+**状态**：`ACTIVE` 可用 / `SUSPENDED` 校准不合格停用 / `SCRAPPED` 已报废。
+
+### 登记校准
+
+```json
+{
+  "calibrateDate": "2026-10-22",
+  "cycleDays": 180,
+  "result": "PASS",
+  "certificateNo": "JL-2026-0888",
+  "agency": "市计量院",
+  "remark": "维修后复校"
+}
+```
+
+`result` 取 `PASS` 合格 / `FAIL` 不合格 / `LIMITED` 限用，不传按 `PASS`。
+
+四条规则（都是现场会遇到的）：
+
+| 情形 | 行为 | 理由 |
+|---|---|---|
+| 同一天重复登记 | 拦 | 手抖点两下、两人同时录，履历会长出两条一样的记录，审核说不清哪条真 |
+| 补录更早的日期 | 只写履历，**不动主表有效期** | 证书晚到一个月是常态，补录不该把在有效期的量具改回过期 |
+| `FAIL` | 不顺延有效期，`status` 置 `SUSPENDED` | 校准不合格还顺延，第二天就有人拿它测活 |
+| `LIMITED` | `remark` 必填 | 不写清范围，下一个人会拿它测不该测的尺寸 |
+
+`SUSPENDED` 的量具修好后重新登记校准，结果 `PASS` 即自动恢复 `ACTIVE`。
+`POST /gauges` 建档、以及编辑时改「上次校准」日期，都会自动补一条履历
+（备注分别注明「建档时」「编辑时修改」），保证主表与履历不脱账。
+
+### 提交检验单时的校验
+
+每个 `line` 可带 `gaugeId`，带了就会校验，四种情况都拦：
 
 - 已报废 → `选用的量具 G-00x 已报废，不能用于检验`
+- 已停用 → `上次校准不合格，已停用。维修并重新校准合格后才能再用`
 - 无校准记录 → `没有校准记录，不能用于检验`
 - `nextCalibrateDate < 今天` → `已于 yyyy-mm-dd 到期，超期量具测出的数据不可采信。请先送检校准`
 
@@ -815,6 +849,7 @@ file=@photo.jpg
 | GET | `/export/inspections/{id}/lines` | 单张检验单的明细 |
 | GET | `/export/pareto?productId=&from=` | 不良帕累托，带占比与**累计占比** |
 | GET | `/export/daily-yield` | 近 30 天合格率，单级与件级两个口径 |
+| GET | `/export/audit-logs?action=VOID&from=&to=` | 操作日志（**仅管理员**），内审取证用 |
 
 响应 `Content-Type: text/csv; charset=UTF-8`，带 BOM，`Content-Disposition: attachment`，浏览器直接下载。
 
@@ -862,13 +897,14 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 
 ## 十二、待办
 
-手机端首页角标、移动端待办页和 PC 工作台都从这里取数。五个数字一次给全，避免前端为角标发五次请求。
+手机端首页角标、移动端待办页和 PC 工作台都从这里取数。六个数字一次给全，避免前端为角标发六次请求。
 
 | 方法 | 路径 | 返回 |
 |---|---|---|
 | GET | `/todo/summary` | 见下 |
 | GET | `/todo/reviews?limit=50` | 待审核的检验单（`SUBMITTED`），已补 `batchNo` / `productName`；`limit` 默认 50、上限 200 |
 | GET | `/todo/defects` | 待处置不良（`PENDING` + `PROCESSING`），带 `inspectionNo` / `batchNo` |
+| GET | `/todo/complaints?limit=50` | 未关闭客诉，`HIGH` 排最前，已补 `batchNo` |
 | GET | `/todo/mine` | `{ drafts: [...], rejected: [...] }`，按登录人过滤 |
 | GET | `/todo/gauges` | 超期未校准量具，带 `overdueDays` |
 
@@ -885,7 +921,8 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
   "overdueGauge": 1,
   "myDraft": 2,
   "myRejected": 1,
-  "actionable": 9
+  "openComplaint": 2,
+  "actionable": 11
 }
 ```
 
@@ -893,12 +930,47 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 
 - **待审核**只算 `SUBMITTED`。草稿是检验员自己的活，不该出现在审核员待办里
 - **被退回**的判定是「当前是草稿 + 历史上出现过 `REJECT`」。改完重新提交后状态变 `SUBMITTED`，自然从待办消失，不需要已读标记
-- **`actionable`** = 待审核 + 待处置 + 我被退回，**不含**量具超期：量具不是单据，混进去会让人误以为积压了几十张单
+- **`actionable`** = 待审核 + 待处置 + 我被退回 + 未关闭客诉，**不含**量具超期：量具不是单据，混进去会让人误以为积压了几十张单
 - 量具超期单独立一项。超期量具量出来的数据，体系审核直接判无效，它比「有几张单待审」更要紧
+- 客诉计入 `actionable`：客户已经投诉了、还没给答复，这是最不能压的一件事
 
 ---
 
-## 十三、站内通知
+## 十三、操作日志（审计）
+
+单据详情页的轨迹回答「这张单发生过什么」；这里是反过来的问题——「谁在上个月作废过单」、
+「已归档的单被谁解锁过」。数据一直在 `qc_inspection_log` 里，此前没有窗口。
+
+**仅管理员**：日志里有作废理由、退回意见，等于把争议记录摊开，不该随手可翻。
+单据自己的轨迹（`GET /inspections/{id}/logs`）不受此限。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/audit/logs` | 分页；`action` / `operator` / `keyword` / `from` / `to` 均可选 |
+| GET | `/export/audit-logs` | 同条件导出 CSV（上限 5 万行） |
+
+`keyword` 同时匹配**检验单号**和**批次号**——来查的人手里常常只有一个号，
+记不清那是单号还是批次号（与 `/inspections/page` 同口径，都用 EXISTS 子查询）。
+
+返回行：
+
+```json
+{
+  "id": 42, "action": "VOID", "inspectionId": 7,
+  "inspectionNo": "QC202610220003", "batchNo": "B20261019001", "productName": "法兰盘",
+  "fromStatus": "SUBMITTED", "toStatus": "VOID",
+  "reason": "IT 重复建单，作废", "operator": "admin",
+  "summary": "...", "createdAt": "2026-10-22T18:05:12"
+}
+```
+
+`action` 取值：`CREATE` 建单 / `SUBMIT` 提交 / `REVIEW` 审核通过 / `REJECT` 审核退回 /
+`REOPEN` 解锁重开 / `CLOSE` 归档 / `VOID` 作废。
+`inspectionId` 是留给前端「点一下跳回原单」的——只给单号却点不进去，查问题时还得手工复制粘贴。
+
+---
+
+## 十四、站内通知
 
 审核退回、让步放行这类**需要对方动一下**的事件落在 `qc_notice` 里，由后端主动写入，
 接收人下次进 App / 打开 PC 就能看到。不做全量消息中心：纯告知的推送会稀释角标，
@@ -929,3 +1001,73 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 
 前端取数方式：PC 顶栏铃铛每 60 秒轮询 `/notices/summary`（失败静默，不弹错误框），
 点开时才拉列表；移动端在待办页顶部显示未读横幅，进「通知」页看列表。
+
+---
+
+## 十五、客户投诉
+
+追溯链原来到「货发给了谁」就断了：客户把不良品退回来的时候，系统里没有地方能记下这件事。
+客诉只活在电话和微信里，年底体系审核问「今年投诉几起、关闭率多少、根因分布」——一条都拿不出来。
+`qc_complaint` 补上 PDCA 里缺的 A（处置）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/complaints/page` | 分页；`status` / `severity` / `keyword` / `from` / `to` / `open` 均可选 |
+| GET | `/complaints?batchId=` | 某批次的全部客诉（追溯页嵌入用） |
+| GET | `/complaints/summary` | `{ "high": 2, "medium": 5, "low": 1, "open": 4 }` |
+| POST | `/complaints` | 登记客诉 |
+| POST | `/complaints/{id}/start` | 受理：`OPEN` → `PROCESSING` |
+| POST | `/complaints/{id}/close` | 关闭；**ADMIN / REVIEWER** |
+| GET | `/todo/complaints?limit=50` | 工作台用：未关闭客诉，`HIGH` 排最前 |
+| GET | `/export/complaints` | 同条件导出 CSV（上限 5 万行） |
+
+登记请求体：
+
+```json
+{
+  "batchId": 12, "shipmentId": 34,
+  "customer": "苏州某机械", "complaintDate": "2026-10-22",
+  "category": "SIZE", "severity": "HIGH", "qty": 3,
+  "description": "外径超差，装配后卡死", "remark": "客户要求换货"
+}
+```
+
+关闭请求体（三项都必填）：
+
+```json
+{ "rootCause": "车刀磨损未按周期更换", "action": "换刀频次由 500 件改为 300 件，首件必测", "responsibility": "本厂制程" }
+```
+
+状态机很短：`OPEN` 待处理 → `PROCESSING` 处理中 → `CLOSED` 已关闭。
+
+**登记门槛**（全部硬拦，不提供跳过开关）：
+
+| 条件 | 原因 |
+|---|---|
+| `batchId` 必填且批次存在 | 没有批次的客诉无法追溯也没法定责，只能算抱怨 |
+| `customer` 必填 | 没有客户名字，这张记录以后没法核对 |
+| `description` 必填 | 不写现象，根因分析无从下手 |
+| `complaintDate` 不晚于今天 | 未来日期的客诉会把统计和超期计算全打乱 |
+| `category` ∈ `APP` 外观 / `SIZE` 尺寸 / `PERF` 性能 / `PACK` 包装 / `MARK` 标识 / `OTHER` 其他 | 类别是质量体系的固定用语，不现场自造 |
+| `severity` ∈ `HIGH` 严重 / `MEDIUM` 一般 / `LOW` 轻微，缺省 `MEDIUM` | 排序与响应时限都靠它 |
+| `qty` 若给必须 > 0 | 客户报不准时留空，别瞎填 |
+| `shipmentId` 若给，必须属于该批次 | 关联错批次比不关联更糟——以后按出货单核算客诉会算到别的批次头上 |
+
+**关闭门槛**：`rootCause` / `action` / `responsibility` 三项缺一不可。
+要求一登记就写根因，结果一定是「已处理」三个字，那比不填更糟；只在关闭时强制，
+才逼得出能拿给审核看的记录。关闭用「带 `status <> 'CLOSED'` 条件的更新」，
+两个人同时点只有一个成功，不会互相覆盖根因分析；已关闭的单也不能退回处理中。
+
+**与出货的联动**：某批次存在未关闭客诉时，`POST /shipments` 会拦下并提示
+「该批次有 N 条未关闭的客户投诉」。内部不良品有 `qc_defect` 闭环拦着，客户侧同样得拦——
+客户已经投诉了这批货、还没查清又发给下一个客户，等于把同一个问题复制出去。
+确认要出可以传 `force=true`，备注会自动带 `[例外放行]` 前缀留痕。
+`GET /shipments/context/{batchId}` 新增 `openComplaints` 字段供出货弹窗提示。
+
+**追溯**：`GET /trace/batch/{id}` 新增两块——`complaints`（该批次全部客诉）与
+`openComplaints`（未关闭条数）。追溯页批次视图里客诉排在出货记录之前。
+
+**待办**：`/todo/summary` 新增 `openComplaint`，并**计入** `actionable`——
+客户投诉是最不能压的一件事。`/todo/complaints` 按 `severity` 把 `HIGH` 排最前
+（字母序 `HIGH/MEDIUM/LOW` 排不出轻重，所以用原生 `ORDER BY CASE`）。
+

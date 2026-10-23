@@ -13,10 +13,12 @@
         <el-menu-item index="/gauges">量具台账</el-menu-item>
         <el-menu-item index="/trace">批次追溯</el-menu-item>
         <el-menu-item index="/shipments">出货记录</el-menu-item>
+        <el-menu-item index="/complaints">客户反馈</el-menu-item>
         <el-menu-item index="/stat">质量看板</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/master-data">主数据</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/defect-codes">不良代码</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/users">用户管理</el-menu-item>
+        <el-menu-item v-if="isAdmin" index="/audit">操作日志</el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
