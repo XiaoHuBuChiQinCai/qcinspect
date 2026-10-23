@@ -1071,3 +1071,83 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 客户投诉是最不能压的一件事。`/todo/complaints` 按 `severity` 把 `HIGH` 排最前
 （字母序 `HIGH/MEDIUM/LOW` 排不出轻重，所以用原生 `ORDER BY CASE`）。
 
+---
+
+## 十六、过程能力分析（SPC）
+
+判定层回答「这批收不收」，回答不了「这道工序稳不稳」。同样 100 件全过，数据贴着规格限
+边缘走和稳稳压在中线，下一批翻车的概率差一个数量级——Cp/Cpk 量的就是这个。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/stat/capability/items` | 有数值实测值的「产品 + 检验项」组合，供下拉选择 |
+| GET | `/stat/capability` | 过程能力分析结果 |
+| GET | `/stat/capability/items` 返回 | `productId / productName / itemId / itemCode / itemName / unit / inspectionCount / sampleCount` |
+
+`/stat/capability` 参数：`productId`、`itemId` 必填，`from` / `to` 为 `yyyy-MM-dd`（默认近 90 天）。
+
+**为什么维度是「产品 + 检验项」而不是「检验项」**：同一个「外径」会用在多个产品上，
+各产品规格上下限不同。混在一起算 Cpk 等于拿两把尺子量同一批数。
+
+**取数口径**（三条都不能松）：
+
+1. 只统计 `SUBMITTED` / `CLOSED` 的单。草稿还在改，把它算进来 Cpk 会随「谁正在录单」跳动
+2. 作废单不计入——它不代表任何检验结论
+3. **超规值一律计入，不剔除。**剔掉再算 Cpk 等于自己给自己发合格证，而抓出「过程在往外飘」
+   正是这个功能的全部意义。超规个数单独报一个字段
+
+**Cp/Cpk 与 Pp/Ppk 的差别**：
+
+| 指数 | 用哪个标准差 | 反映什么 |
+|---|---|---|
+| Cp / Cpk | 组内 σ̂ = MR̄ ÷ 1.128 | 只看同一张检验单内部相邻测量的抖动 |
+| Pp / Ppk | 整体标准差 s | 把批与批之间的漂移也一起算进去 |
+
+移动极差必须在**同一张单内部**相邻测量之间取，跨单相减得到的是「两批之间的漂移」，
+混进 σ̂ 会把组内变异算大、Cpk 算小。所以 Cp 好看而 Pp 难看，说明工序能力够、但没控住批次间漂移，
+那不是算错。
+
+**判定阈值**（按 Cpk，单边规格时 Cp 无定义只看 Cpk）：
+
+| Cpk | 结论 |
+|---|---|
+| ≥ 1.67 | `EXCELLENT` 优秀 |
+| ≥ 1.33 | `SUFFICIENT` 充足 |
+| ≥ 1.00 | `MARGINAL` 勉强 |
+| < 1.00 | `INSUFFICIENT` 不足 |
+| 无规格限 / 样本不足 2 | `UNKNOWN` 无法判定 |
+
+`notes` 是一组必须让看数的人知道的前提，直接铺在页面上：
+
+- 样本量 < 25 → 提示「Cpk 只能当个大概，别拿去和客户对账」。样本少时标准差本身抖得厉害
+- 区间内规格限变过 → 按最后一次快照计算，并提示缩短区间
+- 每张单只有一个测量值 → 算不出移动极差，σ̂ 退回用整体标准差，此时 Cp 会等于 Pp
+- 有超规值 → 报个数并说明未剔除
+- Cpk < 1.33 → 按 GB/T 4091 说明后果
+
+**返回结构**（节选）：
+
+```json
+{
+  "n": 28, "inspectionCount": 2,
+  "lsl": 14.0, "usl": 16.0, "mean": 15.0,
+  "stdOverall": 0.101825, "stdWithin": 0.177305, "meanMr": 0.2,
+  "cp": 1.88, "cpk": 1.88, "pp": 3.273, "ppk": 3.273,
+  "outOfSpec": 0, "outOfSpecRate": 0.0,
+  "verdict": "EXCELLENT", "verdictText": "过程能力优秀",
+  "notes": ["..."],
+  "histogram": { "bins": [{"from": 14.9, "to": 14.95, "count": 7}], "lsl": 14.0, "usl": 16.0, "mean": 15.0 },
+  "controlChart": {
+    "individual": { "points": [{"seq": 1, "value": 15.1}], "center": 15.0, "ucl": 15.532, "lcl": 14.468 },
+    "movingRange": { "points": [{"seq": 1, "value": 0.2}], "center": 0.2, "ucl": 0.653, "lcl": 0 }
+  }
+}
+```
+
+**I-MR 控制图**：I 图上下限 = X̄ ± 2.66 × MR̄（2.66 = 3/d2），MR 图上限 = 3.267 × MR̄。
+两张必须一起看——只看 I 图，一个均值不变但突然抖起来的工序会显得完全正常。
+`stdWithin` / `stdOverall` 保留 6 位小数，`cp` 等指数保留 3 位；分母为 0（数据几乎无波动）时
+返回 `null` 而不是 `Infinity`，免得前端画出个 NULL。
+
+**不需要新增数据库脚本**：数据来自 `qc_inspection_line.measured_values`（jsonb 数组）与
+行上的 `min_value` / `max_value` 快照，`idx_line_item` 已能支撑按检验项取数。

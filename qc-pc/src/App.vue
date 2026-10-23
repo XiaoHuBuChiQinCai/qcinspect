@@ -15,6 +15,7 @@
         <el-menu-item index="/shipments">出货记录</el-menu-item>
         <el-menu-item index="/complaints">客户反馈</el-menu-item>
         <el-menu-item index="/stat">质量看板</el-menu-item>
+        <el-menu-item index="/capability">过程能力</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/master-data">主数据</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/defect-codes">不良代码</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/users">用户管理</el-menu-item>

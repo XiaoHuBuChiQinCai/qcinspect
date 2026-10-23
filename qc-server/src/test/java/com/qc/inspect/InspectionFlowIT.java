@@ -108,6 +108,7 @@ class InspectionFlowIT {
     private static Long firstInspectionId;
     private static Long aqlProductId;
     private static Long rkProductId;
+    private static Long capProductId;
 
     // ==================== 用例 ====================
 
@@ -939,6 +940,154 @@ class InspectionFlowIT {
         }
     }
 
+    @Test
+    @Order(20)
+    @DisplayName("过程能力：Cpk 按组内移动极差算、草稿不计入、超规值不剔除")
+    void capabilityAnalysis() {
+        // 两张单、每张 14 件，实测值在 15.1 / 14.9 之间交替。
+        // 这样设计是为了让每个数字都能手算核对：
+        //   mean = 15.000，单内相邻极差恒为 0.2 → MR̄ = 0.2
+        //   σ̂ = MR̄ / 1.128 = 0.177305，Cp = Cpk = 1 / (3 × 0.177305) = 1.880
+        Long b1 = capBatch("IT-CAP-1");
+        Long i1 = num(data(post("/api/inspections", Map.of("batchId", b1))).get("inspectionId"));
+        Map<String, Object> d1 = detail(i1);
+        assertThat(rows(d1)).as("固定抽 14 件").hasSize(14);
+        data(post("/api/inspections/" + i1 + "/submit",
+                Map.of("lines", capLines(d1, "15.1", "14.9"))));
+
+        Long b2 = capBatch("IT-CAP-2");
+        Long i2 = num(data(post("/api/inspections", Map.of("batchId", b2))).get("inspectionId"));
+        data(post("/api/inspections/" + i2 + "/submit",
+                Map.of("lines", capLines(detail(i2), "15.1", "14.9"))));
+
+        String url = "/api/stat/capability?productId=" + capProductId + "&itemId=1&from="
+                + LocalDate.now().minusDays(1) + "&to=" + LocalDate.now();
+        Map<String, Object> cap = data(get(url));
+
+        assertThat(num(cap.get("n"))).as("两张单 14×2 个实测值").isEqualTo(28L);
+        assertThat(num(cap.get("inspectionCount"))).isEqualTo(2L);
+        assertThat(dec(cap.get("mean"))).as("均值").isEqualByComparingTo("15");
+        assertThat(dec(cap.get("meanMr"))).as("组内移动极差均值").isEqualByComparingTo("0.2");
+        // 逗号后面留余量：σ̂ 是 0.177305 这类无限小数，四舍五入到三位后会有尾差
+        assertThat(dec(cap.get("cp")).doubleValue()).isBetween(1.86, 1.89);
+        assertThat(dec(cap.get("cpk")).doubleValue()).isBetween(1.86, 1.89);
+        assertThat(num(cap.get("outOfSpec"))).as("全在 14~16 之内").isZero();
+        // 1.88 ≥ 1.67 落在优秀档（阈值：1.67 优秀 / 1.33 充足 / 1.00 勉强 / 不足）
+        assertThat(cap.get("verdict")).isEqualTo("EXCELLENT");
+        // 28 ≥ 25，不该再弹「样本不足」的提示
+        assertThat(String.valueOf(cap.get("notes"))).doesNotContain("不足 25");
+
+        // 直方图与控制图是给人看的东西，至少要给出对应结构，别让前端拿到 null 白屏
+        Map<String, Object> hist = asMap(cap.get("histogram"));
+        assertThat(asList(hist.get("bins"))).as("直方图分箱").isNotEmpty();
+        Map<String, Object> chart = asMap(cap.get("controlChart"));
+        assertThat(asList(asMap(chart.get("individual")).get("points")))
+                .as("单值图应有 28 个点").hasSize(28);
+        assertThat(asList(asMap(chart.get("movingRange")).get("points")))
+                .as("移动极差 13×2 个点").hasSize(26);
+
+        // ---- 草稿不计入 ----
+        // 草稿还在改，把它算进来会让 Cpk 随「谁正在录单」跳动，这种数没人敢用
+        Long b3 = capBatch("IT-CAP-DRAFT");
+        Long i3 = num(data(post("/api/inspections", Map.of("batchId", b3))).get("inspectionId"));
+        data(post("/api/inspections/" + i3 + "/save",
+                Map.of("lines", capLines(detail(i3), "99", "99"))));
+        Map<String, Object> withDraft = data(get(url));
+        assertThat(num(withDraft.get("n"))).as("草稿的 14 个 99 不能算进来").isEqualTo(28L);
+        assertThat(num(withDraft.get("mean")) == null).isFalse();
+        assertThat(dec(withDraft.get("mean"))).isEqualByComparingTo("15");
+
+        // ---- 超规值不剔除 ----
+        Long b4 = capBatch("IT-CAP-OOS");
+        Long i4 = num(data(post("/api/inspections", Map.of("batchId", b4))).get("inspectionId"));
+        // 14 个 16.5 全都超上限。如果实现里把超规值剔掉，outOfSpec 会是 0、Cpk 反而不降
+        data(post("/api/inspections/" + i4 + "/submit",
+                Map.of("lines", capLines(detail(i4), "16.5", "16.5"))));
+        Map<String, Object> withOos = data(get(url));
+        assertThat(num(withOos.get("n"))).isEqualTo(42L);
+        assertThat(num(withOos.get("outOfSpec"))).as("超规值必须如实计数").isEqualTo(14L);
+        assertThat(dec(withOos.get("cpk")).doubleValue())
+                .as("掺进超规值后 Cpk 必须变差")
+                .isLessThan(dec(cap.get("cpk")).doubleValue());
+
+        // ---- 候选清单 ----
+        List<Map<String, Object>> items = dataList("/api/stat/capability/items");
+        assertThat(items).anySatisfy(r -> {
+            assertThat(num(r.get("productId"))).isEqualTo(capProductId);
+            assertThat(num(r.get("itemId"))).isEqualTo(1L);
+            assertThat(num(r.get("sampleCount"))).isEqualTo(42L);
+        });
+
+        // 没有任何实测值的组合要给清楚的提示，而不是返回一堆 null
+        assertThat(num(get("/api/stat/capability?productId=999999&itemId=999999").get("code")))
+                .as("查不到数据要报业务错误").isNotZero();
+        assertThat(num(get("/api/stat/capability?productId=999999&itemId=999999&from=2026-13-01")
+                .get("code"))).as("日期格式错也要拦").isNotZero();
+    }
+
+    /**
+     * 过程能力用例夹具：专属产品 + 单数值项标准（规格 14~16，固定抽 14 件）。
+     *
+     * <p>用 FIXED 而不是 AQL：这里要的是「每单恒定 14 件」，批量变化会导致抽样量变化，
+     * 手算的期望值就跟着飘了。
+     */
+    private Long capBatch(String batchNo) {
+        if (capProductId == null) {
+            QcProduct p = new QcProduct();
+            p.setProductCode("IT-CAP");
+            p.setProductName("过程能力试用件");
+            p.setUnit("件");
+            productMapper.insert(p);
+            capProductId = p.getId();
+
+            QcStandard std = new QcStandard();
+            std.setStandardCode("S-IT-CAP");
+            std.setProductId(capProductId);
+            std.setVersion(1);
+            std.setStatus("ACTIVE");
+            std.setSamplingType("SAMPLE");
+            std.setSamplingPlan("FIXED");
+            std.setSampleSize(14);
+            std.setAllowedNgCount(0);
+            standardMapper.insert(std);
+
+            QcStandardItem si = new QcStandardItem();
+            si.setStandardId(std.getId());
+            si.setItemId(1L);
+            si.setSeq(10);
+            si.setIsCritical(true);
+            si.setIsRequired(true);
+            si.setValueMode("SINGLE");
+            si.setPointCount(1);
+            si.setMinValue(new BigDecimal("14.00"));
+            si.setMaxValue(new BigDecimal("16.00"));
+            si.setIsDestructive(false);
+            standardItemMapper.insert(si);
+        }
+
+        QcBatch b = new QcBatch();
+        b.setBatchNo(batchNo);
+        b.setProductId(capProductId);
+        b.setInspectType("IPQC");
+        b.setQty(100);
+        b.setStatus("PENDING");
+        batchMapper.insert(b);
+        return b.getId();
+    }
+
+    /** 按件号奇偶交替填两个值，保证同一张单内相邻极差恒定 */
+    private List<Map<String, Object>> capLines(Map<String, Object> detail, String even, String odd) {
+        List<Map<String, Object>> lines = new ArrayList<>();
+        List<Map<String, Object>> rs = rows(detail);
+        for (int i = 0; i < rs.size(); i++) {
+            Map<String, Object> line = new LinkedHashMap<>();
+            line.put("lineId", num(rs.get(i).get("id")));
+            line.put("values", List.of(i % 2 == 0 ? even : odd));
+            lines.add(line);
+        }
+        return lines;
+    }
+
     /** 业务失败要拦下并说清原因，不能悄无声息地按默认值存进去 */
     private void assertBizFail(Map<String, Object> resp, String msgFragment) {
         assertThat(num(resp.get("code"))).as("应当被拦下: %s", resp.get("msg")).isNotZero();
@@ -1209,6 +1358,18 @@ class InspectionFlowIT {
     @SuppressWarnings("unchecked")
     private Map<String, Object> asMap(Object o) {
         return o instanceof Map ? (Map<String, Object>) o : Map.of();
+    }
+
+    /**
+     * 取 {code,msg,data} 里 data 是数组的接口。
+     *
+     * <p>不能复用 {@link #data}：它把 data 当对象转 Map，遇到数组会静默返回空 Map，
+     * 于是「接口明明有数据」在断言里表现成「空列表」，查半天查不到服务端头上。
+     */
+    private List<Map<String, Object>> dataList(String path) {
+        Map<String, Object> r = get(path);
+        assertThat(num(r.get("code"))).as("接口返回失败: %s", r.get("msg")).isZero();
+        return asList(r.get("data"));
     }
 
     @SuppressWarnings("unchecked")

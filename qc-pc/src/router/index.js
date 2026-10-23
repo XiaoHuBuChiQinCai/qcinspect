@@ -24,7 +24,9 @@ const routes = [
   { path: '/shipments', component: () => import('../views/ShipmentList.vue') },
   // 客诉登记对所有登录用户开放：客诉往往是销售、客服先接到的
   { path: '/complaints', component: () => import('../views/ComplaintList.vue') },
-  { path: '/stat', component: () => import('../views/StatDashboard.vue') }
+  { path: '/stat', component: () => import('../views/StatDashboard.vue') },
+  // 过程能力分析：判定层只管收不收，这一页回答「这道工序稳不稳」
+  { path: '/capability', component: () => import('../views/Capability.vue') }
 ]
 
 const router = createRouter({
