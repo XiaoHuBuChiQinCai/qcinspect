@@ -1023,6 +1023,15 @@ class InspectionFlowIT {
                 .as("查不到数据要报业务错误").isNotZero();
         assertThat(num(get("/api/stat/capability?productId=999999&itemId=999999&from=2026-13-01")
                 .get("code"))).as("日期格式错也要拦").isNotZero();
+
+        // 漏参数要给人话。交给 Spring 的 required=true 会抛
+        // 「Required request parameter 'itemId' ... is not present」，原样弹给用户就是英文天书
+        Map<String, Object> missing = get("/api/stat/capability?productId=1");
+        assertThat(num(missing.get("code"))).as("缺 itemId 要拦").isNotZero();
+        assertThat(String.valueOf(missing.get("msg")))
+                .as("提示里要出现中文的「检验项」，不能是 Spring 的英文异常")
+                .contains("检验项")
+                .doesNotContain("is not present");
     }
 
     /**

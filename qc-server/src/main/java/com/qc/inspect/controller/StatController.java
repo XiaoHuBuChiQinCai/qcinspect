@@ -39,12 +39,22 @@ public class StatController {
         return R.ok(capabilityService.items());
     }
 
-    /** 过程能力分析：Cp/Cpk/Pp/Ppk + 超规数 + 直方图 + I-MR 控制图 */
+    /**
+     * 过程能力分析：Cp/Cpk/Pp/Ppk + 超规数 + 直方图 + I-MR 控制图。
+     *
+     * <p>两个 id 收成非必填再自己判：交给 Spring 的 required=true，漏参数时抛的是
+     * 「Required request parameter 'itemId' for method parameter type Long is not present」，
+     * 前端原样弹给用户就是一句英文天书。自己做能说清是哪个参数没给。
+     */
     @GetMapping("/capability")
-    public R<Map<String, Object>> capability(@RequestParam Long productId,
-                                             @RequestParam Long itemId,
+    public R<Map<String, Object>> capability(@RequestParam(required = false) Long productId,
+                                             @RequestParam(required = false) Long itemId,
                                              @RequestParam(required = false) String from,
                                              @RequestParam(required = false) String to) {
+        if (productId == null || itemId == null) {
+            throw BizException.of("请先选产品与检验项，过程能力要按「产品 + 检验项」算"
+                    + "（同一个检验项用在不同产品上，规格限不一样，混着算等于拿两把尺子量同一批数）");
+        }
         return R.ok(capabilityService.analyze(productId, itemId, parseDate(from), parseDate(to)));
     }
 
