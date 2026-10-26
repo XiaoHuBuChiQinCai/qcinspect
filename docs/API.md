@@ -1484,11 +1484,11 @@ timer 照样触发、目录照样在（不报错的时候），只有真出事�
   "lastMessage": "备份完成 /root/qc/backups/qcinspect-20261026-020000.sql.gz（11264 KB），清理过期 0 个",
   "lastHost": "VM-0-13-ubuntu",
   "hoursSinceSuccess": 15, "hoursSinceAttempt": 15,
-  "lastSuccessMb": 11.0,
+  "lastSuccessMb": 11.0, "lastSuccessSizeText": "11.0 MB",
   "runs30d": 7, "failures30d": 0, "totalRuns": 7,
   "recent": [{
     "id": 7, "status": "SUCCESS", "fileName": "qcinspect-20261026-020000.sql.gz",
-    "sizeMb": 11.0, "prunedFiles": 0, "host": "VM-0-13-ubuntu",
+    "sizeMb": 11.0, "sizeText": "11.0 MB", "prunedFiles": 0, "host": "VM-0-13-ubuntu",
     "message": "备份完成 …（11264 KB），清理过期 0 个",
     "createdAt": "2026-10-26T02:00:11"
   }]
@@ -1505,8 +1505,11 @@ timer 照样触发、目录照样在（不报错的时候），只有真出事�
 - 时间列在 SQL 里 `to_char` 成字符串：返回 `Map` 时 MyBatis 不做类型映射，
   `timestamptz` 会原样丢成 `Timestamp`，项目的 `TimestamptzTypeHandler` 只作用于
   `LocalDateTime` 目标类型，兜不住这条路径
-- `lastSuccessMb` 由字节换算并四舍五入到 1 位小数。用 KB 表示时看不出量级变化
-  （1200 KB 和 340 KB 差着三倍），而备份突然变小往往就是 dump 没导全
+- `lastSuccessSizeText` / `sizeText` 由后端按量级算好，前端不再自己拼单位：
+  不足 1 KB 报字节、不足 1 MB 报 KB、其余报 MB。**一律按 MB 会出问题**——
+  空库备份只有 14 KB，换算后四舍五入成 `0.0 MB`，页面上看着像压根没备份成。
+  反过来用 KB 表示大库也看不出量级变化（1200 KB 和 340 KB 差着三倍），
+  而备份突然变小往往就是 dump 没导全。`lastSuccessMb` 保留给需要数值比较的场合
 - `recent` 夹在 `[1, 50]`；`flags` 里的失败原因截到 300 字，避免把整段日志糊在页面上
 - 只给 ADMIN：检验员看到「备份 80 小时没成功」什么也做不了，只会在心里多一条关不掉的灯
 
