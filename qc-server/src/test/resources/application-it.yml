@@ -19,6 +19,7 @@ spring:
         - classpath:db/V10__gauge_calibration.sql
         - classpath:db/V11__complaint.sql
         - classpath:db/V12__supplier.sql
+        - classpath:db/V13__backup_log.sql
       continue-on-error: false
 
 mybatis-plus:

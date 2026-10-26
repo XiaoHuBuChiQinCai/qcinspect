@@ -4,11 +4,13 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qc.inspect.entity.QcBatch;
+import com.qc.inspect.entity.QcBackupLog;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcProduct;
 import com.qc.inspect.entity.QcStandard;
 import com.qc.inspect.entity.QcStandardItem;
 import com.qc.inspect.mapper.QcBatchMapper;
+import com.qc.inspect.mapper.QcBackupLogMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcProductMapper;
 import com.qc.inspect.mapper.QcStandardItemMapper;
@@ -39,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -103,6 +106,9 @@ class InspectionFlowIT {
     private QcStandardItemMapper standardItemMapper;
     @Autowired
     private QcDefectMapper defectMapper;
+    /* 备份记录平时是外部脚本写的，测试里直接插一行，模拟脚本落库的那一刻 */
+    @Autowired
+    private QcBackupLogMapper backupLogMapper;
 
     private static String token;
     private static Long batchId;
@@ -1370,6 +1376,90 @@ class InspectionFlowIT {
         assertThat(String.join(" ", strings(back.get("flags"))))
                 .as("要明确说是「作废了」而不是「没检过」，两种情况的处理方式不同")
                 .contains("作废");
+    }
+
+    @Test
+    @Order(25)
+    @DisplayName("备份健康：没记录不假装正常、按小时算新鲜度、失败压过新鲜的成功、非管理员看不到")
+    void backupHealthVisible() {
+        // ---- 表刚建好、脚本还没跑过 ----
+        // 最危险的「看起来正常」：空表被当成「0 小时前刚备份成功」。
+        // 用户会以为有备份，实际一份都没有
+        backupLogMapper.delete(null);
+        Map<String, Object> none = data(get("/api/system/backup-health"));
+        assertThat(none.get("level")).as("没有记录就说没有记录").isEqualTo("NO_RECORD");
+        assertThat(none.get("alert")).as("刚接上脚本不该红，但也不能绿").isEqualTo(false);
+        assertThat(none.get("hoursSinceSuccess")).isNull();
+        assertThat(strings(none.get("flags")).get(0)).contains("还没有任何备份执行记录");
+
+        // ---- 脚本写入一条成功记录 ----
+        insertBackup("SUCCESS", 3 * 1024L * 1024L, 0, "备份完成 qcinspect-x.sql.gz（3072 KB），清理过期 0 个");
+        Map<String, Object> ok = data(get("/api/system/backup-health"));
+        assertThat(ok.get("level")).isEqualTo("OK");
+        assertThat(num(ok.get("hoursSinceSuccess"))).isZero();
+        assertThat(num(ok.get("runs30d"))).isEqualTo(1L);
+        assertThat(num(ok.get("failures30d"))).isZero();
+        assertThat(((Number) ok.get("lastSuccessMb")).doubleValue())
+                .as("3072 KB 要显示成 3.0 MB：KB 量级看不出「备份是不是突然小了一个数量级」")
+                .isEqualTo(3.0);
+        assertThat(asList(ok.get("recent"))).as("一次请求就带回最近几次，页面不用再点一下").hasSize(1);
+        assertThat(asMap(asList(ok.get("recent")).get(0)).get("status")).isEqualTo("SUCCESS");
+        // 越界的条数不能炸，夹紧后照常返回
+        assertThat(asList(data(get("/api/system/backup-health?recent=9999")).get("recent"))).hasSize(1);
+
+        // ---- 40 小时没有成功记录：漏了一轮，报警但还不是故障 ----
+        backupLogMapper.delete(null);
+        insertBackup("SUCCESS", 2 * 1024L * 1024L, 40, null);
+        Map<String, Object> stale = data(get("/api/system/backup-health"));
+        assertThat(stale.get("level")).isEqualTo("STALE");
+        assertThat(stale.get("alert")).isEqualTo(true);
+
+        // ---- 100 小时：连漏多轮，按故障处理 ----
+        backupLogMapper.delete(null);
+        insertBackup("SUCCESS", 2 * 1024L * 1024L, 100, null);
+        assertThat(data(get("/api/system/backup-health")).get("level")).isEqualTo("OVERDUE");
+
+        // ---- 失败优先于「上次成功还很新」 ----
+        // 今天凌晨成功了、下午手动跑一次失败：数据安全，但脚本已经坏了。
+        // 不报的话明天凌晨就是真断，所以照样要亮灯
+        backupLogMapper.delete(null);
+        insertBackup("SUCCESS", 2 * 1024L * 1024L, 5, null);
+        insertBackup("FAILED", null, 0, "pg_dump 失败");
+        Map<String, Object> failed = data(get("/api/system/backup-health"));
+        assertThat(failed.get("level")).isEqualTo("FAILED");
+        assertThat(failed.get("lastMessage")).isEqualTo("pg_dump 失败");
+        String failedText = String.join(" ", strings(failed.get("flags")));
+        assertThat(failedText)
+                .as("失败文案要说明现有备份还能用，否则会把人吓成「数据没了」")
+                .contains("还能用");
+        assertThat(failedText).as("失败原因要摆在显眼处，不能只留在表格里").contains("pg_dump");
+
+        // ---- 权限：检验员看不到 ----
+        // 不是怕他知道，是他什么也做不了，只会在心里多一条关不掉的灯
+        String adminToken = token;
+        token = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        try {
+            assertThat(statusOf("/api/system/backup-health")).as("检验员无权查看").isEqualTo(403);
+        } finally {
+            token = adminToken;
+        }
+
+        // 收尾：把测试造出来的备份记录清掉，后面的用例不该看见这些
+        backupLogMapper.delete(null);
+    }
+
+    /** 模拟 scripts/backup.sh 写库的那一行 */
+    private void insertBackup(String status, Long size, int hoursAgo, String message) {
+        QcBackupLog log = new QcBackupLog();
+        log.setStatus(status);
+        log.setFileName("SUCCESS".equals(status) ? "qcinspect-it.sql.gz" : null);
+        log.setFileSize(size);
+        log.setPrunedFiles(0);
+        log.setHost("it-host");
+        log.setMessage(message);
+        log.setCreatedAt(LocalDateTime.now().minusHours(hoursAgo));
+        backupLogMapper.insert(log);
     }
 
     private Map<String, Object> pendingRow(String batchNo) {

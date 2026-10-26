@@ -16,6 +16,17 @@
       <el-button :loading="loading" @click="loadAll">刷新</el-button>
     </div>
 
+    <!-- 备份坏了不会自己喊：timer 照样每天触发，只是没留下成功记录。
+         这条只在真出问题时出现，正常时整个备份区块在页面底部安静待着 -->
+    <el-alert
+      v-if="backup && backup.alert"
+      :title="`数据库备份异常 · ${backupLevelText}`"
+      :description="backup.flags.join('；')"
+      :type="backupAlertType"
+      :closable="false"
+      show-icon
+    />
+
     <div class="stats">
       <div
         v-for="s in stats"
@@ -287,6 +298,56 @@
       </div>
     </el-card>
 
+    <!-- 数据备份：每天 02:00 由 systemd timer 跑，结果由脚本写进库。
+         这一块要回答的只有一句「现在手上这份备份有多旧」 -->
+    <el-card v-if="isAdmin" id="sec-backup" class="block">
+      <template #header>
+        <div class="head">
+          <span>
+            数据备份
+            <el-tag :type="backupTagType" size="small" class="ml">{{ backupLevelText }}</el-tag>
+          </span>
+          <div class="spacer" />
+          <span v-if="backup && backup.lastSuccessAt" class="head-meta">
+            上次成功 {{ backup.lastSuccessAt }}
+            <template v-if="backup.lastSuccessMb != null"> · {{ backup.lastSuccessMb }} MB</template>
+          </span>
+        </div>
+      </template>
+
+      <template v-if="backup">
+        <div v-for="f in backup.flags" :key="f" class="flag">· {{ f }}</div>
+        <div class="more">
+          近 30 天执行 {{ backup.runs30d }} 次，失败 {{ backup.failures30d }} 次
+          <template v-if="backup.lastHost"><span class="sep">·</span>执行机器 {{ backup.lastHost }}</template>
+          <template v-if="backup.totalRuns"><span class="sep">·</span>累计 {{ backup.totalRuns }} 条记录</template>
+        </div>
+      </template>
+
+      <el-table :data="backup ? backup.recent : []" size="small" class="mt"
+                empty-text="还没有执行记录——备份脚本可能没在跑">
+        <el-table-column label="时间" width="170">
+          <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="结果" width="90">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'SUCCESS' ? 'success' : 'danger'" size="small">
+              {{ row.status === 'SUCCESS' ? '成功' : '失败' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="大小" width="100">
+          <template #default="{ row }">
+            {{ row.sizeMb == null ? '—' : row.sizeMb + ' MB' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="文件" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.fileName || '—' }}</template>
+        </el-table-column>
+        <el-table-column prop="message" label="说明" min-width="260" show-overflow-tooltip />
+      </el-table>
+    </el-card>
+
     <ReviewDialog v-model="reviewVisible" :row="reviewTarget" @done="loadAll" />
   </div>
 </template>
@@ -308,12 +369,33 @@ const gauges = ref([])
 const mine = ref([])
 const complaints = ref([])
 const batches = ref([])
+/** 备份健康。只有管理员才拉——检验员看见了也做不了什么 */
+const backup = ref(null)
 
 const reviewVisible = ref(false)
 const reviewTarget = ref({})
 const pageSize = 8
 
 const canReview = computed(() => user.role === 'ADMIN' || user.role === 'REVIEWER')
+const isAdmin = computed(() => user.role === 'ADMIN')
+
+/**
+ * 备份状态的说法。页面不说「正常 / 异常」这种两分法：
+ * 「已错过一轮」和「连续漏了三天」要人做的事完全不同。
+ */
+const BACKUP_TEXT = {
+  OK: '正常',
+  STALE: '已错过一轮',
+  OVERDUE: '长时间未备份',
+  FAILED: '最近一次失败',
+  NO_RECORD: '暂无记录'
+}
+const backupLevelText = computed(() => BACKUP_TEXT[backup.value?.level] || '—')
+const backupTagType = computed(
+  () => ({ OK: 'success', STALE: 'warning', OVERDUE: 'danger', FAILED: 'danger' }[backup.value?.level] || 'info')
+)
+/** 只是错过一轮时用黄色：红的用多了就没人当回事了 */
+const backupAlertType = computed(() => (backup.value?.level === 'STALE' ? 'warning' : 'error'))
 /** 需要人动手的那几个（当天刚建批的不算） */
 const batchUrgent = computed(() => batches.value.filter(b => b.urgent).length)
 const shippedNoInspection = computed(() => batches.value.some(b => b.level === 'SHIPPED'))
@@ -444,18 +526,21 @@ async function loadAll() {
     summary.value = { ...s, __rejected: m.rejected || [] }
     mine.value = m.drafts || []
 
-    const [r, d, g, c, b] = await Promise.all([
+    const [r, d, g, c, b, bk] = await Promise.all([
       canReview.value ? http.get('/todo/reviews', { params: { limit: 50 } }) : Promise.resolve([]),
       http.get('/todo/defects'),
       http.get('/todo/gauges'),
       http.get('/todo/complaints', { params: { limit: 50 } }),
-      http.get('/todo/batches', { params: { limit: 20 } })
+      http.get('/todo/batches', { params: { limit: 20 } }),
+      // 备份是管理员的事，别的角色不发这个请求——发了也是 403
+      isAdmin.value ? http.get('/system/backup-health') : Promise.resolve(null)
     ])
     reviews.value = r || []
     defects.value = d || []
     gauges.value = g || []
     complaints.value = c || []
     batches.value = b || []
+    backup.value = bk || null
   } finally {
     loading.value = false
   }
@@ -497,5 +582,8 @@ onMounted(loadAll)
 .ok { color: var(--el-color-success); font-weight: 500; }
 .ng { color: var(--el-color-danger); font-weight: 500; }
 .sep { color: var(--el-text-color-placeholder); margin: 0 4px; }
+/* 备份卡片：说明文字和表格之间要留白，否则「上次成功 xx」和表头挤成一片 */
+.head-meta { font-size: 12px; color: var(--el-text-color-secondary); font-weight: 400; }
+.mt { margin-top: 10px; }
 .sub2 { font-size: 12px; color: var(--el-text-color-secondary); }
 </style>

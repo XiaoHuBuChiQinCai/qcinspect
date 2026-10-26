@@ -229,7 +229,7 @@ docker compose -f docker-compose.prod.yml ps              # 看状态
 docker compose -f docker-compose.prod.yml logs -f app     # 跟后端日志
 docker compose -f docker-compose.prod.yml restart app     # 重启后端
 
-# 备份（脚本已放到 scripts/backup.sh，crontab 见下一节）
+# 备份（脚本已放到 scripts/backup.sh，定时见下一节；每次执行都会写 qc_backup_log）
 /root/qc/qcinspect/scripts/backup.sh
 
 # 照片目录备份
@@ -239,9 +239,18 @@ docker run --rm -v qcinspect_qc-files:/data -v ~:/out alpine \
 
 ### 数据库备份
 
-`scripts/backup.sh` 做三件事：`pg_dump` 打包成 gzip、校验完整性、清掉超过保留期的旧文件。
+`scripts/backup.sh` 做四件事：`pg_dump` 打包成 gzip、校验完整性、清掉超过保留期的旧文件、
+**把这次的结果写进 `qc_backup_log`**。最后一件才是关键——前三十年备份都成功这件事，
+只有落在表里才能在页面上看见「上次成功是几小时前」；只落文件的话，脚本哪天不跑了
+没有人会知道，等需要恢复那天才发现三十天全是空的。
+
 为什么不用自定义格式：出事那天往往不是你在操作，接手的人只需要会 `psql`；
 自定义格式要 `pg_restore`、版本对不上还得折腾。体积换恢复简单，值。
+
+**写库失败不会让备份失败。** 库挂掉的时候最需要一份备份，这时候因为「记不上账」退出
+等于在最坏的时刻放弃干活，所以脚本里写库一律吞错误、只往 stderr 喊一句。
+`V13` 没跑过（表不存在）时照样正常备份，只是工作台上显示「暂无记录」——
+这个状态本身也在提示你「有脚本没跑」。
 
 ```bash
 # 手动跑一次
@@ -316,12 +325,12 @@ docker compose -f docker-compose.prod.yml start app
 
 ```bash
 cd /root/qc/qcinspect
-docker exec -i qc-db psql -U qc -d qcinspect -v ON_ERROR_STOP=1 < db/V12__supplier.sql
+docker exec -i qc-db psql -U qc -d qcinspect -v ON_ERROR_STOP=1 < db/V13__backup_log.sql
 ```
 
-只补你缺的那几个：装上就一直没升过的老库，从 `V2` 一路补到 `V12` 即可。
+只补你缺的那几个：装上就一直没升过的老库，从 `V2` 一路补到 `V13` 即可。
 
-（`V2`~`V12` 都是幂等脚本，重复执行安全；`V1` 不是，别对已有库重跑。）
+（`V2`~`V13` 都是幂等脚本，重复执行安全；`V1` 不是，别对已有库重跑。）
 
 > 建议顺序：**先备份 → 跑 SQL → 再重建容器**。反过来的话，新代码先上线、
 > 列还没加，接口会在第一笔请求上 500。备份用 `scripts/backup.sh`，几秒钟的事。
