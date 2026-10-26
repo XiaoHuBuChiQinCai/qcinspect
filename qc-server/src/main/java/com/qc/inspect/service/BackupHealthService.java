@@ -63,6 +63,7 @@ public class BackupHealthService {
         m.put("hoursSinceSuccess", hoursSinceSuccess == null ? null : Math.max(0, hoursSinceSuccess));
         m.put("hoursSinceAttempt", hoursSinceAttempt == null ? null : Math.max(0, hoursSinceAttempt));
         m.put("lastSuccessMb", megaBytes(facts.get("last_success_size")));
+        m.put("lastSuccessSizeText", sizeText(facts.get("last_success_size")));
 
         m.put("runs30d", longOf(facts.get("runs_30d")));
         m.put("failures30d", longOf(facts.get("failures_30d")));
@@ -75,6 +76,7 @@ public class BackupHealthService {
             row.put("status", log.getStatus());
             row.put("fileName", log.getFileName());
             row.put("sizeMb", megaBytes(log.getFileSize()));
+            row.put("sizeText", sizeText(log.getFileSize()));
             row.put("prunedFiles", log.getPrunedFiles());
             row.put("host", log.getHost());
             row.put("message", log.getMessage());
@@ -90,6 +92,27 @@ public class BackupHealthService {
                 .orderByDesc(QcBackupLog::getCreatedAt)
                 .orderByDesc(QcBackupLog::getId)
                 .last("LIMIT " + limit));
+    }
+
+    /**
+     * 人类可读的体积。空库备份只有十几 KB，一律按 MB 显示会变成「0.0 MB」——
+     * 页面上看着像「没备份成」，实际是有的。所以小于 1 MB 报 KB。
+     */
+    static String sizeText(Object bytes) {
+        if (!(bytes instanceof Number num)) {
+            return null;
+        }
+        long b = num.longValue();
+        if (b < 1024) {
+            return b + " B";
+        }
+        // 先按 KB 取整再判量级：不然 1048575 字节会报成「1024 KB」，
+        // 差一个字节却换了个更长的说法
+        long kb = Math.round(b / 1024.0);
+        if (kb < 1024) {
+            return kb + " KB";
+        }
+        return (Math.round(b / 104857.6) / 10.0) + " MB";
     }
 
     /** 字节转 MB，保留一位小数。备份文件用 KB 表示时看不出量级变化（1200 KB 和 340 KB 差着三倍） */

@@ -1402,10 +1402,17 @@ class InspectionFlowIT {
         assertThat(((Number) ok.get("lastSuccessMb")).doubleValue())
                 .as("3072 KB 要显示成 3.0 MB：KB 量级看不出「备份是不是突然小了一个数量级」")
                 .isEqualTo(3.0);
+        assertThat(ok.get("lastSuccessSizeText")).isEqualTo("3.0 MB");
         assertThat(asList(ok.get("recent"))).as("一次请求就带回最近几次，页面不用再点一下").hasSize(1);
         assertThat(asMap(asList(ok.get("recent")).get(0)).get("status")).isEqualTo("SUCCESS");
         // 越界的条数不能炸，夹紧后照常返回
         assertThat(asList(data(get("/api/system/backup-health?recent=9999")).get("recent"))).hasSize(1);
+
+        // ---- 空库备份只有十几 KB：按 MB 报会变成「0.0 MB」，页面上看着像没备份成 ----
+        backupLogMapper.delete(null);
+        insertBackup("SUCCESS", 14812L, 0, null);
+        assertThat(data(get("/api/system/backup-health")).get("lastSuccessSizeText"))
+                .as("小文件按 KB 报").isEqualTo("14 KB");
 
         // ---- 40 小时没有成功记录：漏了一轮，报警但还不是故障 ----
         backupLogMapper.delete(null);

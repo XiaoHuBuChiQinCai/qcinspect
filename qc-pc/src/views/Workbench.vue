@@ -310,7 +310,7 @@
           <div class="spacer" />
           <span v-if="backup && backup.lastSuccessAt" class="head-meta">
             上次成功 {{ backup.lastSuccessAt }}
-            <template v-if="backup.lastSuccessMb != null"> · {{ backup.lastSuccessMb }} MB</template>
+            <template v-if="backup.lastSuccessSizeText"> · {{ backup.lastSuccessSizeText }}</template>
           </span>
         </div>
       </template>
@@ -337,9 +337,7 @@
           </template>
         </el-table-column>
         <el-table-column label="大小" width="100">
-          <template #default="{ row }">
-            {{ row.sizeMb == null ? '—' : row.sizeMb + ' MB' }}
-          </template>
+          <template #default="{ row }">{{ row.sizeText || '—' }}</template>
         </el-table-column>
         <el-table-column label="文件" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">{{ row.fileName || '—' }}</template>
