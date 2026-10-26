@@ -34,27 +34,33 @@ tmp="$target.part"
 # ------------------------------------------------------------
 # 写库失败绝不能让备份本身失败：库挂掉的时候最需要一份备份，
 # 这时候如果因为「记不上账」就退出，等于在最坏的时刻放弃干活。
-# 所以这里一律吞掉错误，只往 stderr 喊一句。
 #
-# 用 psql 的 :'var' 插值而不是字符串拼接：message 里出现单引号
+# 用 psql 变量 :'var' 而不是字符串拼接：message 里出现单引号
 # （比如 pg_dump 的报错里带 'xxx'）会直接把 INSERT 拼断。
+#
+# SQL 走 stdin 而不是 psql -c：**-c 模式不做 :'var' 变量替换**，
+# 会把 :'v_status' 原样发给服务端，报 `syntax error at or near ":"`。
+# 这个坑只能在线上撞出来（本地 psql 版本行为不同也一样会中）。
 log_to_db() {
     local status="$1" file="$2" size="$3" pruned="$4" msg="$5"
-    docker exec -i "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q -v ON_ERROR_STOP=1 \
-        -v v_status="$status" \
-        -v v_file="$file" \
-        -v v_size="$size" \
-        -v v_pruned="$pruned" \
-        -v v_host="$HOST_TAG" \
-        -v v_msg="$msg" \
-        -c "INSERT INTO qc_backup_log (status, file_name, file_size, pruned_files, host, message)
-            VALUES (:'v_status',
-                    nullif(:'v_file', ''),
-                    nullif(:'v_size', '')::bigint,
-                    coalesce(nullif(:'v_pruned', '')::int, 0),
-                    nullif(:'v_host', ''),
-                    nullif(:'v_msg', ''))" >/dev/null 2>&1 \
-    || echo "[$(date '+%F %T')] 备份日志写库失败（库可能不可用，或 V13 尚未执行），本次结果只留在本文件与 systemd 日志里" >&2
+    if ! docker exec -i "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -q -v ON_ERROR_STOP=1 \
+            -v v_status="$status" \
+            -v v_file="$file" \
+            -v v_size="$size" \
+            -v v_pruned="$pruned" \
+            -v v_host="$HOST_TAG" \
+            -v v_msg="$msg" <<'SQL'
+INSERT INTO qc_backup_log (status, file_name, file_size, pruned_files, host, message)
+VALUES (:'v_status',
+        nullif(:'v_file', ''),
+        nullif(:'v_size', '')::bigint,
+        coalesce(nullif(:'v_pruned', '')::int, 0),
+        nullif(:'v_host', ''),
+        nullif(:'v_msg', ''));
+SQL
+    then
+        echo "[$(date '+%F %T')] 备份日志写库失败（库可能不可用，或 V13 尚未执行），本次结果只留在本文件与 systemd 日志里" >&2
+    fi
 }
 
 fail() {
