@@ -30,7 +30,9 @@ const routes = [
   // 质量月报：管理评审要交的那张表。看板回答「今天怎么样」，月报回答「这个月该让谁整改」
   { path: '/monthly', component: () => import('../views/MonthlyReport.vue') },
   // 过程能力分析：判定层只管收不收，这一页回答「这道工序稳不稳」
-  { path: '/capability', component: () => import('../views/Capability.vue') }
+  { path: '/capability', component: () => import('../views/Capability.vue') },
+  // 检验员分析：看的是「记录站不站得住」，不是绩效排名，所以只给管理员与审核员
+  { path: '/inspectors', component: () => import('../views/InspectorStat.vue'), meta: { roles: ['ADMIN', 'REVIEWER'] } }
 ]
 
 const router = createRouter({

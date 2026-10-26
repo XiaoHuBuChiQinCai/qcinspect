@@ -17,6 +17,7 @@
         <el-menu-item index="/stat">质量看板</el-menu-item>
         <el-menu-item index="/monthly">质量月报</el-menu-item>
         <el-menu-item index="/capability">过程能力</el-menu-item>
+        <el-menu-item v-if="canReview" index="/inspectors">检验员分析</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/master-data">主数据</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/defect-codes">不良代码</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/suppliers">供应商档案</el-menu-item>
@@ -108,6 +109,8 @@ const user = ref(getStoredUser() || {})
 const isLogin = computed(() => route.path === '/login')
 
 const isAdmin = computed(() => user.value.role === 'ADMIN')
+// 审核员也要能看：他的活就是判断该抽查哪张单
+const canReview = computed(() => ['ADMIN', 'REVIEWER'].includes(user.value.role))
 const roleText = computed(
   () => ({ ADMIN: '管理员', INSPECTOR: '检验员', REVIEWER: '审核员' }[user.value.role] || '未知角色')
 )

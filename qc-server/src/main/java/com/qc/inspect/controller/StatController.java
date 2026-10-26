@@ -3,7 +3,9 @@ package com.qc.inspect.controller;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.common.R;
 import com.qc.inspect.service.CapabilityService;
+import com.qc.inspect.service.InspectorStatService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -27,6 +29,7 @@ import java.util.Map;
 public class StatController {
 
     private final CapabilityService capabilityService;
+    private final InspectorStatService inspectorStatService;
 
     /**
      * 有数值实测值的「产品 + 检验项」组合，供页面下拉选择。
@@ -56,6 +59,20 @@ public class StatController {
                     + "（同一个检验项用在不同产品上，规格限不一样，混着算等于拿两把尺子量同一批数）");
         }
         return R.ok(capabilityService.analyze(productId, itemId, parseDate(from), parseDate(to)));
+    }
+
+    /**
+     * 检验员维度：单数、件级不良率、录入时长，以及「记录可信度」提示。
+     *
+     * <p>限 ADMIN 与 REVIEWER。这不是怕检验员看见自己的数，而是这个页面的用法就是
+     * 「主管决定去抽查谁的单」——开放给被抽查对象，抽查就变成了互相打分。
+     * 检验员看自己的数据应该走「检验单」列表筛选，那里有全量原始记录。
+     */
+    @PreAuthorize("hasAnyRole('ADMIN', 'REVIEWER')")
+    @GetMapping("/inspectors")
+    public R<Map<String, Object>> inspectors(@RequestParam(required = false) String from,
+                                            @RequestParam(required = false) String to) {
+        return R.ok(inspectorStatService.inspectors(from, to));
     }
 
     private LocalDate parseDate(String s) {

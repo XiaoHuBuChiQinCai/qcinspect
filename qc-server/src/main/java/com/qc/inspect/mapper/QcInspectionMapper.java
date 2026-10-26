@@ -102,6 +102,51 @@ public interface QcInspectionMapper extends BaseMapper<QcInspection> {
     List<Map<String, Object>> monthlyByType(@Param("from") String from, @Param("to") String to);
 
     /**
+     * 按检验员聚合。用于「这些记录是谁录的、录得可不可信」。
+     *
+     * <p>为什么单独加录入时长两列：<b>判得太快是数据质量的最强信号</b>。
+     * 一张 40 行的单 90 秒提交完，物理上不可能真测过。反过来「慢」不说明问题——
+     * 现场可能是开单与录入分开做（早上开单、下班前补录），时长天然很长。
+     * 所以 {@code sec_total} 只用来算「每行几秒」并只对过快告警，
+     * 不参与任何绩效结论。
+     *
+     * <p>{@code greatest(..., 0)} 兜底：服务器时钟回拨或脏数据导致
+     * {@code inspected_at < created_at} 时，EXTRACT 会返回负数，
+     * 汇总后能把整组平均时长拉成负数，页面显示「-3 分钟一行」。
+     *
+     * <p>别名全部写下划线：MyBatis 返回 Map 时驼峰转换不生效，键就是原始列标签。
+     */
+    @Select("""
+            WITH ln AS (
+                SELECT inspection_id, count(*) AS row_cnt
+                FROM qc_inspection_line
+                GROUP BY inspection_id
+            )
+            SELECT coalesce(nullif(btrim(i.inspector_name), ''), '（未填检验员）')            AS inspector,
+                   count(*)                                                                 AS orders,
+                   coalesce(sum(i.sample_qty), 0)                                           AS piece_total,
+                   coalesce(sum(i.passed_qty), 0)                                           AS piece_pass,
+                   coalesce(sum(i.failed_qty), 0)                                           AS piece_fail,
+                   coalesce(sum(i.ng_count), 0)                                             AS ng_count,
+                   coalesce(sum(i.critical_ng_count), 0)                                    AS critical_ng,
+                   coalesce(sum(CASE WHEN i.result = 'PASS' THEN 1 ELSE 0 END), 0)           AS pass_orders,
+                   coalesce(sum(CASE WHEN i.recheck_of_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS recheck_orders,
+                   coalesce(sum(coalesce(ln.row_cnt, 0)), 0)                                AS row_total,
+                   coalesce(sum(EXTRACT(EPOCH FROM greatest(
+                       coalesce(i.inspected_at, i.created_at) - i.created_at, interval '0'))), 0)
+                                                                                            AS sec_total
+            FROM qc_inspection i
+            LEFT JOIN ln ON ln.inspection_id = i.id
+            WHERE i.del_flag = 0
+              AND i.status IN ('SUBMITTED', 'CLOSED')
+              AND coalesce(i.inspected_at, i.created_at) >= CAST(#{from} AS timestamptz)
+              AND coalesce(i.inspected_at, i.created_at) <  CAST(#{to} AS timestamptz)
+            GROUP BY 1
+            ORDER BY count(*) DESC, 1
+            """)
+    List<Map<String, Object>> inspectorStats(@Param("from") String from, @Param("to") String to);
+
+    /**
      * 缺陷分布（帕累托数据源）。
      */
     @Select("""

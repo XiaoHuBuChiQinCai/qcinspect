@@ -1213,6 +1213,85 @@ class InspectionFlowIT {
                 .as("编码也要能搜到").anyMatch(r -> supId.equals(num(r.get("id"))));
     }
 
+    @Test
+    @Order(23)
+    @DisplayName("检验员分析：合计等于各行之和、草稿不计、单量不够不告警、检验员无权查看")
+    void inspectorStats() {
+        // ---- 先以检验员身份录一张单，制造第二个「人」的维度 ----
+        // 管理员自己也录过单（前面几十例都在用 admin），两个人才能验组间对比的边界
+        String adminToken = token;
+        token = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        Long inspBatch = capBatch("IT-INS-1");
+        Long inspId = num(data(post("/api/inspections", Map.of("batchId", inspBatch))).get("inspectionId"));
+        data(post("/api/inspections/" + inspId + "/submit",
+                Map.of("lines", capLines(detail(inspId), "15.00", "15.01"))));
+        token = adminToken;
+
+        Map<String, Object> r = data(get("/api/stat/inspectors"));
+        assertThat(num(r.get("days"))).as("默认回看 90 天").isEqualTo(90L);
+        assertThat(String.valueOf(r.get("from"))).isNotEmpty();
+        assertThat(String.valueOf(r.get("to"))).isEqualTo(String.valueOf(LocalDate.now()));
+
+        List<Map<String, Object>> rows = asList(r.get("rows"));
+        assertThat(rows).as("至少要出现集成检验员这一行").isNotEmpty();
+
+        Map<String, Object> inspector = rows.stream()
+                .filter(x -> "集成检验员".equals(x.get("inspector")))
+                .findFirst().orElse(null);
+        assertThat(inspector).as("单据的检验员名取自登录态展示名，实际行: " + rows).isNotNull();
+        assertThat(num(inspector.get("orders"))).isGreaterThanOrEqualTo(1L);
+        assertThat(num(inspector.get("pieceTotal"))).isGreaterThanOrEqualTo(14L);
+        assertThat(num(inspector.get("rowTotal"))).as("14 件 × 1 项").isGreaterThanOrEqualTo(14L);
+        // 1 单零不良不构成信号：这里锁的是「单量门槛」，不是「有没有不良」
+        assertThat(asList(inspector.get("flags")))
+                .as("单量不够时不该弹零不良提示，实际: " + inspector.get("flags")).isEmpty();
+        assertThat(inspector.get("level")).isEqualTo("OK");
+        // 每行秒数、每单分钟数都要给出来（哪怕为 0），前端才不至于显示 NaN
+        assertThat(inspector.get("secPerRow")).isNotNull();
+
+        // ---- 合计行必须等于各行之和 ----
+        Map<String, Object> total = asMap(r.get("total"));
+        long sumOrders = rows.stream().mapToLong(x -> num(x.get("orders"))).sum();
+        long sumPieces = rows.stream().mapToLong(x -> num(x.get("pieceTotal"))).sum();
+        assertThat(num(total.get("orders"))).as("合计单量 = 各行之和").isEqualTo(sumOrders);
+        assertThat(num(total.get("pieceTotal"))).as("合计件数 = 各行之和").isEqualTo(sumPieces);
+        assertThat(num(total.get("piecePass")) + num(total.get("pieceFail")))
+                .as("合格件 + 不合格件 = 受检件")
+                .isEqualTo(num(total.get("pieceTotal")));
+
+        // ---- 草稿不计入：谁正在录单不该影响统计 ----
+        long beforeOrders = num(total.get("orders"));
+        Long draftBatch = capBatch("IT-INS-DRAFT");
+        Long draftId = num(data(post("/api/inspections", Map.of("batchId", draftBatch))).get("inspectionId"));
+        data(post("/api/inspections/" + draftId + "/save",
+                Map.of("lines", capLines(detail(draftId), "15.00", "15.00"))));
+        assertThat(num(asMap(data(get("/api/stat/inspectors")).get("total")).get("orders")))
+                .as("草稿单不能进统计").isEqualTo(beforeOrders);
+
+        // ---- 权限：检验员看不到这一页 ----
+        // 不是怕他看自己的数，是这页的用法是「主管决定抽查谁」，开着就变成互相打分
+        token = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        try {
+            assertThat(statusOf("/api/stat/inspectors")).as("检验员无权查看").isEqualTo(403);
+        } finally {
+            token = adminToken;
+        }
+
+        // ---- 参数错误给中文 ----
+        Map<String, Object> badDate = get("/api/stat/inspectors?from=2026-13-01");
+        assertThat(num(badDate.get("code"))).isNotZero();
+        assertThat(String.valueOf(badDate.get("msg")))
+                .contains("yyyy-MM-dd")
+                .doesNotContain("DateTimeParseException");
+
+        assertThat(num(get("/api/stat/inspectors?from=2026-10-10&to=2026-10-01").get("code")))
+                .as("开始晚于结束要拦").isNotZero();
+        assertThat(String.valueOf(get("/api/stat/inspectors?from=2020-01-01&to=2026-10-01").get("msg")))
+                .as("跨度超两年要拦，并说清为什么").contains("730");
+    }
+
     /**
      * 过程能力用例夹具：专属产品 + 单数值项标准（规格 14~16，固定抽 14 件）。
      *
