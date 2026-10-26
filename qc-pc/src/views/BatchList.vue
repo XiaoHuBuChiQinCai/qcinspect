@@ -25,6 +25,26 @@
       <el-table-column prop="workOrderNo" label="工单号" width="160" />
       <el-table-column prop="inspectType" label="检验类型" width="110" />
       <el-table-column prop="qty" label="数量" width="90" />
+      <!-- 检验进度：车间问得最多的是「这批检到哪了」。
+           进度分母用抽检件数而不是批次数量——AQL 抽样下抽 32 件检 32 件就是检完了，
+           拿 32/500 画进度条永远不会满，看着像一直没进展。 -->
+      <el-table-column label="检验进度" width="200">
+        <template #default="{ row }">
+          <template v-if="row.sampledQty">
+            <div class="prog-line">
+              <el-progress :percentage="progressOf(row)" :stroke-width="6" :show-text="false"
+                           :color="progressColor(row)" />
+              <span class="pct">{{ progressOf(row) }}%</span>
+            </div>
+            <div class="prog-sub">
+              判 {{ row.doneQty }}/{{ row.sampledQty }} 件
+              <span v-if="row.lotCount > 1">· {{ row.lotCount }} 单</span>
+              <span v-if="row.failedQty" class="zero">· NG {{ row.failedQty }}</span>
+            </div>
+          </template>
+          <span v-else class="sub">还没开单</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="supplier" label="供应商" min-width="140" />
       <el-table-column label="状态" width="110">
         <template #default="{ row }">
@@ -232,6 +252,31 @@ const statusType = s => ({ PENDING: 'info', INSPECTING: 'warning', DONE: 'succes
 const resultText = r => ({ PASS: '合格', FAIL: '不合格', NA: '未判定' }[r] || r)
 const resultType = r => ({ PASS: 'success', FAIL: 'danger', NA: 'info' }[r] || 'info')
 
+/**
+ * 抽检完成度。分母是抽检件数，不是批次数量——抽 32 检 32 就算检完。
+ *
+ * 用 Math.floor 而不是四舍五入：99.6% 显示成 100% 会让人以为已经判完了，
+ * 而实际上还剩一件没判。判没判完就看这个数字，宁可少报不可多报。
+ */
+function progressOf(row) {
+  const total = Number(row.sampledQty) || 0
+  if (total <= 0) {
+    return 0
+  }
+  const done = Math.min(Number(row.doneQty) || 0, total)
+  return Math.floor((done / total) * 100)
+}
+
+// 判完才上色：中途变绿会让人误以为「这批过了」，而这时候还没出结论
+function progressColor(row) {
+  const total = Number(row.sampledQty) || 0
+  const done = Number(row.doneQty) || 0
+  if (total > 0 && done >= total) {
+    return Number(row.failedQty) > 0 ? 'var(--el-color-danger)' : 'var(--el-color-success)'
+  }
+  return 'var(--el-color-primary)'
+}
+
 async function load() {
   loading.value = true
   try {
@@ -426,4 +471,8 @@ async function doCreateProduct() {
 .row { display: flex; gap: 8px; align-items: center; width: 100%; }
 .warn-tip { font-size: 12px; color: var(--el-color-warning); margin-top: 4px; line-height: 1.5; }
 .hint { margin-top: 8px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
+.prog-line { display: flex; align-items: center; gap: 8px; }
+.prog-line :deep(.el-progress) { flex: 1; }
+.pct { font-size: 12px; color: var(--el-text-color-regular); font-variant-numeric: tabular-nums; }
+.prog-sub { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; }
 </style>

@@ -137,4 +137,37 @@ public interface QcBatchMapper extends BaseMapper<QcBatch> {
             ORDER BY coalesce(b.arrived_at, b.created_at) ASC, b.id ASC
             """)
     List<Map<String, Object>> pendingInspection();
+
+    /**
+     * 批次检验进度：一批一批地算「抽了几件、判了几件」。
+     *
+     * <p>按 id 批量查而不是在批次列表 SQL 里 join：列表那边是 MyBatis-Plus 的
+     * 动态条件拼出来的（状态、产品、关键字四个条件按需组合），把聚合塞进去要
+     * 手写一遍分页 + 条件，条件漏一个就是「筛出来的行数对、进度全错」——
+     * 这种错最难看懂。按 id 回填只有一条 SQL，条件不可能漂移。
+     *
+     * <p>作废单（{@code VOID}）必须排除：作废意味着这张单的成绩不算数，
+     * 留着它会让「已检 60 件」永远比实际多。
+     *
+     * <p>草稿单（{@code DRAFT}）必须算进去：抽检件数是建单时定的，有人建了单
+     * 就说明这批已经在检了。它贡献 {@code sampled_qty} 但不贡献 {@code done_qty}
+     * （件数是提交判定后才回写的），两者之差正好是「抽了还没判」。
+     */
+    @Select("""
+            <script>
+            SELECT i.batch_id                                   AS batch_id,
+                   count(*)                                     AS lot_count,
+                   coalesce(sum(i.sample_qty), 0)               AS sampled_qty,
+                   coalesce(sum(i.passed_qty + i.failed_qty), 0) AS done_qty,
+                   coalesce(sum(i.passed_qty), 0)               AS passed_qty,
+                   coalesce(sum(i.failed_qty), 0)               AS failed_qty
+            FROM qc_inspection i
+            WHERE i.del_flag = 0
+              AND i.status != 'VOID'
+              AND i.batch_id IN
+              <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+            GROUP BY i.batch_id
+            </script>
+            """)
+    List<Map<String, Object>> progressByBatchIds(@Param("ids") List<Long> ids);
 }

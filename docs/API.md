@@ -69,7 +69,7 @@ Base URL：`http://localhost:8080/api`
 | POST | `/products` | 新增 / 修改产品（仅 ADMIN） | body 见下 |
 | GET | `/items` | 检验项列表 | `groupName` 可选 |
 | POST | `/items` | 新增 / 修改检验项（仅 ADMIN） | body 见下 |
-| GET | `/batches` | 批次列表 | `status` / `productId` / `keyword` 可选 |
+| GET | `/batches` | 批次列表（带检验进度，见下） | `status` / `productId` / `keyword` 可选 |
 | POST | `/batches` | 新增 / 修改批次（ADMIN / INSPECTOR） | body 见下 |
 
 **保存时的前置校验**（错误信息是给人看的，不是把唯一索引的报错原样抛出来）：
@@ -87,6 +87,32 @@ Base URL：`http://localhost:8080/api`
 
 > 为什么要前置校验：唯一索引抛的是 `duplicate key value violates unique constraint "uk_batch_no"`，
 > 车间的人看不懂，只会判断成「系统又坏了」，然后回去用 Excel。
+
+`GET /batches` 每行额外带五个**瞬态字段**（不落库，按 id 聚合现算——进度随时在变，
+落库就要有人负责同步，忘一处就是永远错且看不出错）：
+
+```json
+{ "id": 12, "batchNo": "B20261026001", "qty": 500, "status": "INSPECTING",
+  "lotCount": 2, "sampledQty": 100, "doneQty": 50, "passedQty": 45, "failedQty": 5 }
+```
+
+| 字段 | 含义 |
+|---|---|
+| `lotCount` | 有效检验单数，**不含作废单** |
+| `sampledQty` | 抽检件数之和，**含草稿单** |
+| `doneQty` | 已判定件数 = 合格 + 不合格；草稿单贡献 0 |
+| `passedQty` / `failedQty` | 提交判定后回写的件数 |
+
+口径三条：
+
+- **进度的分母是抽检件数，不是批次数量。** AQL 抽样下抽 50 件检完 50 件就算检完；
+  拿 50/500 画进度条永远不满，看着像一直没进展
+- **草稿单算进 `sampledQty` 但不进 `doneQty`。** 建了单说明有人已经在检；
+  件数要等提交判定才回写，两者之差恰好是「抽了还没判」
+- **返工复检算第二单。** 所以 `lotCount` 不能和批次数相减，返工批次会显示「2 单」
+
+一单都没开时五个字段都是 `0` 而不是 `null`——前端拿 0 能直接画进度条，
+拿 null 要先判空，判漏一处就是 `NaN%`。
 
 `GET /products/overview` 响应（`active_standard_count = 0` 意味着这个产品开不了检验单）：
 

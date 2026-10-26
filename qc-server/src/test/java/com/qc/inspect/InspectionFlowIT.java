@@ -1456,6 +1456,61 @@ class InspectionFlowIT {
         backupLogMapper.delete(null);
     }
 
+    @Test
+    @Order(26)
+    @DisplayName("批次进度：草稿算抽检不算已判、复检算第二单、作废单必须从进度里消失")
+    void batchProgress() {
+        // ---- 一单都没开：给 0 不给 null ----
+        // null 到前端要先判空，判漏一处就是 NaN% 的进度条
+        aqlBatch("IT-PROG-EMPTY", 100);
+        Map<String, Object> empty = batchRow("IT-PROG-EMPTY");
+        assertThat(num(empty.get("lotCount"))).as("没开单也要有 0，前端才能直接画").isZero();
+        assertThat(num(empty.get("sampledQty"))).isZero();
+        assertThat(num(empty.get("doneQty"))).isZero();
+
+        // ---- 建一张草稿单：抽检件数已经算上，已判件数还是 0 ----
+        Long batch = aqlBatch("IT-PROG-MAIN", 300);
+        Long ins1 = num(data(post("/api/inspections", Map.of("batchId", batch))).get("inspectionId"));
+        int sample = num(asMap(detail(ins1).get("inspection")).get("sampleQty")).intValue();
+
+        Map<String, Object> draft = batchRow("IT-PROG-MAIN");
+        assertThat(num(draft.get("lotCount"))).isEqualTo(1L);
+        assertThat(num(draft.get("sampledQty")))
+                .as("抽检件数是建单时定下的，草稿阶段就该看见").isEqualTo(sample);
+        assertThat(num(draft.get("doneQty")))
+                .as("件数要等判定完才回写，草稿阶段是 0").isZero();
+
+        // ---- 提交：件数回写，进度走到头 ----
+        data(post("/api/inspections/" + ins1 + "/submit", Map.of("lines", fillCompliant(detail(ins1)))));
+        Map<String, Object> judged = batchRow("IT-PROG-MAIN");
+        assertThat(num(judged.get("doneQty"))).as("提交后件数回写").isEqualTo(sample);
+        assertThat(num(judged.get("passedQty"))).isEqualTo(sample);
+        assertThat(num(judged.get("failedQty"))).isZero();
+
+        // ---- 返工复检再开一单：算第二单，抽检件数累加 ----
+        Long ins2 = num(data(post("/api/inspections", Map.of("batchId", batch))).get("inspectionId"));
+        Map<String, Object> twice = batchRow("IT-PROG-MAIN");
+        assertThat(num(twice.get("lotCount"))).as("复检是第二张单，不能把批次数减成负数").isEqualTo(2L);
+        assertThat(num(twice.get("sampledQty"))).isEqualTo(sample * 2L);
+
+        // ---- 作废第二单：进度必须退回去 ----
+        // 作废意味着这张单的成绩不算数。留着它，页面上的「已检」会永远比实际多，
+        // 而且越作废越对不上，最后没人再信这个数字
+        data(post("/api/inspections/" + ins2 + "/void?reason=IT 作废后进度应退回", Map.of()));
+        Map<String, Object> afterVoid = batchRow("IT-PROG-MAIN");
+        assertThat(num(afterVoid.get("lotCount"))).isEqualTo(1L);
+        assertThat(num(afterVoid.get("sampledQty"))).as("作废单不许留在进度里").isEqualTo(sample);
+        assertThat(num(afterVoid.get("doneQty"))).isEqualTo(sample);
+    }
+
+    /** 批次列表里按批次号取整行，用来断言回填上去的进度字段 */
+    private Map<String, Object> batchRow(String batchNo) {
+        return dataList("/api/batches").stream()
+                .filter(b -> batchNo.equals(b.get("batchNo")))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("批次列表里没有 " + batchNo));
+    }
+
     /** 模拟 scripts/backup.sh 写库的那一行 */
     private void insertBackup(String status, Long size, int hoursAgo, String message) {
         QcBackupLog log = new QcBackupLog();

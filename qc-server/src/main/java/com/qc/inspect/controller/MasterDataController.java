@@ -157,7 +157,7 @@ public class MasterDataController {
     public R<List<QcBatch>> batches(@RequestParam(required = false) String status,
                                     @RequestParam(required = false) Long productId,
                                     @RequestParam(required = false) String keyword) {
-        return R.ok(batchMapper.selectList(new LambdaQueryWrapper<QcBatch>()
+        List<QcBatch> rows = batchMapper.selectList(new LambdaQueryWrapper<QcBatch>()
                 .eq(status != null && !status.isBlank(), QcBatch::getStatus, status)
                 .eq(productId != null, QcBatch::getProductId, productId)
                 .and(keyword != null && !keyword.isBlank(), w -> w
@@ -165,7 +165,47 @@ public class MasterDataController {
                         .or().like(QcBatch::getSupplier, keyword)
                         .or().like(QcBatch::getMaterialBatchNo, keyword)
                         .or().like(QcBatch::getWorkOrderNo, keyword))
-                .orderByDesc(QcBatch::getId)));
+                .orderByDesc(QcBatch::getId));
+        fillProgress(rows);
+        return R.ok(rows);
+    }
+
+    /**
+     * 把检验进度回填到批次上。一条聚合 SQL 查完当页所有批次，不逐行查。
+     *
+     * <p>空列表直接返回：{@code IN ()} 是语法错误，列表为空时也不能让整个接口炸。
+     */
+    private void fillProgress(List<QcBatch> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        List<Long> ids = rows.stream().map(QcBatch::getId).toList();
+        Map<Long, Map<String, Object>> byBatch = new java.util.HashMap<>();
+        for (Map<String, Object> r : batchMapper.progressByBatchIds(ids)) {
+            // 返回 Map 时 MyBatis 不做驼峰转换，键就是 PG 原样的小写列标签
+            Object bid = r.get("batch_id");
+            if (bid instanceof Number num) {
+                byBatch.put(num.longValue(), r);
+            }
+        }
+        for (QcBatch b : rows) {
+            Map<String, Object> p = byBatch.get(b.getId());
+            // 一单都没开时给 0 而不是 null：前端拿 0 能直接画进度条，
+            // 拿 null 要先判空，判漏一处就是 NaN%
+            b.setLotCount(intOf(p, "lot_count"));
+            b.setSampledQty(intOf(p, "sampled_qty"));
+            b.setDoneQty(intOf(p, "done_qty"));
+            b.setPassedQty(intOf(p, "passed_qty"));
+            b.setFailedQty(intOf(p, "failed_qty"));
+        }
+    }
+
+    private static int intOf(Map<String, Object> p, String key) {
+        if (p == null) {
+            return 0;
+        }
+        Object v = p.get(key);
+        return v instanceof Number num ? num.intValue() : 0;
     }
 
     /** 供应商来料质量排名。件级合格率最低的排在最前面——好供应商不用管，坏的要 */
