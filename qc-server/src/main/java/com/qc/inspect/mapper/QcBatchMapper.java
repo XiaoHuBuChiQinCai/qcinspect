@@ -83,4 +83,58 @@ public interface QcBatchMapper extends BaseMapper<QcBatch> {
             """)
     java.util.List<Map<String, Object>> monthlySupplier(@Param("from") String from,
                                                         @Param("to") String to);
+
+    /**
+     * 待检批次：已经建了批次，却<strong>一条有效检验单都没有</strong>。
+     *
+     * <p>判据是 {@code NOT EXISTS} 有效单，而不是 {@code status = 'PENDING'}。
+     * 两者不等价：检验单被作废之后，批次状态还停在 {@code INSPECTING}，
+     * 按状态筛会把这种最该被发现的批次漏掉——它看着像「在检」，
+     * 实际上一张有效单都不剩。{@code DRAFT} 算有效：草稿意味着有人已经在动手，
+     * 这不是漏检，只是没检完。
+     *
+     * <p>停留天数从 {@code coalesce(arrived_at, created_at)} 算：
+     * 到货时间才是「这批料在厂里躺了多久」的起点。补录的历史批次如果 {@code arrived_at}
+     * 填了三个月前，它就该立刻被判超期——那正是没人管的批次。
+     *
+     * <p>{@code greatest(..., 0)} 兜住未来时间：{@code arrived_at} 被误填成下个月时，
+     * 负数天数会在排序里把这条沉到最底，等于把错误藏起来。
+     *
+     * <p>出货量只算 {@code NORMAL}，红冲的不算——作废的单没真发货，不能当「已出货」的证据。
+     */
+    @Select("""
+            SELECT b.id,
+                   b.batch_no,
+                   b.inspect_type,
+                   b.qty,
+                   b.status,
+                   b.supplier,
+                   b.material_batch_no,
+                   b.arrived_at,
+                   b.created_at,
+                   to_char(b.arrived_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS arrived_date,
+                   to_char(b.created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS created_date,
+                   p.product_code,
+                   p.product_name,
+                   greatest(0, floor(extract(epoch from (now() - coalesce(b.arrived_at, b.created_at)))
+                                     / 86400))::int                        AS idle_days,
+                   (SELECT count(*) FROM qc_inspection i
+                     WHERE i.batch_id = b.id AND i.del_flag = 0
+                       AND i.status = 'VOID')                              AS void_lots,
+                   (SELECT count(*) FROM qc_shipment s
+                     WHERE s.batch_id = b.id AND s.del_flag = 0
+                       AND s.status = 'NORMAL')                            AS shipments,
+                   (SELECT coalesce(sum(s.qty), 0) FROM qc_shipment s
+                     WHERE s.batch_id = b.id AND s.del_flag = 0
+                       AND s.status = 'NORMAL')                            AS shipped_qty
+            FROM qc_batch b
+            JOIN qc_product p ON p.id = b.product_id
+            WHERE b.del_flag = 0
+              AND b.status IN ('PENDING', 'INSPECTING')
+              AND NOT EXISTS (SELECT 1 FROM qc_inspection i
+                               WHERE i.batch_id = b.id AND i.del_flag = 0
+                                 AND i.status IN ('DRAFT', 'SUBMITTED', 'CLOSED'))
+            ORDER BY coalesce(b.arrived_at, b.created_at) ASC, b.id ASC
+            """)
+    List<Map<String, Object>> pendingInspection();
 }

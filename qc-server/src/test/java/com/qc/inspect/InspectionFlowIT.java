@@ -654,11 +654,12 @@ class InspectionFlowIT {
 
         Map<String, Object> sum = data(get("/api/todo/summary"));
         assertThat(num(sum.get("pendingReview"))).as("刚提交的单必须进待审核").isPositive();
-        // actionable 只由「要人动手」的三项相加，量具超期不算单据，混进来会让人以为有几十张单没处理
+        // actionable 只由「要人动手」的几项相加，量具超期不算单据，混进来会让人以为有几十张单没处理。
+        // 待检批次算：料躺在厂里没人检，是明确等人去开单的一件事，看不见就等于不存在
         assertThat(num(sum.get("actionable")))
                 .as("角标总数口径")
                 .isEqualTo(num(sum.get("pendingReview")) + num(sum.get("pendingDefect"))
-                        + num(sum.get("myRejected")));
+                        + num(sum.get("myRejected")) + num(sum.get("pendingBatch")));
 
         List<Map<String, Object>> reviews = asList(get("/api/todo/reviews").get("data"));
         assertThat(reviews).extracting(r -> num(r.get("id"))).contains(passIns);
@@ -1290,6 +1291,116 @@ class InspectionFlowIT {
                 .as("开始晚于结束要拦").isNotZero();
         assertThat(String.valueOf(get("/api/stat/inspectors?from=2020-01-01&to=2026-10-01").get("msg")))
                 .as("跨度超两年要拦，并说清为什么").contains("730");
+    }
+
+    @Test
+    @Order(24)
+    @DisplayName("待检批次：当天建批不报、超期点名、出货未检升最高级、作废后批次退回待检")
+    void pendingBatchAlert() {
+        long basePending = num(data(get("/api/todo/summary")).get("pendingBatch"));
+        long baseActionable = num(data(get("/api/todo/summary")).get("actionable"));
+
+        // ---- 造三个批次：今天建 / 3 天前到货 / 10 天前到货 ----
+        // 都用过程能力那个产品，它有 ACTIVE 标准，能真的开出检验单
+        Long warmId = capBatch("IT-PB-WARM");
+        data(post("/api/batches", Map.of(
+                "batchNo", "IT-PB-MID", "productId", capProductId, "qty", 10,
+                "arrivedAt", LocalDate.now().minusDays(3).atTime(9, 0).toString())));
+        Long oldId = num(data(post("/api/batches", Map.of(
+                "batchNo", "IT-PB-OLD", "productId", capProductId, "qty", 10,
+                "arrivedAt", LocalDate.now().minusDays(10).atTime(9, 0).toString()))).get("id"));
+
+        // ---- 当天建批不报警：下午到货、明天再检是正常节奏 ----
+        Map<String, Object> warm = pendingRow("IT-PB-WARM");
+        assertThat(warm).as("当天建批也要出现在列表里，只是不标红").isNotNull();
+        assertThat(warm.get("level")).isEqualTo("OK");
+        assertThat(warm.get("urgent")).isEqualTo(false);
+        assertThat(num(warm.get("idleDays"))).isZero();
+
+        // ---- 超期按停留天数判，天数从到货时间算 ----
+        Map<String, Object> mid = pendingRow("IT-PB-MID");
+        assertThat(mid.get("level")).as("3 天前到货仍未开单，默认 2 天阈值下算超期").isEqualTo("OVERDUE");
+        assertThat(num(mid.get("idleDays"))).isEqualTo(3L);
+
+        Map<String, Object> old = pendingRow("IT-PB-OLD");
+        assertThat(num(old.get("idleDays"))).as("应按到货时间算，不是建批时间").isEqualTo(10L);
+
+        // ---- 角标只加真正需要动作的：WARM 是 OK，不算 ----
+        Map<String, Object> summary = data(get("/api/todo/summary"));
+        assertThat(num(summary.get("pendingBatch")) - basePending)
+                .as("超期两个各占一个待办，当天建的那个不占").isEqualTo(2L);
+        assertThat(num(summary.get("actionable")) - baseActionable)
+                .as("漏检批次必须计入总角标，否则这功能等于没人看得见").isEqualTo(2L);
+
+        // ---- 阈值可调：放宽到 30 天，3 天前那个就只是「即将超期」 ----
+        Map<String, Object> midLoose = pendingRow("IT-PB-MID", "?days=30");
+        assertThat(midLoose.get("level")).isEqualTo("DUE");
+        // 越界的值不能炸，夹紧后照常返回
+        assertThat(pendingRow("IT-PB-MID", "?days=-1")).isNotNull();
+        assertThat(pendingRow("IT-PB-MID", "?days=99999")).isNotNull();
+
+        // ---- 已出货未检：升到最高级，且排在所有普通超期之前 ----
+        data(post("/api/shipments", Map.of(
+                "batchId", oldId, "customer", "IT 待检客户", "qty", 3, "force", true)));
+        Map<String, Object> shipped = pendingRow("IT-PB-OLD");
+        assertThat(shipped.get("level")).as("发了货却没有检验结论，比几天没检严重得多")
+                .isEqualTo("SHIPPED");
+        assertThat(String.join(" ", strings(shipped.get("flags")))).contains("已出货");
+        // 已经出货的批次不该被调大的阈值「洗白」
+        assertThat(pendingRow("IT-PB-OLD", "?days=90").get("level")).isEqualTo("SHIPPED");
+
+        List<Map<String, Object>> list = dataList("/api/todo/batches");
+        assertThat(indexOfBatch(list, "IT-PB-OLD"))
+                .as("出货未检要排在最前面").isLessThan(indexOfBatch(list, "IT-PB-MID"));
+
+        // ---- 开了单就不再算漏检 ----
+        Long warmIns = num(data(post("/api/inspections",
+                Map.of("batchId", warmId, "sampleQty", 1))).get("inspectionId"));
+        assertThat(batchStatus(warmId)).isEqualTo("INSPECTING");
+        assertThat(pendingRow("IT-PB-WARM")).as("已经有人开单了，不该还挂在漏检里").isNull();
+
+        // ---- 作废之后批次要退回待检，不能永远挂在「在检」 ----
+        data(post("/api/inspections/" + warmIns + "/void?reason=IT 作废后批次应退回待检", Map.of()));
+        assertThat(batchStatus(warmId))
+                .as("作废是唯一会让批次「无单可检」的动作，状态必须跟着回退").isEqualTo("PENDING");
+
+        Map<String, Object> back = pendingRow("IT-PB-WARM");
+        assertThat(back).as("退回待检后要重新出现在漏检提醒里").isNotNull();
+        assertThat(num(back.get("voidLots"))).isEqualTo(1L);
+        assertThat(String.join(" ", strings(back.get("flags"))))
+                .as("要明确说是「作废了」而不是「没检过」，两种情况的处理方式不同")
+                .contains("作废");
+    }
+
+    private Map<String, Object> pendingRow(String batchNo) {
+        return pendingRow(batchNo, "");
+    }
+
+    private Map<String, Object> pendingRow(String batchNo, String query) {
+        return dataList("/api/todo/batches" + query).stream()
+                .filter(r -> batchNo.equals(r.get("batchNo")))
+                .findFirst().orElse(null);
+    }
+
+    private int indexOfBatch(List<Map<String, Object>> list, String batchNo) {
+        for (int i = 0; i < list.size(); i++) {
+            if (batchNo.equals(list.get(i).get("batchNo"))) {
+                return i;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    private String batchStatus(Long batchId) {
+        return dataList("/api/batches").stream()
+                .filter(b -> batchId.equals(num(b.get("id"))))
+                .map(b -> String.valueOf(b.get("status")))
+                .findFirst().orElse(null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> strings(Object o) {
+        return o instanceof List ? (List<String>) o : List.of();
     }
 
     /**

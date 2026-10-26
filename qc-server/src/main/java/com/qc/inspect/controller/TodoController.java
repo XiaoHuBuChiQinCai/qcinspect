@@ -4,6 +4,7 @@ import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.entity.QcComplaint;
 import com.qc.inspect.entity.QcInspection;
+import com.qc.inspect.report.PendingBatchInsight;
 import com.qc.inspect.service.TodoService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -58,5 +59,17 @@ public class TodoController {
     @GetMapping("/gauges")
     public R<List<Map<String, Object>>> gauges() {
         return R.ok(todoService.overdueGauges());
+    }
+
+    /**
+     * 待检批次：建了批次却一直没开检验单。
+     *
+     * <p>days 是宽限天数，默认 2——当天建批当天检是常态，当天就报警的提醒没人会看。
+     */
+    @GetMapping("/batches")
+    public R<List<Map<String, Object>>> batches(@RequestParam(required = false) Integer days,
+                                                @RequestParam(required = false, defaultValue = "200") int limit) {
+        return R.ok(todoService.pendingBatches(
+                days == null ? PendingBatchInsight.DEFAULT_DAYS : days, limit));
     }
 }

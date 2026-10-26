@@ -618,6 +618,35 @@ public class InspectionService {
         ins.setUpdatedAt(LocalDateTime.now());
         inspectionMapper.updateById(ins);
         writeLog(inspectionId, "VOID", from, "VOID", operator, reason, "作废原因：" + reason);
+        releaseBatchIfEmpty(ins.getBatchId());
+    }
+
+    /**
+     * 批次下已经没有有效检验单时，把批次退回待检。
+     *
+     * <p>没有这一步，作废一张单会让批次永远停在 {@code INSPECTING}：看板上显示「在检」，
+     * 实际上一个有效结论都没有、也没人在检，而且按状态筛的待检列表永远捞不到它——
+     * 这类批次会安静地烂在库里，直到出货时才被拦下来。
+     *
+     * <p>{@code DONE} 的批次不动：它背后有已归档的结论，改回待检会让历史失真。
+     * 正常情况下也走不到这里——{@code CLOSED} 的单不允许作废。
+     */
+    private void releaseBatchIfEmpty(Long batchId) {
+        if (batchId == null) {
+            return;
+        }
+        QcBatch batch = batchMapper.selectById(batchId);
+        if (batch == null || "DONE".equals(batch.getStatus())) {
+            return;
+        }
+        long live = inspectionMapper.selectCount(new LambdaQueryWrapper<QcInspection>()
+                .eq(QcInspection::getBatchId, batchId)
+                .in(QcInspection::getStatus, "DRAFT", "SUBMITTED", "CLOSED"));
+        if (live == 0 && !"PENDING".equals(batch.getStatus())) {
+            batch.setStatus("PENDING");
+            batch.setUpdatedAt(LocalDateTime.now());
+            batchMapper.updateById(batch);
+        }
     }
 
     /** 操作日志 */

@@ -11,12 +11,14 @@ import com.qc.inspect.mapper.QcComplaintMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcGaugeMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
+import com.qc.inspect.report.PendingBatchInsight;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -68,6 +70,12 @@ public class TodoService {
         // 未关闭客诉：客户已经投诉了，还没给答复。这是最不能压的一件事
         long openComplaint = complaintMapper.selectCount(new LambdaQueryWrapper<QcComplaint>()
                 .ne(QcComplaint::getStatus, QcComplaint.STATUS_CLOSED));
+        // 待检批次：建了批次却一直没开检验单。没检的东西不进分母，
+        // 合格率报表上完全看不出来，只能在这里点名
+        long pendingBatch = pendingBatches(PendingBatchInsight.DEFAULT_DAYS,
+                PendingBatchInsight.MAX_ROWS).stream()
+                .filter(r -> Boolean.TRUE.equals(r.get("urgent")))
+                .count();
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("pendingReview", pendingReview);
@@ -76,9 +84,67 @@ public class TodoService {
         m.put("myDraft", myDraft);
         m.put("myRejected", myRejected);
         m.put("openComplaint", openComplaint);
+        m.put("pendingBatch", pendingBatch);
         // 角标总数不含量具超期：它不是「单据」，混在一起会让人以为有几十张单没处理
-        m.put("actionable", pendingReview + pendingDefect + myRejected + openComplaint);
+        m.put("actionable", pendingReview + pendingDefect + myRejected + openComplaint + pendingBatch);
         return m;
+    }
+
+    /**
+     * 待检批次：建了批次、料也到了，却一条有效检验单都没有。
+     *
+     * <p>按严重度排序——已出货未检的排在最前，那是既成事实的违规；
+     * 同档内停留越久越靠前。
+     */
+    public List<Map<String, Object>> pendingBatches(int thresholdDays, int limit) {
+        int days = Math.max(1, Math.min(thresholdDays, PendingBatchInsight.MAX_DAYS));
+        int n = Math.max(1, Math.min(limit, PendingBatchInsight.MAX_ROWS));
+
+        List<Map<String, Object>> raw = batchMapper.pendingInspection();
+        List<Map<String, Object>> rows = new ArrayList<>(raw.size());
+        for (Map<String, Object> r : raw) {
+            int idleDays = intOf(r.get("idle_days"));
+            int voidLots = intOf(r.get("void_lots"));
+            int shipments = intOf(r.get("shipments"));
+            int shippedQty = intOf(r.get("shipped_qty"));
+
+            PendingBatchInsight.Verdict verdict =
+                    PendingBatchInsight.judge(idleDays, days, voidLots, shipments, shippedQty);
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("batchId", r.get("id"));
+            row.put("batchNo", r.get("batch_no"));
+            row.put("inspectType", r.get("inspect_type"));
+            row.put("qty", r.get("qty"));
+            row.put("status", r.get("status"));
+            row.put("supplier", r.get("supplier"));
+            row.put("materialBatchNo", r.get("material_batch_no"));
+            row.put("productCode", r.get("product_code"));
+            row.put("productName", r.get("product_name"));
+            row.put("arrivedDate", r.get("arrived_date"));
+            row.put("createdDate", r.get("created_date"));
+            row.put("idleDays", idleDays);
+            row.put("voidLots", voidLots);
+            row.put("shipments", shipments);
+            row.put("shippedQty", shippedQty);
+            row.put("level", verdict.level());
+            row.put("urgent", verdict.urgent());
+            row.put("flags", verdict.flags());
+            rows.add(row);
+        }
+
+        // 排序放在 Java 里做：SQL 只能按单列排，这里要看的是「严重度 + 停留天数」两维，
+        // 而严重度是业务判断（已出货未检 > 超期 > 即将超期），数据库不认识
+        rows.sort(Comparator
+                .comparingInt((Map<String, Object> r) -> PendingBatchInsight.rank((String) r.get("level")))
+                .thenComparing(Comparator.comparingInt((Map<String, Object> r) -> (int) r.get("idleDays")).reversed())
+                .thenComparing(r -> (Long) r.get("batchId")));
+
+        return new ArrayList<>(rows.subList(0, Math.min(n, rows.size())));
+    }
+
+    private static int intOf(Object o) {
+        return o instanceof Number num ? num.intValue() : 0;
     }
 
     /** 未关闭客诉。工作台只看前 N 条，全量去客户反馈页筛 */

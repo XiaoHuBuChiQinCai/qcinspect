@@ -29,6 +29,64 @@
       </div>
     </div>
 
+    <!-- 待检批次：建了批次却一直没开检验单。没检的东西不进合格率分母，
+         报表上完全看不出来，只能在这里点名 -->
+    <el-card v-if="batches.length" id="sec-batch" class="block">
+      <template #header>
+        <div class="head">
+          <span>
+            待检批次
+            <el-tag v-if="batchUrgent" type="danger" size="small">{{ batchUrgent }}</el-tag>
+            <el-tag v-else type="success" size="small" effect="plain">都在正常节奏内</el-tag>
+          </span>
+          <div class="spacer" />
+          <el-button link type="primary" @click="router.push('/batches')">去批次列表</el-button>
+        </div>
+      </template>
+      <el-alert
+        v-if="shippedNoInspection"
+        type="error"
+        :closable="false"
+        class="mb"
+        title="有批次已经出货，却一条有效的检验结论都没有。这是既成事实的违规，优先补检或走让步放行。"
+      />
+      <el-table :data="batches" size="small" v-loading="loading" empty-text="没有待检批次">
+        <el-table-column prop="batchNo" label="批次号" width="150" />
+        <el-table-column prop="productName" label="产品" min-width="130" show-overflow-tooltip />
+        <el-table-column label="检验类型" width="110">
+          <template #default="{ row }">{{ typeText(row.inspectType) }}</template>
+        </el-table-column>
+        <el-table-column prop="qty" label="数量" width="80" align="right" />
+        <el-table-column prop="supplier" label="供应商" min-width="120" show-overflow-tooltip />
+        <el-table-column label="到货日期" width="110">
+          <template #default="{ row }">{{ row.arrivedDate || row.createdDate || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="停留" width="85">
+          <template #default="{ row }">
+            <span :class="row.urgent ? 'ng' : ''">{{ row.idleDays }} 天</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="115">
+          <template #default="{ row }">
+            <el-tag :type="batchLevelType(row.level)" size="small">{{ batchLevelText(row.level) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="260">
+          <template #default="{ row }">
+            <div v-for="(f, i) in row.flags" :key="i" class="flag">{{ f }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="105" fixed="right">
+          <template #default>
+            <el-button size="small" type="warning" plain @click="router.push('/batches')">去开单</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-if="batchUrgent > pageSize" class="more">
+        共 {{ batchUrgent }} 个需要处理，先显示前 20 个，其余去「批次列表」按状态筛
+      </div>
+    </el-card>
+
     <!-- 待审核 -->
     <el-card v-if="canReview" id="sec-review" class="block">
       <template #header>
@@ -249,12 +307,16 @@ const defects = ref([])
 const gauges = ref([])
 const mine = ref([])
 const complaints = ref([])
+const batches = ref([])
 
 const reviewVisible = ref(false)
 const reviewTarget = ref({})
 const pageSize = 8
 
 const canReview = computed(() => user.role === 'ADMIN' || user.role === 'REVIEWER')
+/** 需要人动手的那几个（当天刚建批的不算） */
+const batchUrgent = computed(() => batches.value.filter(b => b.urgent).length)
+const shippedNoInspection = computed(() => batches.value.some(b => b.level === 'SHIPPED'))
 const displayName = computed(() => user.realName || user.username || '')
 const roleText = computed(
   () => ({ ADMIN: '管理员', INSPECTOR: '检验员', REVIEWER: '审核员' }[user.role] || '未知角色')
@@ -282,6 +344,10 @@ const stats = computed(() => {
     })
   }
   base.push(
+    {
+      key: 'batch', label: '待检批次', sec: 'sec-batch', cls: 'warn',
+      count: summary.value.pendingBatch || 0, hint: '建了批次没开单'
+    },
     {
       key: 'complaint', label: '未关闭客诉', sec: 'sec-complaint', cls: 'danger',
       count: summary.value.openComplaint || 0, hint: '客户在等答复'
@@ -320,6 +386,13 @@ const mineSorted = computed(() => {
   })
   return rows.slice(0, 12)
 })
+
+const typeText = t =>
+  ({ IQC: '来料检验', IPQC: '过程检验', FQC: '成品检验', OQC: '出货检验' }[t] || t || '—')
+const batchLevelText = l =>
+  ({ SHIPPED: '已出货未检', OVERDUE: '超期未检', DUE: '待检', OK: '正常' }[l] || l)
+const batchLevelType = l =>
+  ({ SHIPPED: 'danger', OVERDUE: 'warning', DUE: 'info', OK: 'success' }[l] || 'info')
 
 const resultText = r => ({ PASS: '合格', FAIL: '不合格', NA: '未判定' }[r] || r || '—')
 const resultType = r => ({ PASS: 'success', FAIL: 'danger', NA: 'info' }[r] || 'info')
@@ -371,16 +444,18 @@ async function loadAll() {
     summary.value = { ...s, __rejected: m.rejected || [] }
     mine.value = m.drafts || []
 
-    const [r, d, g, c] = await Promise.all([
+    const [r, d, g, c, b] = await Promise.all([
       canReview.value ? http.get('/todo/reviews', { params: { limit: 50 } }) : Promise.resolve([]),
       http.get('/todo/defects'),
       http.get('/todo/gauges'),
-      http.get('/todo/complaints', { params: { limit: 50 } })
+      http.get('/todo/complaints', { params: { limit: 50 } }),
+      http.get('/todo/batches', { params: { limit: 20 } })
     ])
     reviews.value = r || []
     defects.value = d || []
     gauges.value = g || []
     complaints.value = c || []
+    batches.value = b || []
   } finally {
     loading.value = false
   }
@@ -418,6 +493,7 @@ onMounted(loadAll)
 .ml { margin-left: 6px; }
 .mb { margin-bottom: 10px; }
 .more { margin-top: 8px; font-size: 12px; color: var(--el-text-color-secondary); }
+.flag { font-size: 12px; color: var(--el-text-color-regular); line-height: 1.6; }
 .ok { color: var(--el-color-success); font-weight: 500; }
 .ng { color: var(--el-color-danger); font-weight: 500; }
 .sep { color: var(--el-text-color-placeholder); margin: 0 4px; }
