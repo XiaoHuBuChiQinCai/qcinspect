@@ -1085,6 +1085,7 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 | GET | `/stat/capability/items` 返回 | `productId / productName / itemId / itemCode / itemName / unit / inspectionCount / sampleCount` |
 
 `/stat/capability` 参数：`productId`、`itemId` 必填，`from` / `to` 为 `yyyy-MM-dd`（默认近 90 天）。
+漏传这两个 id 返回中文业务提示而不是 Spring 的英文异常——它们在代码里是 `required = false` 后自己判的。
 
 **为什么维度是「产品 + 检验项」而不是「检验项」**：同一个「外径」会用在多个产品上，
 各产品规格上下限不同。混在一起算 Cpk 等于拿两把尺子量同一批数。

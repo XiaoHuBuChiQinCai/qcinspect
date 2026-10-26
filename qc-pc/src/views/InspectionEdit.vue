@@ -70,6 +70,15 @@
       <span class="piece-stat">
         共 {{ pieces.length }} 件，已填完 {{ filledPieces }} 件（允收 {{ info.acceptQty }} 件）
       </span>
+      <el-button
+        v-if="!locked && batchColumns.length"
+        size="small"
+        type="primary"
+        plain
+        @click="openBatch"
+      >
+        批量录入
+      </el-button>
       <el-button v-if="!locked" size="small" :loading="saving" @click="saveDraft(false)">暂存</el-button>
     </div>
 
@@ -216,6 +225,60 @@
       </el-timeline>
     </div>
 
+    <!--
+      批量录入：现场是一把卡尺逐件量，读数往往就在量具软件里是一列数。
+      抽 50 件 × 5 个检验项 = 250 次点击输入，没人干得了，最后就是抽 5 件意思一下——
+      SPC 的样本量也是这么没的。这里给一张「件 × 检验项」矩阵，支持从 Excel 整块粘贴。
+    -->
+    <el-dialog v-model="batchOpen" title="批量录入" width="960px" top="5vh" destroy-on-close>
+      <div class="batch-tip">
+        只处理<b>数值型</b>检验项<span v-if="nonNumericCount">（另有 {{ nonNumericCount }} 项选择/布尔/文本项不在此表，仍要逐件填）</span>。
+        从 Excel 复制一片区域，点矩阵里任意一格 <b>Ctrl+V</b> 直接贴入，按列向右、按件号向下展开；
+        只贴一列也可以，贴在对应列第一行即可。
+      </div>
+      <div class="batch-stat">
+        共 {{ batchColumns.length }} 列 × {{ pieces.length }} 件，已填 {{ batchFilled }} 格
+        <span v-if="batchOutOfSpec" class="oos-text">
+          · 其中 {{ batchOutOfSpec }} 格超规格（标红，写入后照常判 NG）
+        </span>
+      </div>
+      <div ref="batchWrap" class="batch-wrap" tabindex="0" @paste="onPaste">
+        <table class="batch-table">
+          <thead>
+            <tr>
+              <th class="col-no">件</th>
+              <th v-for="(c, ci) in batchColumns" :key="ci" :title="c.label">
+                <div class="col-name">{{ c.label }}</div>
+                <div class="col-std">{{ colStd(c) }}</div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(p, ri) in pieces" :key="p.pieceNo">
+              <td class="col-no">{{ p.pieceNo }}</td>
+              <td
+                v-for="(c, ci) in batchColumns"
+                :key="ci"
+                :class="{ 'oos-cell': isOos(ri, ci) }"
+              >
+                <input
+                  v-model="batchGrid[ri][ci]"
+                  class="cell"
+                  :placeholder="ci === 0 && ri === 0 ? '可粘贴' : ''"
+                  @focus="focusCell = [ri, ci]"
+                />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <template #footer>
+        <el-button @click="clearBatch">清空</el-button>
+        <el-button @click="batchOpen = false">取消</el-button>
+        <el-button type="primary" @click="applyBatch">写入单据</el-button>
+      </template>
+    </el-dialog>
+
     <div class="footer">
       <el-button @click="$router.push(`/report/${route.params.id}`)">检验报告</el-button>
       <div class="spacer" />
@@ -231,6 +294,15 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
+import { parseGrid, isNumeric, isBlank, firstNonNumeric, blit, gridSize } from '../utils/pasteGrid'
+import {
+  numericColumns,
+  buildGrid,
+  applyGrid,
+  cellBad,
+  outOfSpecCount,
+  filledCount
+} from '../utils/batchMatrix'
 
 const route = useRoute()
 const loading = ref(false)
@@ -293,6 +365,103 @@ const currentGroups = computed(() => {
 const filledPieces = computed(() =>
   pieces.value.filter(p => Object.values(p.groups).flat().every(isFilled)).length
 )
+
+/* ==================== 批量录入 ==================== */
+
+const batchOpen = ref(false)
+const batchGrid = ref([])
+const batchWrap = ref(null)
+// 粘贴锚点：贴之前得知道从哪一格开始铺
+const focusCell = ref([0, 0])
+
+const nonNumericCount = computed(() => {
+  const p = pieces.value[0]
+  if (!p) return 0
+  return Object.values(p.groups).flat().filter(l => l.valueType !== 'NUMBER').length
+})
+
+// 列的定义、回写、超规判断都在 utils/batchMatrix.js —— 那层映射错了不会报错，
+// 只会把 3 号件的值写到 4 号件上，必须能单测
+const batchColumns = computed(() => numericColumns(pieces.value))
+
+function colStd(c) {
+  const u = c.unit ? ` ${c.unit}` : ''
+  if (c.min != null && c.max != null) return `${c.min}~${c.max}${u}`
+  if (c.min != null) return `≥${c.min}${u}`
+  if (c.max != null) return `≤${c.max}${u}`
+  return '未设限值'
+}
+
+function openBatch() {
+  batchGrid.value = buildGrid(pieces.value, batchColumns.value)
+  focusCell.value = [0, 0]
+  batchOpen.value = true
+}
+
+const batchFilled = computed(() => filledCount(batchGrid.value))
+
+// 超规或非数字都标红。非数字必须标 —— 否则贴错一列也看不出，等提交才报错
+const isOos = (ri, ci) => cellBad(batchColumns.value[ci], batchGrid.value[ri]?.[ci])
+
+const batchOutOfSpec = computed(() =>
+  outOfSpecCount(batchColumns.value, batchGrid.value)
+)
+
+function clearBatch() {
+  batchGrid.value = batchGrid.value.map(row => row.map(() => ''))
+}
+
+/** 找出所有「填了但不是数字」的格，返回人话描述 */
+function badCells() {
+  const bad = []
+  batchGrid.value.forEach((row, ri) => {
+    row.forEach((v, ci) => {
+      // 空格子允许（可以先填一部分）
+      if (isBlank(v) || isNumeric(v)) return
+      const c = batchColumns.value[ci]
+      bad.push(`第 ${pieces.value[ri].pieceNo} 件 · ${c ? c.label : '超范围列'}：「${v}」`)
+    })
+  })
+  return bad
+}
+
+function onPaste(e) {
+  const ev = e.originalEvent || e
+  const text = (ev.clipboardData || window.clipboardData)?.getData('text')
+  if (!text) return
+  e.preventDefault()
+
+  const grid = parseGrid(text)
+  if (!grid.length) return
+  const [r0, c0] = focusCell.value
+
+  // 先整块校验再落盘：半截写进去比不写更糟，录入的人会以为贴完了
+  const bad = firstNonNumeric(grid)
+  if (bad) {
+    const c = batchColumns.value[c0 + bad.col]
+    ElMessage.error(
+      `第 ${r0 + bad.row + 1} 行 · ${c ? c.label : '超范围列'} 的「${bad.raw}」不是数字，整块未写入`
+    )
+    return
+  }
+
+  const written = blit(batchGrid.value, grid, r0, c0)
+  if (written < gridSize(grid)) {
+    ElMessage.warning('粘贴范围比矩阵大，超出部分已忽略')
+  }
+  ElMessage.success(`已贴入 ${grid.length} 行 × ${grid[0].length} 列`)
+}
+
+function applyBatch() {
+  const bad = badCells()
+  if (bad.length) {
+    ElMessage.error(`有 ${bad.length} 处不是数字：${bad.slice(0, 3).join('；')}`)
+    return
+  }
+  applyGrid(pieces.value, batchColumns.value, batchGrid.value)
+  batchOpen.value = false
+  ElMessage.success('已写入当前单据。提交判定会一并带上，中途离开请先「暂存」')
+}
 
 function parseMeasured(line) {
   if (line.measuredValues) {
@@ -555,4 +724,34 @@ onMounted(load)
   font-size: 13px; color: #606266; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word;
 }
+
+/* ==================== 批量录入 ==================== */
+.batch-tip { font-size: 13px; color: #606266; line-height: 1.7; margin-bottom: 10px; }
+.batch-stat { font-size: 13px; color: #909399; margin-bottom: 10px; }
+.batch-stat .oos-text { color: #f56c6c; }
+.batch-wrap { max-height: 56vh; overflow: auto; border: 1px solid #ebeef5; border-radius: 4px; outline: none; }
+.batch-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+.batch-table th, .batch-table td { border-right: 1px solid #ebeef5; border-bottom: 1px solid #ebeef5; padding: 0; }
+.batch-table thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: #f4f6f9; font-weight: 500; padding: 6px 8px;
+  text-align: left; white-space: nowrap;
+}
+.batch-table .col-name { color: #303133; }
+.batch-table .col-std { color: #909399; font-size: 11px; font-weight: 400; }
+.batch-table th.col-no, .batch-table td.col-no {
+  position: sticky; left: 0; z-index: 1;
+  width: 46px; min-width: 46px; text-align: center;
+  background: #f4f6f9; color: #909399;
+}
+.batch-table thead th.col-no { z-index: 3; }
+.batch-table .cell {
+  width: 100%; min-width: 84px; box-sizing: border-box;
+  border: none; outline: none; background: transparent;
+  padding: 7px 8px; font-size: 13px; color: #303133;
+}
+.batch-table .cell:focus { background: #ecf5ff; box-shadow: inset 0 0 0 1px #409eff; }
+/* 超规的格子当场标红，别等写进单据才发现整批都不在规格内 */
+.batch-table td.oos-cell { background: #fef0f0; }
+.batch-table td.oos-cell .cell { color: #f56c6c; }
 </style>
