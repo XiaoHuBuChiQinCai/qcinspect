@@ -36,4 +36,36 @@ public interface QcComplaintMapper extends BaseMapper<QcComplaint> {
             + " coalesce(sum(CASE WHEN status <> 'CLOSED' THEN 1 ELSE 0 END), 0) AS open"
             + " FROM qc_complaint WHERE del_flag = 0")
     java.util.Map<String, Object> summary();
+
+    /**
+     * 本月新登记的客诉。
+     *
+     * <p>按 {@code complaint_date}（客户投诉发生日）而不是 created_at 统计：
+     * 客服常常隔几天才补录，按录入日算会让上个月的投诉记到这个月头上。
+     */
+    @Select("""
+            SELECT count(*)                                              AS total,
+                   coalesce(sum(CASE WHEN severity = 'HIGH' THEN 1 ELSE 0 END), 0)   AS high,
+                   coalesce(sum(CASE WHEN severity = 'MEDIUM' THEN 1 ELSE 0 END), 0) AS medium,
+                   coalesce(sum(CASE WHEN severity = 'LOW' THEN 1 ELSE 0 END), 0)    AS low
+            FROM qc_complaint
+            WHERE del_flag = 0
+              AND complaint_date >= CAST(#{from} AS date)
+              AND complaint_date <  CAST(#{to} AS date)
+            """)
+    java.util.Map<String, Object> monthlyOpened(@Param("from") String from, @Param("to") String to);
+
+    /**
+     * 本月关闭的客诉。按 closed_at 算——「这个月处理掉几起」和「这个月来了几起」
+     * 是两个不同的管理指标，混成一个就答不出「积压是在增加还是在消化」。
+     */
+    @Select("""
+            SELECT count(*) AS total
+            FROM qc_complaint
+            WHERE del_flag = 0
+              AND status = 'CLOSED'
+              AND closed_at >= CAST(#{from} AS timestamptz)
+              AND closed_at <  CAST(#{to} AS timestamptz)
+            """)
+    long monthlyClosed(@Param("from") String from, @Param("to") String to);
 }

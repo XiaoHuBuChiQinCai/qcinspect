@@ -17,6 +17,8 @@ const routes = [
   // 主数据维护只对管理员开放：这些表一改，所有产品的判定口径都跟着变
   { path: '/master-data', component: () => import('../views/MasterData.vue'), meta: { roles: ['ADMIN'] } },
   { path: '/defect-codes', component: () => import('../views/DefectCodeList.vue'), meta: { roles: ['ADMIN'] } },
+  // 供应商档案：批次上的供应商不再手打，只能从这份档案里选
+  { path: '/suppliers', component: () => import('../views/SupplierList.vue'), meta: { roles: ['ADMIN'] } },
   { path: '/users', component: () => import('../views/UserList.vue'), meta: { roles: ['ADMIN'] } },
   // 日志里有作废理由、退回意见，等于把争议记录摊开给人看，只给管理员
   { path: '/audit', component: () => import('../views/AuditLog.vue'), meta: { roles: ['ADMIN'] } },
@@ -25,6 +27,8 @@ const routes = [
   // 客诉登记对所有登录用户开放：客诉往往是销售、客服先接到的
   { path: '/complaints', component: () => import('../views/ComplaintList.vue') },
   { path: '/stat', component: () => import('../views/StatDashboard.vue') },
+  // 质量月报：管理评审要交的那张表。看板回答「今天怎么样」，月报回答「这个月该让谁整改」
+  { path: '/monthly', component: () => import('../views/MonthlyReport.vue') },
   // 过程能力分析：判定层只管收不收，这一页回答「这道工序稳不稳」
   { path: '/capability', component: () => import('../views/Capability.vue') }
 ]

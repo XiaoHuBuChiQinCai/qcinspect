@@ -35,18 +35,21 @@
         <text class="group-cnt">{{ filled(items) }}/{{ items.length }}</text>
       </view>
 
-      <view v-for="line in items" :key="line.id" :class="['line', line.result === 'FAIL' ? 'line-ng' : '']">
+      <view v-for="line in items" :key="line.id"
+            :class="['line', line.result === 'FAIL' ? 'line-ng' : '', hintOf(line) === 'oos' ? 'line-oos' : '']">
         <view class="line-head">
           <text class="item-name">{{ line.itemName }}</text>
           <text v-if="line.isCritical" class="flag">关键</text>
           <text class="std-text">{{ stdText(line) }}</text>
+          <!-- 录入当场就要看得见，别等提交才发现整批不在规格内 -->
+          <text v-if="hintText(line)" class="flag-oos">{{ hintText(line) }}</text>
         </view>
 
         <view v-if="line.valueType === 'NUMBER' && line.valueMode === 'MULTIPLE'" class="inputs">
           <input
             v-for="i in line.pointCount"
             :key="i"
-            class="ipt"
+            :class="['ipt', valueState(line.minValue, line.maxValue, line._inputs[i - 1]) === 'oos' ? 'ipt-oos' : '']"
             type="digit"
             v-model="line._inputs[i - 1]"
             :placeholder="'测点 ' + i"
@@ -56,7 +59,7 @@
 
         <input
           v-else-if="line.valueType === 'NUMBER'"
-          class="ipt full"
+          :class="['ipt', 'full', valueState(line.minValue, line.maxValue, line._input) === 'oos' ? 'ipt-oos' : '']"
           type="digit"
           v-model="line._input"
           :placeholder="line.unit ? '单位 ' + line.unit : '请输入实测值'"
@@ -124,6 +127,7 @@
 import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { absUrl, api, uploadImage } from '../../common/api'
+import { lineState, valueState, STATE, STATE_TEXT } from '../../common/specHint'
 
 const info = ref({})
 const pieces = ref([])
@@ -234,6 +238,10 @@ function goPiece(no) {
 function setBool(line, v) {
   if (!locked.value) line._input = v
 }
+
+// 录入提示：只影响界面颜色，判定仍以后端为准
+const hintOf = line => lineState(line)
+const hintText = line => STATE_TEXT[lineState(line)] || ''
 
 function pieceClass(p) {
   const rows = Object.values(p.groups).flat()
@@ -397,6 +405,21 @@ async function saveDraft() {
 }
 
 async function submit() {
+  // isFilled 只判断「非空」，abc 也算填完了；后端会判「数据不完整」，
+  // 在提交前说清楚比让人回头去看判定理由直接
+  const bad = []
+  pieces.value.forEach(p => Object.values(p.groups).flat().forEach(r => {
+    if (lineState(r) === STATE.NAN) bad.push(`第 ${p.pieceNo} 件「${r.itemName}」`)
+  }))
+  if (bad.length) {
+    uni.showModal({
+      title: '有填错的内容',
+      content: `${bad.slice(0, 5).join('、')}${bad.length > 5 ? ' 等' : ''} 不是有效数字`,
+      showCancel: false
+    })
+    return
+  }
+
   const missing = pieces.value
     .map(p => ({ no: p.pieceNo, miss: Object.values(p.groups).flat().filter(r => !isFilled(r)).length }))
     .filter(x => x.miss > 0)
@@ -453,13 +476,17 @@ async function submit() {
 .group-cnt { font-size: 24rpx; color: #8a9199; }
 .line { padding: 22rpx 24rpx; border-top: 1rpx solid #f0f2f5; }
 .line-ng { background: #fef7f7; }
+/* 超规但还没提交用暖黄，和「已判 NG」的红区分开：一个还没定论，一个是结论 */
+.line-oos { background: #fffbf0; }
 .line-head { display: flex; align-items: center; margin-bottom: 14rpx; }
 .item-name { font-size: 28rpx; font-weight: 500; }
 .flag { font-size: 22rpx; color: #c45656; border: 1rpx solid #c45656; border-radius: 6rpx; padding: 0 8rpx; margin-left: 10rpx; }
+.flag-oos { font-size: 22rpx; color: #b45309; background: #fef3c7; border-radius: 6rpx; padding: 0 10rpx; margin-left: 10rpx; }
 .std-text { font-size: 22rpx; color: #a8abb2; margin-left: auto; }
 .inputs { display: flex; flex-wrap: wrap; gap: 12rpx; }
 .ipt { background: #f5f6f8; border-radius: 10rpx; padding: 14rpx 18rpx; font-size: 28rpx; width: 160rpx; }
 .ipt.full { width: 100%; }
+.ipt-oos { background: #fff5f5; box-shadow: 0 0 0 2rpx #f56c6c inset; }
 .picker { background: #f5f6f8; border-radius: 10rpx; padding: 14rpx 18rpx; font-size: 28rpx; color: #303133; }
 .bool-row { display: flex; gap: 16rpx; }
 .bool-btn { padding: 12rpx 44rpx; border-radius: 10rpx; background: #f5f6f8; font-size: 28rpx; color: #5a6b7b; }

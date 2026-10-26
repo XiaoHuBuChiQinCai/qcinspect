@@ -10,6 +10,14 @@ import java.util.Locale;
  *
  * <p>设计原则：判定逻辑与持久化、框架完全解耦，纯静态方法，便于单测与复用。
  * 前端录入的原始字符串直接传入，这里负责解析与校验，避免脏数据被静默放过。
+ *
+ * <p>不合格分两种，用 {@link JudgeOutcome#incomplete()} 区分：
+ * <ul>
+ *   <li><b>指标不达标</b>（超规、枚举判不合格、布尔方向不对）—— 做出来的东西不行</li>
+ *   <li><b>数据不完整</b>（没录、测点不够、不是数字、选项对不上、标准没配）—— 根本没法判</li>
+ * </ul>
+ * 两者在单项层面都是「不合格」，但到了整批层面必须分开：前者是正常的不良品，
+ * 可以被允收数 Ac 消化；后者是记录缺失，Ac 再大也不该把「没测」判成「合格」。
  */
 public final class ItemJudge {
 
@@ -25,7 +33,7 @@ public final class ItemJudge {
      */
     public static JudgeOutcome judge(ItemSpec spec, List<String> values, String textValue) {
         if (spec == null || spec.valueType() == null) {
-            return JudgeOutcome.ng("检验项配置缺失");
+            return JudgeOutcome.missing("检验项配置缺失");
         }
         if (spec.valueType() == ValueType.TEXT) {
             return JudgeOutcome.ok();
@@ -37,12 +45,12 @@ public final class ItemJudge {
         boolean blank = safeValues.isEmpty()
                 || safeValues.stream().allMatch(v -> v == null || v.isBlank());
         if (blank) {
-            return JudgeOutcome.ng("未录入实测值");
+            return JudgeOutcome.missing("未录入实测值");
         }
 
         int expected = spec.expectedPointCount();
         if (safeValues.size() != expected) {
-            return JudgeOutcome.ng("测点数量不符，应为 " + expected + " 个，实际 " + safeValues.size() + " 个");
+            return JudgeOutcome.missing("测点数量不符，应为 " + expected + " 个，实际 " + safeValues.size() + " 个");
         }
 
         return switch (spec.valueType()) {
@@ -69,7 +77,7 @@ public final class ItemJudge {
             try {
                 v = new BigDecimal(raw == null ? "" : raw.trim());
             } catch (NumberFormatException e) {
-                return JudgeOutcome.ng("第 " + (i + 1) + " 点不是有效数字：" + raw);
+                return JudgeOutcome.missing("第 " + (i + 1) + " 点不是有效数字：" + raw);
             }
             if (min != null && v.compareTo(min) < 0) {
                 failed.add("第 " + (i + 1) + " 点 " + fmt(v) + " < " + fmt(min));
@@ -88,7 +96,7 @@ public final class ItemJudge {
     private static JudgeOutcome judgeEnum(ItemSpec spec, List<String> values) {
         List<EnumOption> options = spec.options() == null ? List.of() : spec.options();
         if (options.isEmpty()) {
-            return JudgeOutcome.ng("枚举项未配置选项");
+            return JudgeOutcome.missing("枚举项未配置选项");
         }
         for (int i = 0; i < values.size(); i++) {
             String code = values.get(i);
@@ -97,7 +105,7 @@ public final class ItemJudge {
                     .findFirst()
                     .orElse(null);
             if (hit == null) {
-                return JudgeOutcome.ng("第 " + (i + 1) + " 点选项不存在：" + code);
+                return JudgeOutcome.missing("第 " + (i + 1) + " 点选项不存在：" + code);
             }
             if (!hit.pass()) {
                 return JudgeOutcome.ng("第 " + (i + 1) + " 点判定为不合格：" + hit.name());
@@ -112,7 +120,7 @@ public final class ItemJudge {
         for (int i = 0; i < values.size(); i++) {
             Boolean b = parseBool(values.get(i));
             if (b == null) {
-                return JudgeOutcome.ng("第 " + (i + 1) + " 点无法识别的值：" + values.get(i));
+                return JudgeOutcome.missing("第 " + (i + 1) + " 点无法识别的值：" + values.get(i));
             }
             if (b != spec.boolPassValue()) {
                 return JudgeOutcome.ng("第 " + (i + 1) + " 点判定为不合格");

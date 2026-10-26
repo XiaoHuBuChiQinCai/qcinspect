@@ -20,6 +20,12 @@ import java.util.stream.Collectors;
  * 一个批次抽 20 件，Ac = 2，意味着最多容忍 2 件不合格。
  *
  * <p>没有检验数据时判不合格——没有数据就不能判合格，这是质量记录的基本要求。
+ *
+ * <p><b>数据不完整不受 Ac 约束。</b>允收数是为「正常的不良品」准备的：抽 20 件里
+ * 有 1 件尺寸偏大，在 AQL 允许范围内，整批照收。但「第 3 件的关键尺寸根本没测」
+ * 不是不良品，是记录缺失——把它当成一件不合格品让 Ac 消化掉，就会出现
+ * 「3 件关键尺寸没测，因为 Ac=5 所以整批判合格」这种荒唐结论。
+ * 所以只要存在数据不完整的行，整批直接判不合格，理由里点明是哪几件哪几项。
  */
 public final class InspectionJudge {
 
@@ -34,17 +40,22 @@ public final class InspectionJudge {
         int ac = Math.max(acceptQty, 0);
 
         if (targets == null || targets.isEmpty()) {
-            return new InspectionOutcome(List.of(), List.of(), 0, 0, 0, 0, ac, false,
+            return new InspectionOutcome(List.of(), List.of(), 0, 0, 0, 0, ac, 0, false,
                     "没有任何检验数据，无法判定（不允许空单判合格）");
         }
 
         // ---------- 第一层 A：逐行判定 ----------
         List<JudgedItem> judged = new ArrayList<>(targets.size());
         Map<Integer, List<Integer>> pieceToIndex = new TreeMap<>();
+        int incompleteCount = 0;
         for (int i = 0; i < targets.size(); i++) {
             JudgeTarget t = targets.get(i);
             JudgeOutcome o = ItemJudge.judge(t.spec(), t.values(), t.textValue());
-            judged.add(new JudgedItem(t.lineId(), t.pieceNo(), t.itemName(), o.pass(), o.reason()));
+            judged.add(new JudgedItem(t.lineId(), t.pieceNo(), t.itemName(), o.pass(), o.reason(),
+                    o.incomplete()));
+            if (o.incomplete()) {
+                incompleteCount++;
+            }
             pieceToIndex.computeIfAbsent(t.pieceNo(), k -> new ArrayList<>()).add(i);
         }
 
@@ -54,8 +65,10 @@ public final class InspectionJudge {
             int pieceNo = e.getKey();
             int pieceNg = 0;
             int pieceCritical = 0;
+            int pieceIncomplete = 0;
             List<String> ngDetails = new ArrayList<>();
             List<String> criticalDetails = new ArrayList<>();
+            List<String> incompleteDetails = new ArrayList<>();
 
             for (int idx : e.getValue()) {
                 JudgedItem j = judged.get(idx);
@@ -65,6 +78,10 @@ public final class InspectionJudge {
                 pieceNg++;
                 String detail = j.itemName() + "（" + j.reason() + "）";
                 ngDetails.add(detail);
+                if (j.incomplete()) {
+                    pieceIncomplete++;
+                    incompleteDetails.add(detail);
+                }
                 if (targets.get(idx).isCritical()) {
                     pieceCritical++;
                     criticalDetails.add(detail);
@@ -74,6 +91,13 @@ public final class InspectionJudge {
             String reason;
             if (pieceNg == 0) {
                 reason = "全部检验项合格";
+            } else if (pieceIncomplete > 0) {
+                // 漏填优先报：没测的数拿不到结论，先让人去补录，而不是去追超差
+                reason = "数据不完整：" + String.join("；", incompleteDetails);
+                int metricNg = pieceNg - pieceIncomplete;
+                if (metricNg > 0) {
+                    reason += "；另有 " + metricNg + " 项指标不合格";
+                }
             } else if (pieceCritical > 0) {
                 reason = "关键项不合格：" + String.join("；", criticalDetails);
             } else {
@@ -105,7 +129,12 @@ public final class InspectionJudge {
 
         String reason;
         boolean pass;
-        if (failedQty == 0) {
+        if (incompleteCount > 0) {
+            // 有漏填/脏值/配置缺失时，Ac 不适用。这一条不能被下面两个分支覆盖。
+            pass = false;
+            reason = "数据不完整，不能判合格：" + incompleteBrief(judged)
+                    + "（共 " + incompleteCount + " 处），需补录后重新提交。允收数 " + ac + " 件不适用";
+        } else if (failedQty == 0) {
             pass = true;
             reason = pieces.size() + " 件全部合格";
         } else if (failedQty <= ac) {
@@ -119,7 +148,21 @@ public final class InspectionJudge {
         }
 
         return new InspectionOutcome(judged, pieces, totalNg, totalCritical,
-                passedQty, failedQty, ac, pass, reason);
+                passedQty, failedQty, ac, incompleteCount, pass, reason);
+    }
+
+    /**
+     * 列出前几处数据不完整的位置。全列出来会把判定说明撑成一页，
+     * 但只说「有 12 处没填」又等于让人自己翻——所以给 5 处加总数。
+     */
+    private static String incompleteBrief(List<JudgedItem> judged) {
+        List<String> parts = judged.stream()
+                .filter(JudgedItem::incomplete)
+                .map(j -> "第 " + j.pieceNo() + " 件「" + j.itemName() + "」" + j.reason())
+                .collect(Collectors.toList());
+        int show = Math.min(parts.size(), 5);
+        String head = String.join("；", parts.subList(0, show));
+        return parts.size() > show ? head + " 等" : head;
     }
 
     /** 有不合格件因关键项 NG 时，在整批理由里点出来——这是审核时最先被问的一句 */

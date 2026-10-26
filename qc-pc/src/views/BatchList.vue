@@ -119,7 +119,27 @@
           </el-select>
         </el-form-item>
         <el-form-item label="供应商">
-          <el-input v-model="batch.supplier" placeholder="来料供应商，统计合格率要用" maxlength="128" />
+          <div class="row">
+            <el-select
+              v-model="batch.supplierId"
+              placeholder="从不建档会分裂统计口径，只能选不能手打"
+              filterable
+              clearable
+              style="width: 300px"
+            >
+              <el-option
+                v-for="s in suppliers"
+                :key="s.id"
+                :label="`${s.supplierCode} ${s.supplierName}`"
+                :value="s.id"
+              />
+            </el-select>
+            <el-button v-if="isAdmin" @click="$router.push('/suppliers')">维护档案</el-button>
+          </div>
+          <div class="sub supplier-hint">
+            找不到？{{ isAdmin ? '先去供应商档案里新建一条' : '请管理员在供应商档案里新建' }}。
+            这里手打会让同一家厂在合格率排名里裂成好几种写法。
+          </div>
         </el-form-item>
         <el-form-item label="原料批号">
           <el-input v-model="batch.materialBatchNo" placeholder="供应商的原始批号，追溯要顺着它往回查" maxlength="64" />
@@ -170,7 +190,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import http from '../api/http'
+import http, { getStoredUser } from '../api/http'
 
 const router = useRouter()
 const rows = ref([])
@@ -185,11 +205,13 @@ const ship = reactive({ batchId: null, customer: '', qty: 1, shippedAt: null, re
 
 // ---------------- 新建批次 ----------------
 const products = ref([])
+const suppliers = ref([])
+const isAdmin = computed(() => (getStoredUser() || {}).role === 'ADMIN')
 const batchVisible = ref(false)
 const batchSaving = ref(false)
 const batch = reactive({
   batchNo: '', productId: null, qty: 1, inspectType: 'FQC',
-  supplier: '', materialBatchNo: '', workOrderNo: '', arrivedAt: null, remark: ''
+  supplierId: null, materialBatchNo: '', workOrderNo: '', arrivedAt: null, remark: ''
 })
 
 const productVisible = ref(false)
@@ -262,6 +284,7 @@ async function openInspection(row) {
 
 onMounted(() => {
   loadProducts()
+  loadSuppliers()
   load()
 })
 
@@ -310,13 +333,18 @@ async function loadProducts() {
   products.value = await http.get('/products/overview')
 }
 
+/** 供应商下拉只给在用的：停用的供应商不该被写进新批次 */
+async function loadSuppliers() {
+  suppliers.value = await http.get('/suppliers/options')
+}
+
 function openBatch() {
   Object.assign(batch, {
     batchNo: '',
     productId: products.value.length === 1 ? products.value[0].id : null,
     qty: 1,
     inspectType: 'FQC',
-    supplier: '',
+    supplierId: null,
     materialBatchNo: '',
     workOrderNo: '',
     arrivedAt: null,
@@ -341,7 +369,7 @@ async function doCreateBatch() {
       productId: batch.productId,
       qty: batch.qty,
       inspectType: batch.inspectType,
-      supplier: batch.supplier.trim() || null,
+      supplierId: batch.supplierId || null,
       materialBatchNo: batch.materialBatchNo.trim() || null,
       workOrderNo: batch.workOrderNo.trim() || null,
       arrivedAt: batch.arrivedAt || null,
@@ -390,6 +418,7 @@ async function doCreateProduct() {
 <style scoped>
 .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
 .spacer { flex: 1; }
+.supplier-hint { margin-top: 4px; font-size: 12px; color: #909399; line-height: 1.5; }
 .count { font-size: 13px; color: var(--el-text-color-secondary); }
 .sub { font-size: 12px; color: var(--el-text-color-secondary); }
 .zero { color: var(--el-color-danger); }

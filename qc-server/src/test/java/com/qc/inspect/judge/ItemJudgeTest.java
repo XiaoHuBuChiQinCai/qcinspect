@@ -261,4 +261,70 @@ class ItemJudgeTest {
             assertThat(o.reason()).contains("配置缺失");
         }
     }
+
+    /**
+     * 单项层面的 pass 都是 false，但「做坏了」和「没数」对整批的意义完全不同：
+     * 前者是正常不良品，能被允收数消化；后者是记录缺失，Ac 再大也不能判合格。
+     * 所以这里把每条 NG 走哪个门钉死。
+     */
+    @Nested
+    @DisplayName("数据不完整 vs 指标不合格")
+    class IncompleteFlag {
+
+        private final ItemSpec light = ItemSpec.enums(List.of(
+                new EnumOption("LIGHT", "轻微", true),
+                new EnumOption("HEAVY", "严重", false)));
+
+        @Test
+        @DisplayName("没录 → 数据不完整")
+        void blankIsIncomplete() {
+            JudgeOutcome o = judge(number("0", "10"), "");
+            assertThat(o.pass()).isFalse();
+            assertThat(o.incomplete()).isTrue();
+        }
+
+        @Test
+        @DisplayName("超规 → 指标不合格，不是数据问题")
+        void overSpecIsNotIncomplete() {
+            JudgeOutcome o = judge(number("0", "10"), "10.5");
+            assertThat(o.pass()).isFalse();
+            assertThat(o.incomplete()).isFalse();
+        }
+
+        @Test
+        @DisplayName("不是数字 → 数据不完整（多半是打错字，不是真做坏）")
+        void notNumericIsIncomplete() {
+            assertThat(judge(number("0", "10"), "1O").incomplete()).isTrue();
+        }
+
+        @Test
+        @DisplayName("测点数量不够 → 数据不完整")
+        void pointsNotEnoughIsIncomplete() {
+            ItemSpec three = ItemSpec.numberMulti(3, new BigDecimal("0"), new BigDecimal("10"));
+            JudgeOutcome o = ItemJudge.judge(three, List.of("1", "2"), null);
+            assertThat(o.pass()).isFalse();
+            assertThat(o.incomplete()).isTrue();
+        }
+
+        @Test
+        @DisplayName("枚举选项拼错 → 数据不完整；判为不合格选项 → 指标不合格")
+        void enumSplit() {
+            assertThat(judge(light, "LIGTH").incomplete()).as("拼错").isTrue();
+            assertThat(judge(light, "HEAVY").incomplete()).as("真不合格").isFalse();
+        }
+
+        @Test
+        @DisplayName("布尔值无法识别 → 数据不完整；方向不对 → 指标不合格")
+        void boolSplit() {
+            ItemSpec burr = ItemSpec.bool(true);
+            assertThat(judge(burr, "maybe").incomplete()).as("乱填").isTrue();
+            assertThat(judge(burr, "false").incomplete()).as("真有毛刺").isFalse();
+        }
+
+        @Test
+        @DisplayName("文本项从来不产生不合格，也就不会算数据不完整")
+        void textNeverIncomplete() {
+            assertThat(ItemJudge.judge(ItemSpec.text(), List.of(), null).incomplete()).isFalse();
+        }
+    }
 }

@@ -367,8 +367,8 @@ Base URL：`http://localhost:8080/api`
 ```json
 {
   "items": [
-    { "lineId": 1, "pieceNo": 1, "itemName": "外径", "pass": true, "reason": null },
-    { "lineId": 9, "pieceNo": 3, "itemName": "外径", "pass": false, "reason": "第 1 点 12.3 > 12.05" }
+    { "lineId": 1, "pieceNo": 1, "itemName": "外径", "pass": true, "reason": null, "incomplete": false },
+    { "lineId": 9, "pieceNo": 3, "itemName": "外径", "pass": false, "reason": "第 1 点 12.3 > 12.05", "incomplete": false }
   ],
   "pieces": [
     { "pieceNo": 1, "pass": true,  "ngCount": 0, "criticalNgCount": 0, "reason": "全部检验项合格" },
@@ -379,6 +379,7 @@ Base URL：`http://localhost:8080/api`
   "passedQty": 4,
   "failedQty": 1,
   "acceptQty": 1,
+  "incompleteCount": 0,
   "pass": true,
   "reason": "不合格 1 件（第 3 件），未超过允收数 1 件。关键项问题：第 3 件 关键项不合格：外径（第 1 点 12.3 > 12.05）"
 }
@@ -389,6 +390,25 @@ Base URL：`http://localhost:8080/api`
 2. 批：`failedQty <= acceptQty` → 批合格
 3. 没有任何检验数据 → 判不合格（空单不能判合格）
 4. 关键项 NG 落在允收范围内时结论仍为合格，但 `reason` 必须带关键项提示
+5. **`incompleteCount > 0` → 整批直接判不合格，`acceptQty` 不适用**
+
+第 5 条单独说明：不合格分两种，`items[].incomplete` 标出是哪一种。
+
+| | 含义 | 典型原因 | Ac 能不能消化 |
+|---|---|---|---|
+| `incomplete: false` | 指标做坏了 | 超规、枚举判不合格、布尔方向不对 | **能**。这正是 AQL 抽样在管的事 |
+| `incomplete: true` | 根本没法判 | 没录、测点数量不够、填的不是数字、选项对不上、标准没配限值/没配选项 | **不能** |
+
+把两者混为一谈会得出很荒唐的结论：抽 20 件、Ac=3，其中 3 件的关键尺寸**压根没测**，
+按件数算正好在允收范围内，整批判合格——一份写着「20 件全部合格」的检验记录，
+里面有 3 件根本没量过。所以只要出现数据不完整，直接判不合格并在 `reason` 里
+点明第几件哪一项（最多列 5 处，后面以总数收尾），要求补录后重新提交。
+
+> **前端录入时标红只做提示，不参与判定。** PC 与移动端的录入页会用明细行上的
+> `minValue` / `maxValue` 快照实时判断并把超规格标红（`utils/specHint.js`），
+> 目的是让人当场看见「12.5 是不是把 12.05 打错了」。但合格与否一律以本接口为准：
+> 规格快照、闭区间、布尔合格值方向这些完整规则都在后端，前端手上的快照只是副本。
+
 
 副作用：明细写回 `result` / `judgeReason`，生成 `qc_defect` 不良记录（带件号），单据转 `SUBMITTED`，批次**保持** `INSPECTING`，写一条 `SUBMIT` 日志。
 
@@ -1152,3 +1172,134 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 
 **不需要新增数据库脚本**：数据来自 `qc_inspection_line.measured_values`（jsonb 数组）与
 行上的 `min_value` / `max_value` 快照，`idx_line_item` 已能支撑按检验项取数。
+
+## 十七、质量月报
+
+看板回答「今天怎么样」，过程能力回答「这道工序稳不稳」，月报回答的是
+**「这个月该给谁发奖金、该让谁写整改」**——ISO 9001 管理评审那张表。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/reports/monthly` | 一个月的质量汇总 + 环比 + 结论文本 |
+
+参数 `month` 为 `yyyy-MM`，**留空取上月**。月报基本都在月头上看，默认当月会是一屏
+「本月还没做完」的空数据。格式不对返回中文提示「月份格式应为 yyyy-MM」，不吐
+`DateTimeParseException`。
+
+**三条取数口径，改任何一条都会让数字对不上账**：
+
+1. 时间窗是 `[月初 00:00, 下月初 00:00)`，边界固定 `+08:00` 后传给 SQL
+   （`CAST(#{} AS timestamptz)`）。不依赖数据库时区，也不依赖服务器的 `now()`——
+   同一份月报补跑两次结果必须一致
+2. 只算 `SUBMITTED` / `CLOSED`。草稿和作废单不代表任何检验结论，
+   算进去会让合格率随「谁今天开了几张单没交」而波动
+3. 时间取 `coalesce(inspected_at, created_at)`。历史单的 `inspected_at` 可能为空，
+   直接筛它会整段漏掉老数据，表现为「上上个月突然没数据」
+
+返回结构（节选）：
+
+```json
+{
+  "month": "2026-10", "label": "2026 年 10 月",
+  "from": "2026-10-01", "to": "2026-10-31", "prevMonth": "2026-09",
+  "hasData": true,
+  "current": {
+    "orders": 42, "passOrders": 38,
+    "pieceTotal": 620, "piecePass": 604, "pieceFail": 16,
+    "recheckOrders": 3,
+    "yieldRate": 0.9742, "orderYieldRate": 0.9048, "recheckRate": 0.0714,
+    "ppm": 25806
+  },
+  "previous": { "...": "同结构，上月" },
+  "delta": { "yieldPp": 1.4, "orderYieldPp": -0.6, "orders": 5, "pieceTotal": 120 },
+  "byType": [{ "inspectType": "IQC", "inspectTypeName": "来料检验", "...": "同 current" }],
+  "defects": [{ "name": "毛刺", "cnt": 12, "qty": 12, "share": 0.375 }],
+  "defectQty": 32,
+  "dispositions": [{ "disposition": "REWORK", "name": "返工", "cnt": 9, "qty": 9 }],
+  "suppliers": [{ "supplier": "某五金厂", "batches": 3, "lots": 4,
+                  "pieceTotal": 200, "piecePass": 180, "yieldRate": 0.9 }],
+  "complaints": { "opened": 2, "high": 1, "closed": 1, "openNow": 3, "backlogDelta": 1 },
+  "gauges": { "total": 12, "active": 9, "suspended": 1, "scrapped": 2, "overdue": 1,
+              "calibrated": { "total": 3, "pass": 2, "fail": 1, "limited": 0 } },
+  "narrative": ["2026 年 10 月共完成 42 张检验单...", "..."]
+}
+```
+
+**`delta` 的单位是百分点，不是百分比。** 96.0% → 97.4% 是「上升 1.4 个百分点」，
+说成「上升 1.4%」会被读成不良率改善 1.4%，差一个数量级的理解。
+
+**分母为 0 时比率一律 `null`（序列化后该键不出现），不是 0。** 页面显示「-」。
+「这个月没做检验」和「这个月全不合格」在报表上长得一样，含义差一个数量级——
+空月输出 `0.0%` 是假警报。同一规则作用于 `delta`：任一期没数据就不给环比，
+避免「上升 100 个百分点」。
+
+其他约定：
+
+- `byType` 各行的 `orders` / `pieceTotal` 之和必须等于 `current`，有行落在分组之外
+  （如 `inspect_type` 为空）时两侧会对不上，这一条在 IT 里有断言
+- `piecePass + pieceFail == pieceTotal`：分子分母对不上说明统计口径串了
+- `suppliers` 按件级合格率升序取最差 5 家，本月没来货的供应商不出现
+- `gauges` 是**当前快照**，不按月——「现在有几把超期」不需要等月底汇总
+- `complaints.backlogDelta = 本月新开 - 本月关闭`，正数说明积压在恶化，
+  比单看「未关闭数」有用
+- `narrative` 是给管理评审直接念的几句话，顺序：总量与环比 → 主要不良 → 客诉 →
+  计量器具 → 返工。措辞规则（空月不假警报、持平不说「上升 0」）由
+  `MonthlyNarrativeTest` 逐条锁定
+
+**不需要新增数据库脚本**：全部聚合在既有表的索引上完成。
+
+## 十八、供应商主数据
+
+在此之前，供应商只是 `qc_batch.supplier` 上的一行 varchar，手打进来。同一家厂写成
+「宁波精铸一厂」「宁波精铸一厂 」「宁波精铸」会在质量统计里变成三家，供应商合格率排名
+裂成三行——每家看着都还行，实际上最差的那家被稀释掉了。V12 把供应商立成主数据。
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/suppliers` | 登录用户 | 一览，带引用批次数与件级合格率 |
+| GET | `/suppliers/options` | 登录用户 | 新建批次的**下拉专用**，只返回在用供应商 |
+| POST | `/suppliers` | ADMIN | 新建 / 编辑（带 `id` 即编辑） |
+| POST | `/suppliers/{id}/status?status=ACTIVE|DISABLED` | ADMIN | 停用 / 启用 |
+
+**两列并存，不是冗余**：`qc_batch.supplier_id` 用于统计归并，`qc_batch.supplier` 是
+**名称快照**。批次是历史事实——建批那天供应商叫什么名字就该一直叫什么。供应商后来改名
+或合并，历史批次不该跟着变，打报告用的是快照。
+
+**建批次时的供应商解析顺序**：
+
+1. 传了 `supplierId` → 校验存在且 `ACTIVE`，名称从主数据取（**前端传的名字会被覆盖**，
+   否则会出现「ID 挂的是甲、名字写的是乙」这种查不出来的脏数据）
+2. 只传 `supplier` 文本 → 按全称**精确匹配**一次档案，能挂上就挂上（照顾老习惯）
+3. 都匹配不上 → 允许保存，`supplier_id` 留空。统计页会把这类批次标成「未建档 N」，
+   当成一条待办摆出来，而不是悄悄放过
+
+**停用不删档**：`DISABLED` 只影响 `/suppliers/options` 的可选性，历史批次与统计不受影响。
+「这家厂不做生意了」和「这家厂没存在过」是两回事，后者会让历史报表凭空少一块。
+
+校验与口径：
+
+- 名称、编码都唯一（部分唯一索引 `WHERE del_flag = 0`，并发下先查后插挡不住）
+- 编码留空自动生成 `SUP%04d`，取**现有最大号 + 1** 而不是 `count + 1`——
+  删过档之后 count 会往回退，生成出来的编码撞唯一索引
+- `category` 限 `MATERIAL` / `OUTSOURCE` / `PACKAGING` / `SERVICE`
+- `level` 限 `A` / `B` / `C`，**可空**。空表示未评级，不等于 C——
+  列表上未评级显示「—」而不是灰色的 C
+- 供应商合格率的分母为 0（一件都还没检）显示「-」，不显示 0%
+
+`/suppliers` 返回：
+
+```json
+[{ "id": 1, "supplierCode": "SUP0001", "supplierName": "宁波精铸一厂",
+   "shortName": "宁波精铸", "category": "MATERIAL", "level": "B",
+   "status": "ACTIVE", "contact": "张三", "phone": "138...",
+   "batches": 6, "pieceTotal": 320, "piecePass": 305 }]
+```
+
+**存量数据迁移**（V12 脚本内自动完成，幂等）：把 `qc_batch.supplier` 里去重后的非空文本
+刷成档案（编码接现有最大 SUP 号往后编），再按名称回填 `supplier_id`。
+迁移建的档 `remark` 里写着「V12 迁移自动建档，非人工录入」——它们缺联系人、类别、评级，
+列表上要能一眼看出来还需要人工补全。
+
+**统计口径的变化**：`/batches/stat/supplier` 与月报的供应商块，分组键从
+「`btrim(supplier)` 文本」改成「`coalesce(主数据名称, 文本, '（未填供应商）')`」，
+并新返回 `unlinked`（未挂档案的批次数）。前端的「未建档」标记就来自这一列。

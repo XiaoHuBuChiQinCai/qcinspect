@@ -3,6 +3,7 @@ package com.qc.inspect.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.qc.inspect.entity.QcBatch;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
@@ -25,14 +26,21 @@ public interface QcBatchMapper extends BaseMapper<QcBatch> {
      * 这行数字本身就是个待办，丢掉它等于把问题藏起来。
      */
     @Select("""
-            SELECT coalesce(nullif(btrim(b.supplier), ''), '（未填供应商）')          AS supplier,
+            SELECT coalesce(s.supplier_name,
+                            nullif(btrim(b.supplier), ''),
+                            '（未填供应商）')                                        AS supplier,
+                   coalesce(max(s.supplier_code), '')                                AS supplier_code,
                    count(DISTINCT b.id)                                              AS batches,
                    count(i.id)                                                       AS lots,
                    coalesce(sum(CASE WHEN i.result = 'PASS' THEN 1 ELSE 0 END), 0)   AS lots_pass,
                    coalesce(sum(CASE WHEN i.result = 'FAIL' THEN 1 ELSE 0 END), 0)   AS lots_fail,
                    coalesce(sum(i.sample_qty), 0)                                    AS piece_total,
-                   coalesce(sum(i.passed_qty), 0)                                    AS piece_pass
+                   coalesce(sum(i.passed_qty), 0)                                    AS piece_pass,
+                   count(DISTINCT CASE WHEN b.supplier_id IS NULL
+                                        AND btrim(coalesce(b.supplier, '')) <> ''
+                                       THEN b.id END)                                AS unlinked
             FROM qc_batch b
+            LEFT JOIN qc_supplier s ON s.id = b.supplier_id AND s.del_flag = 0
             LEFT JOIN qc_inspection i
                    ON i.batch_id = b.id
                   AND i.del_flag = 0
@@ -44,4 +52,35 @@ public interface QcBatchMapper extends BaseMapper<QcBatch> {
                      count(DISTINCT b.id) DESC
             """)
     List<Map<String, Object>> supplierQuality();
+
+    /**
+     * 月度供应商来料质量。口径与 {@link #supplierQuality()} 一致，只是把时间窗
+     * 挪到这个月——年度对比时，全量排名会一直被去年的老账压着，看不出这个月谁在退步。
+     *
+     * <p>按件级合格率升序，最差的排前面。件数为 0 的供应商排在最后：
+     * 这个月没来货的供应商不该出现在「本月最差」里。
+     */
+    @Select("""
+            SELECT coalesce(s.supplier_name,
+                            nullif(btrim(b.supplier), ''),
+                            '（未填供应商）')                                        AS supplier,
+                   count(DISTINCT b.id)                                            AS batches,
+                   count(i.id)                                                     AS lots,
+                   coalesce(sum(i.sample_qty), 0)                                  AS piece_total,
+                   coalesce(sum(i.passed_qty), 0)                                  AS piece_pass,
+                   coalesce(sum(CASE WHEN i.result = 'PASS' THEN 1 ELSE 0 END), 0) AS lots_pass
+            FROM qc_batch b
+            LEFT JOIN qc_supplier s ON s.id = b.supplier_id AND s.del_flag = 0
+            JOIN qc_inspection i
+              ON i.batch_id = b.id
+             AND i.del_flag = 0
+             AND i.status IN ('SUBMITTED', 'CLOSED')
+             AND coalesce(i.inspected_at, i.created_at) >= CAST(#{from} AS timestamptz)
+             AND coalesce(i.inspected_at, i.created_at) <  CAST(#{to} AS timestamptz)
+            WHERE b.del_flag = 0
+            GROUP BY 1
+            ORDER BY coalesce(sum(i.passed_qty), 0)::numeric / NULLIF(sum(i.sample_qty), 0) ASC NULLS LAST
+            """)
+    java.util.List<Map<String, Object>> monthlySupplier(@Param("from") String from,
+                                                        @Param("to") String to);
 }

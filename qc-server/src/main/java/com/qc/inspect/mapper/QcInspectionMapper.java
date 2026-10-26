@@ -73,6 +73,35 @@ public interface QcInspectionMapper extends BaseMapper<QcInspection> {
     long countRejectedDrafts(@Param("operator") String operator);
 
     /**
+     * 月度指标：按月 × 检验类型聚合。
+     *
+     * <p>时间窗由服务层传进来（带 +08:00 偏移的字符串），不用数据库的 now()——
+     * 月报是「上个月」这种明确区间，靠 now() 算出来的区间会随执行时刻漂移，
+     * 补跑一次就可能和前一次对不上。
+     *
+     * <p>统计口径与日合格率一致：只算 SUBMITTED / CLOSED，作废单不代表任何结论。
+     * 时间取 coalesce(inspected_at, created_at)——历史单里 inspected_at 可能为空，
+     * 直接筛 inspected_at 会把老数据整段漏掉，月报上表现为「上上个月突然没数据」。
+     */
+    @Select("""
+            SELECT inspect_type,
+                   count(*)                                              AS orders,
+                   sum(CASE WHEN result = 'PASS' THEN 1 ELSE 0 END)      AS pass_orders,
+                   coalesce(sum(sample_qty), 0)                          AS piece_total,
+                   coalesce(sum(passed_qty), 0)                          AS piece_pass,
+                   coalesce(sum(failed_qty), 0)                          AS piece_fail,
+                   sum(CASE WHEN recheck_of_id IS NOT NULL THEN 1 ELSE 0 END) AS recheck_orders
+            FROM qc_inspection
+            WHERE del_flag = 0
+              AND status IN ('SUBMITTED', 'CLOSED')
+              AND coalesce(inspected_at, created_at) >= CAST(#{from} AS timestamptz)
+              AND coalesce(inspected_at, created_at) <  CAST(#{to} AS timestamptz)
+            GROUP BY inspect_type
+            ORDER BY inspect_type
+            """)
+    List<Map<String, Object>> monthlyByType(@Param("from") String from, @Param("to") String to);
+
+    /**
      * 缺陷分布（帕累托数据源）。
      */
     @Select("""

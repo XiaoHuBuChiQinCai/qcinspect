@@ -211,4 +211,96 @@ class InspectionJudgeTest {
         assertThat(o.pass()).isFalse();
         assertThat(o.failedQty()).isEqualTo(1);
     }
+
+    // ---------------- 数据不完整 vs 指标不合格 ----------------
+
+    private static JudgeTarget tm(int pieceNo, String name, ItemSpec spec, List<String> values) {
+        return new JudgeTarget(null, null, pieceNo, name, false, spec, values, null);
+    }
+
+    @Test
+    @DisplayName("允收数洗不掉漏填：Ac=2 也盖不住 2 件没测")
+    void blankCannotBeAbsorbedByAcceptQty() {
+        // 5 件里第 3、4 件的外径压根没录。按「不合格件数」算，2 件正好等于 Ac，
+        // 会被判合格 —— 但那两件不是做坏了，是没测。记录缺失不能当不良品消化掉。
+        List<JudgeTarget> list = List.of(
+                ok(1), ok(2), t(3, "外径", false, DIA, ""), t(4, "外径", false, DIA, ""), ok(5));
+        InspectionOutcome o = InspectionJudge.judge(list, 2);
+
+        assertThat(o.failedQty()).isEqualTo(2);
+        assertThat(o.incompleteCount()).isEqualTo(2);
+        assertThat(o.pass()).as("有未录入项时 Ac 不适用").isFalse();
+        assertThat(o.reason()).contains("数据不完整").contains("第 3 件").contains("未录入");
+    }
+
+    @Test
+    @DisplayName("漏填和真超差混在一起，仍然整批不合格")
+    void mixedIncompleteAndRealDefectFails() {
+        List<JudgeTarget> list = List.of(
+                ok(1), t(2, "壁厚", false, DIA, "50.80"), t(3, "外径", false, DIA, ""), ok(4));
+        // 1 件超差 + 1 件漏填 = 2 件不合格，Ac=5 足以盖住，但漏填那件必须拦住
+        InspectionOutcome o = InspectionJudge.judge(list, 5);
+
+        assertThat(o.failedQty()).isEqualTo(2);
+        assertThat(o.incompleteCount()).isEqualTo(1);
+        assertThat(o.pass()).isFalse();
+    }
+
+    @Test
+    @DisplayName("真的指标不合格仍按 Ac 允收，完整性规则不能误伤正常判定")
+    void realDefectStillSubjectToAcceptQty() {
+        List<JudgeTarget> list = List.of(ok(1), t(2, "外径", false, DIA, "50.50"), ok(3));
+        InspectionOutcome o = InspectionJudge.judge(list, 1);
+
+        assertThat(o.incompleteCount()).isZero();
+        assertThat(o.pass()).isTrue();
+        assertThat(o.reason()).contains("未超过允收数");
+    }
+
+    @Test
+    @DisplayName("不是有效数字属于数据不完整，不是指标不合格")
+    void nonNumericIsIncomplete() {
+        InspectionOutcome o = InspectionJudge.judge(List.of(t(1, "外径", false, DIA, "abc")), 5);
+
+        assertThat(o.pass()).isFalse();
+        assertThat(o.incompleteCount()).isEqualTo(1);
+        assertThat(o.reason()).contains("不是有效数字");
+    }
+
+    @Test
+    @DisplayName("测点数量不符属于数据不完整")
+    void pointCountMismatchIsIncomplete() {
+        ItemSpec three = ItemSpec.numberMulti(3, new BigDecimal("10.0"), new BigDecimal("10.2"));
+        // 标准要求 3 个测点，只录了 2 个
+        InspectionOutcome o = InspectionJudge.judge(
+                List.of(tm(1, "外径", three, List.of("10.1", "10.1"))), 3);
+
+        assertThat(o.pass()).isFalse();
+        assertThat(o.incompleteCount()).isEqualTo(1);
+        assertThat(o.reason()).contains("测点数量不符");
+    }
+
+    @Test
+    @DisplayName("文本项没填不算数据不完整：它本来就不参与判定")
+    void blankTextIsNotIncomplete() {
+        JudgeTarget text = new JudgeTarget(null, null, 1, "备注", false, ItemSpec.text(), List.of(), null);
+        InspectionOutcome o = InspectionJudge.judge(List.of(ok(1), text), 0);
+
+        assertThat(o.incompleteCount()).isZero();
+        assertThat(o.pass()).isTrue();
+    }
+
+    @Test
+    @DisplayName("数据不完整的理由最多列 5 处，但不能只给个数字让人自己翻")
+    void incompleteBriefListsUpToFive() {
+        List<JudgeTarget> list = new ArrayList<>();
+        for (int i = 1; i <= 8; i++) {
+            list.add(t(i, "外径", false, DIA, ""));
+        }
+        InspectionOutcome o = InspectionJudge.judge(list, 10);
+
+        assertThat(o.incompleteCount()).isEqualTo(8);
+        assertThat(o.reason()).contains("第 1 件").contains("第 5 件").contains("共 8 处");
+        assertThat(o.reason()).as("第 6 件以后不铺开").doesNotContain("第 6 件");
+    }
 }

@@ -59,7 +59,15 @@
             <span :class="{ weak: row.supplier === '（未填供应商）' }">{{ row.supplier }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="batches" label="批次数" width="90" />
+        <el-table-column label="批次" width="90" align="right">
+          <template #default="{ row }">
+            {{ row.batches }}
+            <!-- 有批次没挂供应商档案：这家厂迟早会因为写法不同裂成几行统计口径 -->
+            <el-tag v-if="Number(row.unlinked) > 0" type="warning" size="small" effect="plain" class="unlinked">
+              未建档 {{ row.unlinked }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="lots" label="检验单" width="90" />
         <el-table-column label="不合格批" width="100">
           <template #default="{ row }">
@@ -80,6 +88,8 @@
       </el-table>
       <div class="tip">
         「（未填供应商）」这一行本身就是个待办——来料批次没录供应商，出了问题追不到人。
+        带「未建档」标记的供应商是旧批次上留下的自由文本，建议去「供应商档案」建好档后重新归并，
+        否则同一家厂还会以别的写法再出现一次。
         批合格率按整张检验单判 PASS 计，件级合格率按合格件数 / 受检件数计，抽检场景以件级为准。
       </div>
     </el-card>
@@ -164,6 +174,7 @@ onMounted(async () => {
 .mt { margin-top: 16px; }
 .sub { font-size: 12px; color: #909399; font-weight: normal; }
 .weak { color: var(--el-color-danger); }
+.unlinked { margin-left: 4px; transform: scale(0.85); transform-origin: left center; }
 .bad { color: var(--el-color-danger); font-weight: 600; }
 .warn2 { color: var(--el-color-warning); font-weight: 600; }
 .ok2 { color: var(--el-color-success); }

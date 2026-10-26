@@ -8,10 +8,12 @@ import com.qc.inspect.common.R;
 import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcItem;
 import com.qc.inspect.entity.QcProduct;
+import com.qc.inspect.entity.QcSupplier;
 import com.qc.inspect.judge.EnumOption;
 import com.qc.inspect.mapper.QcBatchMapper;
 import com.qc.inspect.mapper.QcItemMapper;
 import com.qc.inspect.mapper.QcProductMapper;
+import com.qc.inspect.mapper.QcSupplierMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -45,6 +47,7 @@ public class MasterDataController {
     private final QcProductMapper productMapper;
     private final QcItemMapper itemMapper;
     private final QcBatchMapper batchMapper;
+    private final QcSupplierMapper supplierMapper;
     private final ObjectMapper objectMapper;
 
     // ---------------- 产品 ----------------
@@ -200,6 +203,30 @@ public class MasterDataController {
                 .ne(batch.getId() != null, QcBatch::getId, batch.getId()));
         if (dup > 0) {
             throw BizException.of("批次号 " + batchNo + " 已存在，同一批料不要重复登记");
+        }
+
+        // 供应商：优先按主数据 ID 挂，名称从主数据取快照（防止前端传来一个和 ID 对不上的名字）
+        if (batch.getSupplierId() != null) {
+            QcSupplier supplier = supplierMapper.selectById(batch.getSupplierId());
+            if (supplier == null) {
+                throw BizException.of("供应商不存在，请先在供应商档案里建好");
+            }
+            if (!"ACTIVE".equals(supplier.getStatus())) {
+                throw BizException.of("供应商「" + supplier.getSupplierName() + "」已停用，不能再建批次");
+            }
+            batch.setSupplierId(supplier.getId());
+            batch.setSupplier(supplier.getSupplierName());
+        } else {
+            // 只填了名称没选主数据：按名称精确匹配一次，能挂上就挂上。
+            // 挂不上的允许保存（历史习惯、临时供应商），但统计页会把它单列出来当待办
+            String name = trimToNull(batch.getSupplier());
+            batch.setSupplier(name);
+            if (name != null) {
+                QcSupplier matched = supplierMapper.selectOne(new LambdaQueryWrapper<QcSupplier>()
+                        .eq(QcSupplier::getSupplierName, name)
+                        .last("LIMIT 1"));
+                batch.setSupplierId(matched == null ? null : matched.getId());
+            }
         }
 
         if (batch.getId() == null) {

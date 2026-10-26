@@ -39,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -1032,6 +1033,184 @@ class InspectionFlowIT {
                 .as("提示里要出现中文的「检验项」，不能是 Spring 的英文异常")
                 .contains("检验项")
                 .doesNotContain("is not present");
+    }
+
+    @Test
+    @Order(21)
+    @DisplayName("质量月报：按月聚合、分组能汇总回总量、空月不假警报、非法月份给中文提示")
+    void monthlyQualityReport() {
+        String thisMonth = YearMonth.now().toString();
+        String lastMonth = YearMonth.now().minusMonths(1).toString();
+
+        // ---- 不传月份默认上月：月报都在月头上看，默认当月是一屏「还没做完」 ----
+        Map<String, Object> def = data(get("/api/reports/monthly"));
+        assertThat(def.get("month")).isEqualTo(lastMonth);
+
+        // ---- 上月一张单都没有：必须说「没有检验」，不能给 0% ----
+        Map<String, Object> empty = data(get("/api/reports/monthly?month=" + lastMonth));
+        assertThat(empty.get("hasData")).isEqualTo(false);
+        assertThat(asMap(empty.get("current")).get("yieldRate"))
+                .as("空月的合格率必须是 null（页面显示「-」），不是 0")
+                .isNull();
+        assertThat(asMap(empty.get("delta")).get("yieldPp"))
+                .as("上上月同样没数据，不给环比").isNull();
+        List<?> emptyNarr = (List<?>) empty.get("narrative");
+        assertThat(emptyNarr).as("结论至少要有一句").isNotEmpty();
+        assertThat(String.valueOf(emptyNarr.get(0)))
+                .contains("没有任何已提交的检验单")
+                .as("空月不能输出 0.0% 这种看着像真事的假警报")
+                .doesNotContain("0.0%");
+
+        // ---- 本月：先取快照，再交一张已知 14 件的单，验增量 ----
+        Map<String, Object> before = asMap(data(get("/api/reports/monthly?month=" + thisMonth)).get("current"));
+        Long b = capBatch("IT-MONTH-1");
+        Long id = num(data(post("/api/inspections", Map.of("batchId", b))).get("inspectionId"));
+        Map<String, Object> d = detail(id);
+        assertThat(rows(d)).as("固定抽 14 件").hasSize(14);
+        data(post("/api/inspections/" + id + "/submit", Map.of("lines", capLines(d, "15.0", "15.0"))));
+
+        Map<String, Object> month = data(get("/api/reports/monthly?month=" + thisMonth));
+        Map<String, Object> cur = asMap(month.get("current"));
+        assertThat(month.get("hasData")).isEqualTo(true);
+        assertThat(num(cur.get("orders")) - num(before.get("orders"))).as("多一张单").isEqualTo(1L);
+        assertThat(num(cur.get("pieceTotal")) - num(before.get("pieceTotal"))).as("多受检 14 件").isEqualTo(14L);
+        assertThat(num(cur.get("piecePass")) - num(before.get("piecePass"))).as("14 件全合格").isEqualTo(14L);
+
+        // 分组汇总必须等于总量，否则说明有行落在分组之外（比如 inspect_type 为空的行被漏掉）
+        long sumOrders = asList(month.get("byType")).stream().mapToLong(o -> num(asMap(o).get("orders"))).sum();
+        assertThat(sumOrders).as("按类型分组的单数之和要等于总单数").isEqualTo(num(cur.get("orders")));
+        long sumPieces = asList(month.get("byType")).stream().mapToLong(o -> num(asMap(o).get("pieceTotal"))).sum();
+        assertThat(sumPieces).as("按类型分组的受检件之和要等于总受检件").isEqualTo(num(cur.get("pieceTotal")));
+        assertThat(num(cur.get("piecePass")) + num(cur.get("pieceFail")))
+                .as("合格件 + 不合格件必须等于受检件，分子分母不能对不上")
+                .isEqualTo(num(cur.get("pieceTotal")));
+
+        // 单数、受检件、合格率都要能在结论里读到，不能只给一堆裸数字
+        List<?> narr = (List<?>) month.get("narrative");
+        assertThat(String.valueOf(narr.get(0)))
+                .contains(String.valueOf(month.get("label")))
+                .contains("%");
+
+        // ---- 非法月份：给中文提示，不吐 DateTimeParseException ----
+        Map<String, Object> bad = get("/api/reports/monthly?month=2026-13");
+        assertThat(num(bad.get("code"))).as("非法月份要拦").isNotZero();
+        assertThat(String.valueOf(bad.get("msg")))
+                .contains("yyyy-MM")
+                .doesNotContain("DateTimeParseException");
+    }
+
+    @Test
+    @Order(22)
+    @DisplayName("供应商主数据：存量文本自动建档、重名与越权拦截、批次挂档取名称快照、统计按档归并")
+    void supplierMasterData() {
+        // ---- V12 迁移：V1 种子里那条批次的自由文本应已建成档案并回填 ----
+        List<Map<String, Object>> list = asList(get("/api/suppliers").get("data"));
+        assertThat(list).as("V12 应把批次上的存量文本刷成档案").isNotEmpty();
+        Map<String, Object> seeded = list.stream()
+                .filter(r -> "宁波精铸一厂".equals(r.get("supplier_name")))
+                .findFirst().orElse(null);
+        assertThat(seeded).as("种子数据里的供应商必须出现在档案里").isNotNull();
+        assertThat(String.valueOf(seeded.get("supplier_code")))
+                .as("整行内容: " + seeded).startsWith("SUP");
+        assertThat(num(seeded.get("batches")))
+                .as("V12 应把种子批次的 supplier_id 回填上").isGreaterThanOrEqualTo(1L);
+
+        // ---- 新建：编码自动生成，默认在用 ----
+        Map<String, Object> created = data(post("/api/suppliers", Map.of(
+                "supplierName", "IT 测试供应商甲",
+                "shortName", "测试甲",
+                "category", "MATERIAL",
+                "level", "B",
+                "contact", "张三",
+                "phone", "13800000000")));
+        Long supId = num(created.get("id"));
+        assertThat(supId).isNotNull();
+        String code = String.valueOf(created.get("supplierCode"));
+        assertThat(code).startsWith("SUP");
+        assertThat(created.get("status")).isEqualTo("ACTIVE");
+        assertThat(created.get("level")).isEqualTo("B");
+
+        // ---- 重名：同一家厂只建一条档，否则统计口径又会裂开 ----
+        Map<String, Object> dup = post("/api/suppliers", Map.of("supplierName", "IT 测试供应商甲"));
+        assertThat(num(dup.get("code"))).as("同名供应商要拦").isNotZero();
+        assertThat(String.valueOf(dup.get("msg"))).contains("已存在");
+
+        // ---- 评级只认 A/B/C：空不等于 C，但也不能塞个 D 进来 ----
+        Map<String, Object> badLevel = post("/api/suppliers",
+                Map.of("supplierName", "IT 测试供应商乙", "level", "D"));
+        assertThat(num(badLevel.get("code"))).isNotZero();
+        assertThat(String.valueOf(badLevel.get("msg"))).contains("A / B / C");
+
+        // ---- 建档只给管理员：检验员能建批次，但不能自己造供应商 ----
+        String adminToken = token;
+        token = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        try {
+            assertThat(num(post("/api/suppliers", Map.of("supplierName", "IT 越权供应商")).get("code")))
+                    .as("供应商建档限管理员").isNotZero();
+            assertThat(asList(get("/api/suppliers").get("data")))
+                    .as("读取对检验员开放：建批次要选供应商").isNotEmpty();
+        } finally {
+            token = adminToken;
+        }
+
+        // ---- 批次挂档：名称取主数据快照，不接受前端传来的名字 ----
+        Map<String, Object> b1 = data(post("/api/batches", Map.of(
+                "batchNo", "IT-SUP-B1", "productId", capProductId, "qty", 5,
+                "inspectType", "IQC", "supplierId", supId,
+                "supplier", "前端乱传的名字应当被覆盖")));
+        assertThat(b1.get("supplier")).as("名称快照取自主数据").isEqualTo("IT 测试供应商甲");
+        assertThat(num(b1.get("supplierId"))).isEqualTo(supId);
+
+        Long b3 = num(data(post("/api/batches", Map.of(
+                "batchNo", "IT-SUP-B3", "productId", capProductId, "qty", 5,
+                "inspectType", "IQC", "supplierId", supId))).get("id"));
+        assertThat(b3).isNotNull();
+
+        // ---- 只填名称也能自动挂档（按全称精确匹配），省得老习惯的人每次都选 ----
+        data(post("/api/batches", Map.of(
+                "batchNo", "IT-SUP-B4", "productId", capProductId, "qty", 5,
+                "inspectType", "IQC", "supplier", "IT 测试供应商甲")));
+        Map<String, Object> b4 = asList(get("/api/batches?keyword=IT-SUP-B4").get("data")).get(0);
+        assertThat(num(b4.get("supplierId")))
+                .as("手填的全称能对上档案名的，应自动挂上 supplier_id").isEqualTo(supId);
+
+        // ---- 统计按档案归并：同一家厂的两个批次只能出一行 ----
+        List<Map<String, Object>> stat = asList(get("/api/batches/stat/supplier").get("data"));
+        Map<String, Object> row = stat.stream()
+                .filter(r -> "IT 测试供应商甲".equals(r.get("supplier")))
+                .findFirst().orElse(null);
+        assertThat(row).as("同一供应商的多个批次必须归并成一行").isNotNull();
+        assertThat(num(row.get("batches"))).as("至少 B1 + B3 + B4 三个批次").isGreaterThanOrEqualTo(3L);
+        assertThat(num(row.get("unlinked"))).as("挂了档案的批次不算未建档").isZero();
+
+        // ---- 停用：下拉里消失，且不能再建批次 ----
+        data(post("/api/suppliers/" + supId + "/status?status=DISABLED", Map.of()));
+        assertThat(asList(get("/api/suppliers/options").get("data")))
+                .as("停用的供应商不该出现在新建批次的下拉里")
+                .noneMatch(o -> supId.equals(num(o.get("id"))));
+
+        Map<String, Object> disabledBatch = post("/api/batches", Map.of(
+                "batchNo", "IT-SUP-B5", "productId", capProductId, "qty", 5, "supplierId", supId));
+        assertThat(num(disabledBatch.get("code"))).as("停用供应商不能再建批次").isNotZero();
+        assertThat(String.valueOf(disabledBatch.get("msg"))).contains("已停用");
+
+        // 停用不删档：历史批次照样能统计、能追溯
+        assertThat(asList(get("/api/batches/stat/supplier").get("data")))
+                .as("停用后历史批次仍要在统计里")
+                .anyMatch(r -> "IT 测试供应商甲".equals(r.get("supplier")));
+
+        data(post("/api/suppliers/" + supId + "/status?status=ACTIVE", Map.of()));
+        assertThat(asList(get("/api/suppliers/options").get("data")))
+                .anyMatch(o -> supId.equals(num(o.get("id"))));
+
+        // ---- 关键字过滤 ----
+        // 中文关键字直接拼进 URL，交给 TestRestTemplate 自己编码：
+        // 先 URLEncoder 再交给它会被二次编码成 %25E6...，服务端拿到乱码，搜出空列表
+        assertThat(asList(get("/api/suppliers?keyword=测试甲").get("data")))
+                .as("简称也要能搜到").anyMatch(r -> supId.equals(num(r.get("id"))));
+        assertThat(asList(get("/api/suppliers?keyword=" + code).get("data")))
+                .as("编码也要能搜到").anyMatch(r -> supId.equals(num(r.get("id"))));
     }
 
     /**

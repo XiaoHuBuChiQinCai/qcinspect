@@ -316,12 +316,12 @@ docker compose -f docker-compose.prod.yml start app
 
 ```bash
 cd /root/qc/qcinspect
-docker exec -i qc-db psql -U qc -d qcinspect -v ON_ERROR_STOP=1 < db/V11__complaint.sql
+docker exec -i qc-db psql -U qc -d qcinspect -v ON_ERROR_STOP=1 < db/V12__supplier.sql
 ```
 
-只补你缺的那几个：装上就一直没升过的老库，从 `V2` 一路补到 `V11` 即可。
+只补你缺的那几个：装上就一直没升过的老库，从 `V2` 一路补到 `V12` 即可。
 
-（`V2`~`V11` 都是幂等脚本，重复执行安全；`V1` 不是，别对已有库重跑。）
+（`V2`~`V12` 都是幂等脚本，重复执行安全；`V1` 不是，别对已有库重跑。）
 
 > 建议顺序：**先备份 → 跑 SQL → 再重建容器**。反过来的话，新代码先上线、
 > 列还没加，接口会在第一笔请求上 500。备份用 `scripts/backup.sh`，几秒钟的事。

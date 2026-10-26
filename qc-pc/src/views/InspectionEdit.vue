@@ -91,11 +91,14 @@
           </el-tag>
         </template>
 
-        <div v-for="line in items" :key="line.id" class="line" :class="{ ng: line.result === 'FAIL' }">
+        <div v-for="line in items" :key="line.id" class="line"
+             :class="{ ng: line.result === 'FAIL', oos: hintOf(line) === 'oos' }">
           <div class="line-head">
             <span class="name">{{ line.itemName }}</span>
             <el-tag v-if="line.isCritical" type="danger" size="small" effect="plain">关键项</el-tag>
             <span class="std">{{ stdText(line) }}</span>
+            <!-- 录入当场就要看得见：等提交判定才报不合格，得回头一件件找是哪项 -->
+            <el-tag v-if="hintText(line)" type="warning" size="small" effect="dark">{{ hintText(line) }}</el-tag>
             <el-tag v-if="line.result === 'FAIL'" type="danger" size="small">NG</el-tag>
             <el-tag v-else-if="line.result === 'PASS'" type="success" size="small">OK</el-tag>
           </div>
@@ -108,6 +111,7 @@
                 v-model="line._inputs[i - 1]"
                 :placeholder="`测点 ${i}`"
                 class="point-input"
+                :class="{ oos: valueState(line.minValue, line.maxValue, line._inputs[i - 1]) === 'oos' }"
                 :disabled="locked"
               />
             </template>
@@ -117,6 +121,7 @@
               v-model="line._input"
               :placeholder="`单位 ${line.unit || '-'}`"
               class="point-input"
+              :class="{ oos: valueState(line.minValue, line.maxValue, line._input) === 'oos' }"
               :disabled="locked"
             />
 
@@ -295,6 +300,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
 import { parseGrid, isNumeric, isBlank, firstNonNumeric, blit, gridSize } from '../utils/pasteGrid'
+import { lineState, valueState, STATE, STATE_TEXT } from '../utils/specHint'
 import {
   numericColumns,
   buildGrid,
@@ -490,6 +496,10 @@ function initLines() {
   })
 }
 
+// 录入提示：只影响界面上那一抹红，不参与任何判定结论（判定在后端，有完整快照与口径）
+const hintOf = line => lineState(line)
+const hintText = line => STATE_TEXT[lineState(line)] || ''
+
 function isFilled(line) {
   if (line.valueType === 'TEXT') return true
   if (line.valueType === 'BOOL') return line._input !== null && line._input !== undefined
@@ -634,6 +644,17 @@ async function saveDraft(silent) {
 }
 
 async function submit() {
+  // 填了但不是数字的，先挡住。isFilled 只判断「非空」，abc 也会被当成填完了，
+  // 后端会判「数据不完整」，到这里来说清楚比让人去看判定理由直接
+  const bad = []
+  pieces.value.forEach(p => Object.values(p.groups).flat().forEach(r => {
+    if (lineState(r) === STATE.NAN) bad.push(`第 ${p.pieceNo} 件「${r.itemName}」`)
+  }))
+  if (bad.length) {
+    ElMessage.error(`有 ${bad.length} 处不是有效数字：${bad.slice(0, 5).join('、')}${bad.length > 5 ? ' 等' : ''}`)
+    return
+  }
+
   const missing = pieces.value
     .map(p => ({ no: p.pieceNo, miss: Object.values(p.groups).flat().filter(r => !isFilled(r)).length }))
     .filter(x => x.miss > 0)
@@ -688,6 +709,11 @@ onMounted(load)
 .group-title { font-weight: 500; }
 .line { padding: 12px 4px; border-bottom: 1px dashed #ebeef5; }
 .line.ng { background: #fef0f0; }
+/* 超规但还没提交时用暖黄，和「已判 NG」的红区分开：一个还没定论，一个是结论 */
+.line.oos { background: #fffbf0; }
+.point-input.oos :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
+}
 .line-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .line-head .name { font-weight: 500; }
 .line-head .std { color: #909399; font-size: 12px; }
