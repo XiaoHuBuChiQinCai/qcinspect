@@ -1564,6 +1564,50 @@ class InspectionFlowIT {
                 .as("不存在的版本不能被当成「没差异」").isNotZero();
     }
 
+    @Test
+    @Order(28)
+    @DisplayName("不良帕累托：参数全空也要能跑（线上就是这么崩的）、占比与累计占比自洽")
+    void defectParetoNullableParams() {
+        // 线上 500 的真实成因：`#{productId} IS NULL` 没写 CAST，PG 推不出 $1 的类型
+        //    ERROR: could not determine data type of parameter $1
+        // 前端打开不良处置页时只传 from、不传 productId，正好走 productId=null 这条。
+        // 这里把四种参数组合都打一遍——旧代码只在「两个都传」时才不崩。
+        //
+        // 断言用原始 code 而不是 data()：data() 自己会断言 code==0，
+        // 出错时抛的是断言异常，看不出到底是哪个组合坏的。而且 asList 对 null
+        // 会静默返回空表，只断言「列表不为 null」等于没断言。
+        assertThat(num(get("/api/defects/pareto").get("code")))
+                .as("不带任何参数时不能 500").isZero();
+        assertThat(num(get("/api/defects/pareto?from=2000-01-01T00:00:00Z").get("code")))
+                .as("只传 from（前端的真实调用）不能 500").isZero();
+        assertThat(num(get("/api/defects/pareto?productId=99999999").get("code")))
+                .as("只传 productId 不能 500").isZero();
+        assertThat(num(get("/api/defects/pareto?productId=99999999&from=2000-01-01T00:00:00Z").get("code")))
+                .as("两个都传也不能 500").isZero();
+
+        // 筛选条件要真的生效，否则「不崩」只是把错数据当对数据
+        assertThat(asList(get("/api/defects/pareto?productId=99999999").get("data")))
+                .as("不存在的产品应当筛出空表").isEmpty();
+
+        // ---- 有数据时，口径要自洽 ----
+        List<Map<String, Object>> all = asList(get("/api/defects/pareto").get("data"));
+        assertThat(all).as("前面的用例判过 NG，帕累托不该是空的").isNotEmpty();
+        double lastCumulative = 0;
+        long prevQty = Long.MAX_VALUE;
+        for (Map<String, Object> row : all) {
+            long qty = num(row.get("qty")).longValue();
+            double percent = ((Number) row.get("percent")).doubleValue();
+            double cumulative = ((Number) row.get("cumulative_percent")).doubleValue();
+            assertThat(qty).as("qty 必须降序").isLessThanOrEqualTo(prevQty);
+            prevQty = qty;
+            assertThat(percent).as("单条占比不能超过 100%").isBetween(0.0, 100.0);
+            assertThat(cumulative).as("累计占比只能升不能降").isGreaterThanOrEqualTo(lastCumulative);
+            lastCumulative = cumulative;
+        }
+        assertThat(lastCumulative).as("累计占比到最后必须收敛到 100%")
+                .isCloseTo(100.0, org.assertj.core.data.Offset.offset(0.05));
+    }
+
     /** 标准项请求体：一个数值项，限值用字符串传，跟前端提交的形状一致 */
     private Map<String, Object> diffItem(String min, String max) {
         Map<String, Object> m = new java.util.LinkedHashMap<>();

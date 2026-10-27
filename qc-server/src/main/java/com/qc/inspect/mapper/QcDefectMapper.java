@@ -27,8 +27,10 @@ public interface QcDefectMapper extends BaseMapper<QcDefect> {
                 JOIN qc_inspection i ON i.id = d.inspection_id
                 WHERE i.del_flag = 0
                   AND i.status IN ('SUBMITTED', 'CLOSED')
-                  AND (#{productId} IS NULL OR i.product_id = #{productId})
-                  AND (#{from} IS NULL OR i.created_at >= #{from}::timestamptz)
+                  AND (CAST(#{productId} AS bigint) IS NULL
+                       OR i.product_id = CAST(#{productId} AS bigint))
+                  AND (CAST(#{from} AS timestamptz) IS NULL
+                       OR coalesce(i.inspected_at, i.created_at) >= CAST(#{from} AS timestamptz))
                 GROUP BY d.defect_code
             )
             SELECT code, name, qty, occ,

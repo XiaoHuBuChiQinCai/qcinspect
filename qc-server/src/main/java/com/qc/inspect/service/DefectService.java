@@ -191,7 +191,43 @@ public class DefectService {
 
     /** 不良帕累托 */
     public List<Map<String, Object>> pareto(Long productId, String from) {
-        return defectMapper.pareto(productId, from);
+        return defectMapper.pareto(productId, normalizeFrom(from));
+    }
+
+    /**
+     * 时间筛选参数归一。
+     *
+     * <p>空串不等于 null：`?from=` 这种写法 Spring 会绑成 {@code ""}，而 SQL 里的
+     * {@code CAST('' AS timestamptz)} 直接报 {@code invalid input syntax}。
+     * 语义上「不按时间筛」，所以空白一律当没传。
+     *
+     * <p>其余非法值提前拦成中文提示：PG 的原话是
+     * {@code invalid input syntax for type timestamp with time zone}，
+     * 对车间里的人来说等于没说。
+     */
+    private String normalizeFrom(String from) {
+        if (from == null || from.isBlank()) {
+            return null;
+        }
+        String v = from.trim();
+        try {
+            java.time.OffsetDateTime.parse(v);
+            return v;
+        } catch (java.time.format.DateTimeParseException ignored) {
+            // 不是带时区的 ISO，再试不带时区的
+        }
+        try {
+            LocalDateTime.parse(v);
+            return v;
+        } catch (java.time.format.DateTimeParseException ignored) {
+            // 再试纯日期
+        }
+        try {
+            java.time.LocalDate.parse(v);
+            return v;
+        } catch (java.time.format.DateTimeParseException e) {
+            throw BizException.of("时间筛选参数格式不对：" + v + "（可用 2026-07-29 或 2026-07-29T10:00:00Z）");
+        }
     }
 
     private void validateTransition(QcDefect d, String target) {

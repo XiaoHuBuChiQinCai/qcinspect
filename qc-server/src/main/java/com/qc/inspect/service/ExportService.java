@@ -47,6 +47,7 @@ public class ExportService {
     private final QcProductMapper productMapper;
     private final AuditService auditService;
     private final ComplaintService complaintService;
+    private final DefectService defectService;
 
     // ==================== 检验单台账 ====================
 
@@ -177,7 +178,9 @@ public class ExportService {
      * 只有占比没有累计，拿到 Excel 里还得自己算一遍，那就白导了。
      */
     public String pareto(Long productId, String from) {
-        List<Map<String, Object>> list = defectMapper.pareto(productId, from);
+        // 走 DefectService 而不是直接调 mapper：时间参数的空白归一与格式校验只在那边做一遍，
+        // 导出与页面因此永远同口径。绕过去的话，页面上筛出来的和导出来的会对不上
+        List<Map<String, Object>> list = defectService.pareto(productId, from);
         if (list.isEmpty()) {
             throw BizException.of("没有不良数据可导出");
         }
