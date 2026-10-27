@@ -754,6 +754,18 @@ Base URL：`http://localhost:8080/api`
 ```
 > 只统计 `SUBMITTED` / `CLOSED` 的单据，草稿里的不良没过审，算进去会把排名带偏。
 
+**`productId` 与 `from` 都可省略**，省略即「不按这个条件筛」。`from` 接受
+`2026-07-29` / `2026-07-29T10:00:00` / `2026-07-29T10:00:00Z` 三种写法，
+传空串等于不传，格式不认识会返回中文提示而不是 PG 的英文报错。
+
+> 时间基准是 `coalesce(inspected_at, created_at)`，与月报 / SPC / 批次进度同口径。
+> 用 `created_at` 的话，补录的历史单会被算到录入那天，帕累托和月报对不上。
+
+> **这两个参数是可选的，但 SQL 里必须写成 `CAST(#{x} AS bigint) IS NULL`。**
+> 直接写 `#{x} IS NULL` 时 `$1` 没有类型上下文，PG 会报
+> `could not determine data type of parameter $1`，而这个页面恰好只传 `from`
+> 不传 `productId`——于是「可选参数」变成了「一打开就 500」。
+
 ---
 
 ## 七、追溯与出货
