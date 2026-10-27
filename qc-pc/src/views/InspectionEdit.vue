@@ -50,6 +50,31 @@
       </template>
     </el-alert>
 
+    <!-- 标准改过版：判定结论和依据必须同时在场。只看结论会以为标准一直没动，
+         只看版本号又不知道差在哪——所以差异直接列出来，不让人再跳一个页面 -->
+    <el-alert
+      v-if="info.stdCtx && info.stdCtx.changed"
+      :type="info.stdCtx.verdict === 'RELAXED' ? 'warning' : 'info'"
+      :closable="false"
+      class="std-bar"
+    >
+      <template #title>
+        标准已改版 —— 本单按 v{{ info.stdCtx.usedVersion }} 判定，现行是 v{{
+          info.stdCtx.currentVersion
+        }}
+        <el-tag v-if="info.stdCtx.verdictText" size="small" effect="plain" class="std-verdict">
+          {{ info.stdCtx.verdictText }}
+        </el-tag>
+      </template>
+      <div v-if="stdChanges.length" class="std-changes">
+        <div v-for="(s, i) in stdChanges" :key="i" class="std-change">· {{ s }}</div>
+        <div v-if="stdChangeTotal > stdChanges.length" class="std-more">
+          还有 {{ stdChangeTotal - stdChanges.length }} 项差异，去标准页看完整对比
+        </div>
+      </div>
+      <div v-if="info.stdCtx.advice" class="std-advice">{{ info.stdCtx.advice }}</div>
+    </el-alert>
+
     <!-- 抽样依据：检验员看单第一眼要知道「凭什么抽这么多件、凭什么判接收」 -->
     <div v-if="info.samplingBasis" class="sampling-basis">
       <span class="sb-label">抽样依据</span>
@@ -315,6 +340,9 @@ const loading = ref(false)
 const submitting = ref(false)
 const saving = ref(false)
 const info = ref({})
+// 差异最多列 4 条：再多就把实测值挤出首屏，而看单的人此刻要看的正是实测值
+const stdChanges = computed(() => (info.value.stdCtx?.summary || []).slice(0, 4))
+const stdChangeTotal = computed(() => (info.value.stdCtx?.summary || []).length)
 const pieces = ref([])
 const currentPiece = ref(1)
 const activeGroups = ref([])
@@ -520,7 +548,7 @@ async function load() {
   loading.value = true
   try {
     const data = await http.get(`/inspections/${route.params.id}`)
-    info.value = { ...data.inspection, recheckOfNo: data.recheckOfNo }
+    info.value = { ...data.inspection, recheckOfNo: data.recheckOfNo, stdCtx: data.standardContext }
     pieces.value = data.pieces
     locked.value = !!data.locked
     activeGroups.value = Object.keys(data.pieces[0]?.groups || {})
@@ -706,6 +734,16 @@ onMounted(load)
 }
 .sb-label { font-weight: 600; color: #909399; }
 .recheck-bar { margin-bottom: 12px; }
+.std-bar { margin-bottom: 12px; }
+.std-verdict { margin-left: 6px; }
+.std-changes { margin-top: 6px; font-size: 12px; line-height: 1.7; }
+.std-change { color: var(--el-text-color-regular); }
+.std-more { color: var(--el-text-color-secondary); }
+.std-advice {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
 .group-title { font-weight: 500; }
 .line { padding: 12px 4px; border-bottom: 1px dashed #ebeef5; }
 .line.ng { background: #fef0f0; }

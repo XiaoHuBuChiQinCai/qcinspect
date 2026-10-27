@@ -1608,6 +1608,82 @@ class InspectionFlowIT {
                 .isCloseTo(100.0, org.assertj.core.data.Offset.offset(0.05));
     }
 
+    @Test
+    @Order(29)
+    @DisplayName("检验单详情带标准上下文：标准改版后，老单说得出「后来放宽了」，快照却不动")
+    void inspectionStandardContext() {
+        QcProduct p = new QcProduct();
+        p.setProductCode("IT-STDCTX");
+        p.setProductName("标准上下文试用件");
+        p.setUnit("件");
+        productMapper.insert(p);
+        Long productId = p.getId();
+
+        // ---- v1：内径 11.95 ~ 12.05 ----
+        Long v1 = num(data(post("/api/standards", Map.of(
+                "productId", productId, "standardCode", "S-IT-CTX",
+                "samplingType", "FULL", "sampleSize", 1, "allowedNgCount", 0))).get("id"));
+        assertThat(num(post("/api/standards/" + v1 + "/items",
+                List.of(diffItem("11.95", "12.05"))).get("code"))).isZero();
+        assertThat(num(post("/api/standards/" + v1 + "/activate", Map.of()).get("code"))).isZero();
+
+        Long id = num(data(post("/api/inspections", Map.of("batchId", ctxBatch("IT-CTX-B1", productId))))
+                .get("inspectionId"));
+        Map<String, Object> d = detail(id);
+        assertThat(num(asMap(d.get("inspection")).get("standardVersion"))).isEqualTo(1L);
+        data(post("/api/inspections/" + id + "/submit", Map.of("lines", fillCompliant(d))));
+
+        // ---- 还没改版：上下文要说「仍是现行版本」，而不是什么都不给 ----
+        Map<String, Object> ctx = asMap(detail(id).get("standardContext"));
+        assertThat(ctx).as("详情必须带标准上下文").isNotEmpty();
+        assertThat(ctx.get("changed")).isEqualTo(false);
+        assertThat(num(ctx.get("usedVersion"))).isEqualTo(1L);
+        assertThat(num(ctx.get("currentVersion"))).isEqualTo(1L);
+        assertThat(num(ctx.get("versionsSince"))).as("没改版就是 0 版差").isZero();
+        assertThat(String.valueOf(ctx.get("note"))).contains("仍是现行版本");
+
+        // ---- 改版：上限 12.05 → 12.20（放宽） ----
+        Long v2 = num(data(post("/api/standards/" + v1 + "/publish", Map.of())).get("id"));
+        assertThat(num(post("/api/standards/" + v2 + "/items",
+                List.of(diffItem("11.95", "12.20"))).get("code"))).isZero();
+        assertThat(num(post("/api/standards/" + v2 + "/activate", Map.of()).get("code"))).isZero();
+
+        // ---- 老单：结论与快照都不动，但要能说出「标准后来改过、是放宽」 ----
+        Map<String, Object> after = detail(id);
+        Map<String, Object> ctx2 = asMap(after.get("standardContext"));
+        assertThat(ctx2.get("changed")).as("改过版必须标出来").isEqualTo(true);
+        assertThat(num(ctx2.get("usedVersion"))).as("仍是当初那版").isEqualTo(1L);
+        assertThat(num(ctx2.get("currentVersion"))).isEqualTo(2L);
+        assertThat(num(ctx2.get("versionsSince"))).isEqualTo(1L);
+        assertThat(ctx2.get("verdict")).as("上限调高 = 放宽").isEqualTo("RELAXED");
+        assertThat(asList(ctx2.get("summary"))).as("要能直接列出差在哪").isNotEmpty();
+
+        assertThat(asMap(after.get("inspection")).get("result")).as("历史判定不能被改版改写").isEqualTo("PASS");
+        assertThat(dec(rows(after).get(0).get("maxValue")))
+                .as("明细快照必须还是当初的 12.05（项目铁律：标准改版不影响历史单）")
+                .isEqualByComparingTo("12.05");
+
+        // ---- 新开的单用新版本，与老单互不干扰 ----
+        Long id2 = num(data(post("/api/inspections", Map.of("batchId", ctxBatch("IT-CTX-B2", productId))))
+                .get("inspectionId"));
+        Map<String, Object> d2 = detail(id2);
+        assertThat(num(asMap(d2.get("inspection")).get("standardVersion"))).isEqualTo(2L);
+        assertThat(asMap(d2.get("standardContext")).get("changed")).isEqualTo(false);
+        assertThat(dec(rows(d2).get(0).get("maxValue"))).isEqualByComparingTo("12.20");
+    }
+
+    /** 标准上下文用例的批次夹具：指定产品，一件，待检 */
+    private Long ctxBatch(String batchNo, Long productId) {
+        QcBatch b = new QcBatch();
+        b.setBatchNo(batchNo);
+        b.setProductId(productId);
+        b.setInspectType("IQC");
+        b.setQty(1);
+        b.setStatus("PENDING");
+        batchMapper.insert(b);
+        return b.getId();
+    }
+
     /** 标准项请求体：一个数值项，限值用字符串传，跟前端提交的形状一致 */
     private Map<String, Object> diffItem(String min, String max) {
         Map<String, Object> m = new java.util.LinkedHashMap<>();

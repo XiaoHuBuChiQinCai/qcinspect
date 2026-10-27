@@ -447,6 +447,89 @@ public class StandardService {
         return m;
     }
 
+    /**
+     * 一张检验单的「标准上下文」：这单是按哪版判的、那一版现在还是不是现行版、
+     * 不是的话这中间的标准是放宽了还是收紧了。
+     *
+     * <p>明细已经带标准快照，所以历史判定永远可复现——但「当时那版」和「现在这版」
+     * 差在哪，单看单据是看不出来的。质量问题追溯时这两句话必须同时在场：
+     * 判定结论是什么、依据的标准后来有没有变。只给版本号不给方向，
+     * 等于让人自己去两个页面比。
+     *
+     * <p>返回 {@code null} 表示这张单没记标准（早期数据），前端就不显示这一块，
+     * 而不是显示一个空壳卡片让人猜「是不是坏了」。
+     */
+    public Map<String, Object> contextOf(Long standardId, Integer usedVersion) {
+        if (standardId == null) {
+            return null;
+        }
+        QcStandard used = standardMapper.selectById(standardId);
+        // 标准记录可能被删，而单据上的版本号是快照，两者都要能单独用
+        Integer usedVer = usedVersion != null ? usedVersion
+                : (used == null ? null : used.getVersion());
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("standardId", standardId);
+        m.put("usedVersion", usedVer);
+        m.put("usedStatus", used == null ? "MISSING" : used.getStatus());
+        m.put("usedEffectiveFrom", used == null ? null : used.getEffectiveFrom());
+
+        if (used == null) {
+            // 标准被删了：单据照样有效（判定依据已经快照在明细里），只是没法再比
+            m.put("changed", false);
+            m.put("versionsSince", 0);
+            m.put("note", "本单依据的标准已不存在，判定依据仍以明细里的快照为准");
+            return m;
+        }
+
+        QcStandard current = standardMapper.selectList(new LambdaQueryWrapper<QcStandard>()
+                        .eq(QcStandard::getProductId, used.getProductId())
+                        .eq(QcStandard::getStatus, "ACTIVE"))
+                .stream()
+                .findFirst()
+                .orElse(null);
+
+        if (current == null) {
+            m.put("changed", false);
+            m.put("versionsSince", 0);
+            m.put("note", "该产品当前没有生效标准，本单判定依据已不可再比");
+            return m;
+        }
+
+        m.put("currentStandardId", current.getId());
+        m.put("currentVersion", current.getVersion());
+
+        boolean changed = !current.getId().equals(standardId);
+        m.put("changed", changed);
+        if (!changed) {
+            m.put("versionsSince", 0);
+            m.put("note", "本单依据的标准仍是现行版本");
+            return m;
+        }
+
+        int gap = (current.getVersion() == null ? 0 : current.getVersion())
+                - (usedVer == null ? 0 : usedVer);
+        m.put("versionsSince", Math.max(gap, 0));
+
+        // 方向复用改版对比：from=本单那版，to=当前生效版
+        try {
+            Map<String, Object> d = diff(current.getId(), standardId);
+            m.put("verdict", d.get("verdict"));
+            m.put("verdictText", d.get("verdictText"));
+            m.put("advice", d.get("advice"));
+            m.put("changes", d.get("changes"));
+            m.put("summary", d.get("summary"));
+            m.put("note", "本单依据 v" + usedVer + " 判定，现行已到 v" + current.getVersion()
+                    + "（" + d.get("verdictText") + "）");
+        } catch (RuntimeException e) {
+            // 对比失败不能连累看单据：判定结论本身永远是有效的
+            m.put("verdict", null);
+            m.put("note", "本单依据 v" + usedVer + " 判定，现行已到 v" + current.getVersion()
+                    + "，两版差异暂时算不出来");
+        }
+        return m;
+    }
+
     private Map<String, Object> brief(QcStandard s) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", s.getId());

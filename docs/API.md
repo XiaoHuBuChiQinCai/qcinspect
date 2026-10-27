@@ -397,13 +397,42 @@ Base URL：`http://localhost:8080/api`
   "lineCount": 40,
   "itemCount": 8,
   "pieceCount": 5,
-  "locked": false
+  "locked": false,
+  "recheckOfNo": null,
+  "standardContext": {
+    "standardId": 9, "usedVersion": 3, "usedStatus": "OBSOLETE", "usedEffectiveFrom": "2026-09-01",
+    "currentStandardId": 12, "currentVersion": 5,
+    "changed": true, "versionsSince": 2,
+    "verdict": "RELAXED", "verdictText": "整体放宽",
+    "advice": "这一版比上一版更宽松。若近期不良流出是在这版之后开始的，优先查这一版",
+    "summary": ["内径 上限 12.05 → 12.1（放宽）"],
+    "note": "本单依据 v3 判定，现行已到 v5（整体放宽）"
+  }
 }
 ```
 
 - `pieces[]` 是主结构，前端做件切换用
 - `groups` 是全部行按组的平铺（兼容旧前端，多件时会重复）
 - `locked = true` 表示已提交或已归档，前端应置为只读
+
+**`standardContext`：本单按哪版标准判的，那版后来有没有变。** 明细本身带标准快照，
+所以历史判定永远可复现；但「当时那版」和「现在这版」差在哪，只看单据看不出来——
+而质量问题追溯时这两句话必须同时在场。方向复用 `/standards/{id}/diff`，
+`from` 是本单那版、`to` 是当前 `ACTIVE` 版。
+
+| 字段 | 说明 |
+|---|---|
+| `usedVersion` | 本单判定时用的版本（读 `qc_inspection.standard_version`，没有则取标准当前值） |
+| `usedStatus` | 那版现在的状态；`OBSOLETE` 说明已经不是现行版 |
+| `currentVersion` | 该产品当前 `ACTIVE` 版本号 |
+| `changed` | 本单那版是否已经不是现行版 |
+| `versionsSince` | 中间隔了几版，夹到 ≥0 |
+| `verdict` / `summary` | 本单那版 → 现行版的方向与逐项差异 |
+
+三种边界：`standardContext` 为 `null`（这张单没记标准，早期数据，**前端不显示这一块**
+而不是显示空壳卡片）；标准记录被删时 `usedStatus = "MISSING"`，单据照样有效、只是没法再比；
+产品当前没有 `ACTIVE` 标准时 `currentVersion` 缺省并给出 `note`。对比本身出错也不影响返回
+单据——判定结论本身永远有效，不能因为算不出差异就打不开单子。
 
 ### 3. 草稿暂存
 

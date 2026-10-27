@@ -73,6 +73,7 @@ public class InspectionService {
     private final GaugeService gaugeService;
     private final NoticeService noticeService;
     private final SamplingPlanService samplingPlanService;
+    private final StandardService standardService;
     private final ObjectMapper objectMapper;
 
     // ==================== 建单（含标准快照） ====================
@@ -699,6 +700,12 @@ public class InspectionService {
             if (origin != null) {
                 result.put("recheckOfNo", origin.getInspectionNo());
             }
+        }
+        // 本单按哪版标准判的、那版后来有没有变。追溯时「结论」和「依据」要同时在场：
+        // 只看结论会以为标准一直没动，只看版本号又不知道差在哪
+        Map<String, Object> stdCtx = standardService.contextOf(ins.getStandardId(), ins.getStandardVersion());
+        if (stdCtx != null) {
+            result.put("standardContext", stdCtx);
         }
         return result;
     }
