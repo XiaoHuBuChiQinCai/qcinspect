@@ -76,6 +76,19 @@ public class StandardController {
                 .orderByAsc(QcStandardItem::getSeq)));
     }
 
+    /**
+     * 与上一版（或指定版本）的差异。
+     *
+     * <p>不带 {@code against} 就自动比上一版。质量问题追溯时问的是
+     * 「这个标准最近改过什么、是不是放宽了」，不是「v2 和 v5 差在哪」——
+     * 后者要人先记住版本号，前者才是日常。
+     */
+    @GetMapping("/{id}/diff")
+    public R<Map<String, Object>> diff(@PathVariable Long id,
+                                       @RequestParam(required = false) Long against) {
+        return R.ok(standardService.diff(id, against));
+    }
+
     /** 新建草稿标准 */
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")

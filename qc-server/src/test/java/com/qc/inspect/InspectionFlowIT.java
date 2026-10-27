@@ -1503,6 +1503,81 @@ class InspectionFlowIT {
         assertThat(num(afterVoid.get("doneQty"))).isEqualTo(sample);
     }
 
+    @Test
+    @Order(27)
+    @DisplayName("标准改版：publish 出来必须是草稿（否则改不了项）、对比能判出放宽还是收紧")
+    void standardVersionDiff() {
+        QcProduct p = new QcProduct();
+        p.setProductCode("IT-DIFF");
+        p.setProductName("标准改版试用件");
+        p.setUnit("件");
+        productMapper.insert(p);
+        Long productId = p.getId();
+
+        // ---- v1：内径 11.95 ~ 12.05 ----
+        Long v1 = num(data(post("/api/standards", Map.of(
+                "productId", productId, "standardCode", "S-IT-DIFF",
+                "samplingType", "FULL", "sampleSize", 1, "allowedNgCount", 0))).get("id"));
+        assertThat(num(post("/api/standards/" + v1 + "/items",
+                List.of(diffItem("11.95", "12.05"))).get("code"))).isZero();
+        assertThat(num(post("/api/standards/" + v1 + "/activate", Map.of()).get("code"))).isZero();
+
+        // ---- 第一个版本没有更早的可比 ----
+        Map<String, Object> first = data(get("/api/standards/" + v1 + "/diff"));
+        assertThat(first.get("firstVersion")).isEqualTo(true);
+        assertThat(asList(first.get("changes"))).isEmpty();
+
+        // ---- 发布新版本：必须是草稿 ----
+        // 早先这里直接建成 ACTIVE，而 saveItems 只放行 DRAFT，
+        // 结果「发布新版本」只多了一个版本号，限值一项也改不了
+        Map<String, Object> v2std = data(post("/api/standards/" + v1 + "/publish", Map.of()));
+        assertThat(v2std.get("status"))
+                .as("发布新版本的目的就是改东西，所以必须是草稿").isEqualTo("DRAFT");
+        assertThat(num(v2std.get("version"))).isEqualTo(2L);
+        Long v2 = num(v2std.get("id"));
+
+        // ---- 还没改任何项：两版口径一致 ----
+        Map<String, Object> same = data(get("/api/standards/" + v2 + "/diff"));
+        assertThat(same.get("verdict")).isEqualTo("NEUTRAL");
+        assertThat(num(asMap(same.get("from")).get("version"))).isEqualTo(1L);
+
+        // ---- 草稿能改：上限 12.05 → 12.10 = 放宽 ----
+        assertThat(num(post("/api/standards/" + v2 + "/items",
+                List.of(diffItem("11.95", "12.10"))).get("code")))
+                .as("草稿必须能改项，否则改版这条路是断的").isZero();
+        assertThat(num(post("/api/standards/" + v2 + "/activate", Map.of()).get("code"))).isZero();
+
+        Map<String, Object> diff = data(get("/api/standards/" + v2 + "/diff"));
+        assertThat(diff.get("verdict")).as("上限调高就是放宽").isEqualTo("RELAXED");
+        assertThat(diff.get("verdictText")).isEqualTo("整体放宽");
+        String summary = String.join(" ", strings(diff.get("summary")));
+        assertThat(summary).contains("上限").contains("放宽");
+        assertThat(String.valueOf(diff.get("advice")))
+                .as("提示要直接指向排查方向").contains("优先查这一版");
+
+        // ---- 指定 against 也能比 ----
+        assertThat(data(get("/api/standards/" + v2 + "/diff?against=" + v1)).get("verdict"))
+                .isEqualTo("RELAXED");
+
+        // ---- 对比一个不存在的版本要报错，不能静默当成无差异 ----
+        assertThat(num(get("/api/standards/" + v2 + "/diff?against=99999999").get("code")))
+                .as("不存在的版本不能被当成「没差异」").isNotZero();
+    }
+
+    /** 标准项请求体：一个数值项，限值用字符串传，跟前端提交的形状一致 */
+    private Map<String, Object> diffItem(String min, String max) {
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("itemId", 1);
+        m.put("valueMode", "SINGLE");
+        m.put("pointCount", 1);
+        m.put("isCritical", true);
+        m.put("isRequired", true);
+        m.put("isDestructive", false);
+        m.put("minValue", new BigDecimal(min));
+        m.put("maxValue", new BigDecimal(max));
+        return m;
+    }
+
     /** 批次列表里按批次号取整行，用来断言回填上去的进度字段 */
     private Map<String, Object> batchRow(String batchNo) {
         return dataList("/api/batches").stream()

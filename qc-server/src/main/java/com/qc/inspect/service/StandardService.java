@@ -9,6 +9,7 @@ import com.qc.inspect.judge.EnumOption;
 import com.qc.inspect.mapper.QcItemMapper;
 import com.qc.inspect.mapper.QcStandardItemMapper;
 import com.qc.inspect.mapper.QcStandardMapper;
+import com.qc.inspect.report.StandardDiff;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
@@ -21,7 +22,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -306,7 +309,15 @@ public class StandardService {
     }
 
     /**
-     * 以指定标准为模板发布新版本，并自动生效。
+     * 以指定标准为模板新建下一个版本的<strong>草稿</strong>。
+     *
+     * <p>为什么是草稿而不是直接生效：改版的目的就是「改点东西」，而生效的版本
+     * 一律不可编辑（{@code assertEditable} 只放行 DRAFT）。早先这里直接建成 ACTIVE，
+     * 结果发布完新版就锁死了——限值改不了、项加不了，「发布新版本」除了多一个
+     * 数字以外什么也做不了。现在复制成草稿，配好再点「保存并生效」，旧版在
+     * {@link #activate} 里自动作废。
+     *
+     * <p>同产品已有草稿时拒绝：两份草稿谁也不知道哪份是对的。
      */
     @Transactional
     public QcStandard publishNewVersion(Long sourceId) {
@@ -317,6 +328,12 @@ public class StandardService {
 
         List<QcStandard> siblings = standardMapper.selectList(new LambdaQueryWrapper<QcStandard>()
                 .eq(QcStandard::getProductId, src.getProductId()));
+
+        boolean hasDraft = siblings.stream().anyMatch(s -> "DRAFT".equals(s.getStatus()));
+        if (hasDraft) {
+            throw BizException.of("该产品已有草稿版本，先把草稿配好生效或删掉，再发布新版本");
+        }
+
         int maxVersion = siblings.stream()
                 .mapToInt(s -> s.getVersion() == null ? 0 : s.getVersion())
                 .max()
@@ -324,28 +341,18 @@ public class StandardService {
 
         LocalDateTime now = LocalDateTime.now();
 
-        // 先作废旧生效版本，满足「同产品仅一个 ACTIVE」的唯一索引
-        for (QcStandard s : siblings) {
-            if ("ACTIVE".equals(s.getStatus())) {
-                s.setStatus("OBSOLETE");
-                s.setUpdatedAt(now);
-                standardMapper.updateById(s);
-            }
-        }
-
         QcStandard nw = new QcStandard();
         nw.setStandardCode(src.getStandardCode());
         nw.setProductId(src.getProductId());
         nw.setVersion(maxVersion + 1);
-        nw.setStatus("ACTIVE");
+        nw.setStatus("DRAFT");
         nw.setSamplingType(src.getSamplingType());
         nw.setSamplingPlan(src.getSamplingPlan());
         nw.setAql(src.getAql());
         nw.setInspectionLevel(src.getInspectionLevel());
         nw.setSampleSize(src.getSampleSize());
         nw.setAllowedNgCount(src.getAllowedNgCount());
-        nw.setEffectiveFrom(LocalDate.now());
-        nw.setRemark("由 v" + src.getVersion() + " 复制发布");
+        nw.setRemark("由 v" + src.getVersion() + " 复制，配置后生效");
         nw.setCreatedAt(now);
         standardMapper.insert(nw);
 
@@ -363,6 +370,93 @@ public class StandardService {
             standardItemMapper.insert(copy);
         }
         return nw;
+    }
+
+    /**
+     * 两个版本之间的差异。
+     *
+     * <p>{@code againstId} 为空时自动对比同产品的上一版——「这次改了什么」是
+     * 99% 的场景，不该逼人先记住版本号。没有上一版时返回首版标记，changes 为空。
+     */
+    public Map<String, Object> diff(Long id, Long againstId) {
+        QcStandard after = require(id);
+
+        QcStandard before;
+        if (againstId != null) {
+            before = require(againstId);
+            if (!java.util.Objects.equals(before.getProductId(), after.getProductId())) {
+                throw BizException.of("只能对比同一产品的两个版本");
+            }
+        } else {
+            before = standardMapper.selectList(new LambdaQueryWrapper<QcStandard>()
+                            .eq(QcStandard::getProductId, after.getProductId())
+                            .lt(QcStandard::getVersion, after.getVersion()))
+                    .stream()
+                    .max(java.util.Comparator.comparingInt(s -> s.getVersion() == null ? 0 : s.getVersion()))
+                    .orElse(null);
+        }
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("to", brief(after));
+        if (before == null) {
+            m.put("from", null);
+            m.put("firstVersion", true);
+            m.put("verdict", StandardDiff.NEUTRAL);
+            m.put("verdictText", "第一个版本");
+            m.put("advice", "没有可对比的更早版本");
+            m.put("changes", List.of());
+            m.put("summary", List.of());
+            return m;
+        }
+
+        List<QcStandardItem> beforeItems = itemsOf(before.getId());
+        List<QcStandardItem> afterItems = itemsOf(after.getId());
+        Map<Long, QcItem> itemIndex = itemIndex(beforeItems, afterItems);
+
+        StandardDiff.Result r = StandardDiff.compare(before, after, beforeItems, afterItems, itemIndex);
+
+        m.put("from", brief(before));
+        m.put("firstVersion", false);
+        m.put("verdict", r.verdict());
+        m.put("verdictText", r.verdictText());
+        m.put("advice", r.advice());
+        m.put("changes", r.changes());
+        m.put("summary", r.summary());
+        return m;
+    }
+
+    private List<QcStandardItem> itemsOf(Long standardId) {
+        return standardItemMapper.selectList(new LambdaQueryWrapper<QcStandardItem>()
+                .eq(QcStandardItem::getStandardId, standardId)
+                .orderByAsc(QcStandardItem::getSeq));
+    }
+
+    /** 一次查完两个版本涉及的检验项，别逐行 selectById */
+    private Map<Long, QcItem> itemIndex(List<QcStandardItem> a, List<QcStandardItem> b) {
+        Set<Long> ids = new HashSet<>();
+        a.forEach(si -> ids.add(si.getItemId()));
+        b.forEach(si -> ids.add(si.getItemId()));
+        ids.remove(null);
+        Map<Long, QcItem> m = new LinkedHashMap<>();
+        if (ids.isEmpty()) {
+            return m;
+        }
+        for (QcItem item : itemMapper.selectBatchIds(ids)) {
+            m.put(item.getId(), item);
+        }
+        return m;
+    }
+
+    private Map<String, Object> brief(QcStandard s) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", s.getId());
+        m.put("standardCode", s.getStandardCode());
+        m.put("version", s.getVersion());
+        m.put("status", s.getStatus());
+        m.put("effectiveFrom", s.getEffectiveFrom());
+        m.put("createdAt", s.getCreatedAt());
+        m.put("remark", s.getRemark());
+        return m;
     }
 
     /**

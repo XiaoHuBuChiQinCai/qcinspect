@@ -171,8 +171,58 @@ Base URL：`http://localhost:8080/api`
 | PUT | `/standards/{id}` | 修改草稿表头（编号/抽样方式/允收数/备注） |
 | DELETE | `/standards/{id}` | 删除草稿（生效过的版本不能删） |
 | POST | `/standards/{id}/items` | 整体保存检验项（先清后插，仅草稿可用） |
-| POST | `/standards/{id}/publish` | 以该版本为模板发布新版本（自动生效） |
-| POST | `/standards/{id}/activate` | 启用草稿版本 |
+| POST | `/standards/{id}/publish` | 以该版本为模板创建下一版**草稿**（改完再 activate 生效） |
+| POST | `/standards/{id}/activate` | 启用草稿版本（同产品旧 ACTIVE 自动置 OBSOLETE） |
+| GET | `/standards/{id}/diff` | 与上一版的判定口径差异，`against` 可指定对比版本 |
+
+`GET /standards/{id}/diff` 响应（质量问题追溯时的第一眼：这一版是不是放宽了）：
+
+```json
+{
+  "from": { "id": 3, "version": 1, "status": "OBSOLETE", "effectiveFrom": "2026-09-01" },
+  "to":   { "id": 9, "version": 2, "status": "ACTIVE",   "effectiveFrom": "2026-10-20" },
+  "firstVersion": false,
+  "verdict": "RELAXED",
+  "verdictText": "整体放宽",
+  "advice": "这一版比上一版更宽松。若近期不良流出是在这版之后开始的，优先查这一版",
+  "changes": [
+    { "itemCode": "I-ID", "itemName": "内径", "field": "maxValue", "label": "上限",
+      "before": "12.05", "after": "12.1", "direction": "LOOSEN" }
+  ],
+  "summary": ["内径 上限 12.05 → 12.1（放宽）"]
+}
+```
+
+**`verdict` 五档**：`RELAXED` 整体放宽 / `TIGHTENED` 整体收紧 /
+`MIXED` 两头都有 / `CHANGED` 改了判定方向但不是宽严 / `NEUTRAL` 无实质变更。
+`direction` 只有 `LOOSEN` / `TIGHTEN` 两种，`CHANGED` 用在无法归类的变更上。
+
+方向判定（每条都踩过）：
+
+| 改动 | 方向 | 理由 |
+|---|---|---|
+| 上限调高 | 放宽 | 能测的值更多 |
+| 下限调低 | 放宽 | 同上，方向跟上限相反，容易抄错 |
+| 关键项 是→否 | 放宽 | 超差不再判死整批，Ac 能吞掉 |
+| 必填项 是→否 | 放宽 | 原来必须填，现在能空着 |
+| 测点数 3→1 | 放宽 | 少量两个点 |
+| 新增检验项 | **收紧** | 多一道关 |
+| 删除检验项 | 放宽 | 少检一样东西 |
+| 全检 → 抽检 | 放宽 | 不全检了 |
+| 抽样件数 32→8 | 放宽 | 抽得更少 |
+| 允收数 Ac 1→3 | 放宽 | 能吞更多不良 |
+| AQL 1.5→4.0 | 放宽 | 同批量下 Ac 更大 |
+| 布尔合格值反转 | **CHANGED** | 不是宽严问题，是同一份数据结论反过来 |
+| 枚举合格选项增删 | 增=放宽 / 减=收紧 / 换一批=CHANGED | — |
+
+两个必须守住的边界：
+
+- **`publish` 产出的是草稿，不是直接生效。** 生效版本一律不可编辑，早先这里直接建成
+  ACTIVE，结果「发布新版本」只多了一个版本号，限值一项都改不了
+- **全检的 `sampleSize` 恒为 1 是占位值**，不能拿去和抽检件数比。比了会得出
+  「全检改抽检反而更严」的荒谬结论，所以只在两边都是 SAMPLE 时才比
+- **BigDecimal 用 `compareTo`**：`equals` 会把 12.0 和 12.00 判成不同，
+  从 Excel 粘进来的限值小数位从来不统一，那样会造出一堆假差异把真差异淹掉
 
 **标准（固定抽样）**
 ```json
