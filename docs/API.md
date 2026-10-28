@@ -233,22 +233,44 @@ Base URL：`http://localhost:8080/api`
     { "product_code": "P-FLANGE", "product_name": "法兰盘",
       "standard_id": 3, "standard_code": "S-FLANGE-01",
       "version": 1, "status": "OBSOLETE", "effective_from": "2026-09-01",
-      "current_version": 2,
+      "current_id": 9, "current_version": 2,
       "inspection_count": 12, "pass_count": 10, "fail_count": 2,
-      "last_used_date": "2026-10-20" }
+      "last_used_date": "2026-10-20",
+      "change_verdict": "TIGHTENED",
+      "risk": "HIGH", "risk_text": "合规风险",
+      "risk_advice": "标准在这批单判定之后收紧了。判合格的那部分是按更宽松的旧口径放的，按现行标准可能不合格——优先抽查关键尺寸和参数",
+      "risk_order": 0 }
   ],
   "versionCount": 1,
   "inspectionCount": 12,
   "failCount": 2,
+  "riskLevel": "HIGH",
+  "riskText": "合规风险",
   "withoutStandard": 3,
-  "note": "有 12 张已判定单据是按已作废的标准版本下的结论，其中 2 张判为不合格——标准若在作废前收紧过，这批判定值得复核"
+  "note": "有 12 张已判定单据是按已作废的标准版本下的结论，其中 2 张判为不合格；其中 10 张判合格的，是在判定之后标准又收紧了，按现行标准可能不合格，优先查这批"
 }
 ```
 
 改版本身不会回头处理旧单：旧版判过的结论留在库里，它们建立在当时的口径上。
-这个接口回答的就是「有多少结论已经站在一个不作数的标准上」，以及它们判成了什么。
+这个接口回答的是「有多少结论已经站在一个不作数的标准上」，以及**要不要去查**。
 
-口径四条：
+**`risk` 四档**（数量分不出轻重：42 张旧版单里可能一张都不用管，也可能全是放行风险）：
+
+| 档 | 触发 | 意思是 |
+|---|---|---|
+| `HIGH` | 旧版→现行**收紧**，且这版下有判合格的单 | 放行按现行标准可能站不住，唯一要抢着查的一种 |
+| `WATCH` | 旧版→现行**放宽**且有判 NG 的单；或 `MIXED`/`CHANGED` | 可能误判（返工报废白做），不影响合规但那是钱 |
+| `LOW` | 旧版判的全是 NG；或两版无实质差异 | 标准怎么改都不改变这批结论 |
+| `UNKNOWN` | 算不出方向（该产品已无 ACTIVE 版、标准项读不出来） | 降级人工核对，**绝不猜方向** |
+
+`risk_order` 是排序权重（`HIGH`0 < `WATCH`1 < `UNKNOWN`2 < `LOW`3），`rows` 已按它
+排好、同档按单数降序——工作台只露前 8 行，第一行必须是该看的那行。
+
+方向**复用 `GET /standards/{id}/diff`**（内部调用 `diff(现行版, 旧版)`），不另写一遍宽严判定：
+两边各写一份必然慢慢走偏。diff 抛异常只降级成 `UNKNOWN` 并记 warn 日志，
+不让一个坏版本把整页打成 500。
+
+口径五条：
 
 - **只算 `SUBMITTED` / `CLOSED`**：草稿还没定论，不该算「按旧版判的」
 - **只算关联得上的**（`qc_inspection.standard_id = qc_standard.id`）：早期数据只存了版本号
@@ -257,9 +279,11 @@ Base URL：`http://localhost:8080/api`
 - **`HAVING count > 0`**：从没开过单的作废版本不占版面
 - **`current_version` 取该产品当前 `ACTIVE` 版**，同产品只有一个 ACTIVE
   （唯一索引 `uk_standard_active`），不会把单据行数放大
+- **`current_id` 一起返回**：只有版本号算不出改版方向（diff 要 id）
 
-`note` 分三种情况说：没有旧版单 / 有旧版单且含不合格 / 有旧版单但全是合格。
-**不能合成一句「未发现」**——「没有旧版单」和「有旧版单但一张都关联不上」是两件事，
+`note` 按**最高风险档**定调，不再用「若收紧过就值得复核」这种要人自己去推的说法：
+直说「其中 N 张判合格的，在判定之后标准收紧了，优先查这批」。没有旧版单时也不能
+合成一句「未发现」——「没有旧版单」和「有旧版单但一张都关联不上」是两件事，
 混在一起会让后者永远没人去处理。
 
 点进明细走 `GET /inspections/page?standardId=`（按版本筛检验单，导出走同一个
