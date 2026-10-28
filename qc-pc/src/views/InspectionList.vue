@@ -51,6 +51,17 @@
       <el-button @click="resetFilters">重置</el-button>
     </div>
 
+    <!-- 看不见的筛选条件最容易把人搞晕：行数对不上时，人的第一反应是「系统丢数据了」。
+         从标准页点「查看这批单」过来时，必须有一条明确说清「列表被削过」的提示 -->
+    <el-alert v-if="filter.standardId" type="warning" :closable="true" class="std-filter"
+              @close="clearStandardFilter">
+      <template #title>
+        仅显示按
+        <strong>{{ route.query.standardVersion ? `标准 v${route.query.standardVersion}` : '指定标准版本' }}</strong>
+        判定的单据，共 {{ total }} 张。这个版本已不是现行版本，结论按当时的口径下的。
+      </template>
+    </el-alert>
+
     <div class="bar">
       <span class="count">共 {{ total }} 张单</span>
       <div class="spacer" />
@@ -138,13 +149,14 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http, { getStoredUser } from '../api/http'
 import { downloadCsv } from '../api/download'
 import ReviewDialog from '../components/ReviewDialog.vue'
 
 const router = useRouter()
+const route = useRoute()
 const user = getStoredUser() || {}
 const canReview = computed(() => user.role === 'ADMIN' || user.role === 'REVIEWER')
 
@@ -154,7 +166,7 @@ const loading = ref(false)
 const products = ref([])
 const page = reactive({ current: 1, size: 10 })
 // 筛选条件集中在一处，导出时原样带上，避免「屏幕 3 条、CSV 30 条」
-const filter = reactive({ keyword: '', status: '', result: '', productId: undefined, inspector: '', range: null })
+const filter = reactive({ keyword: '', status: '', result: '', productId: undefined, inspector: '', range: null, standardId: undefined })
 
 const reviewVisible = ref(false)
 const target = ref({})
@@ -181,7 +193,11 @@ function queryParams() {
     keyword: filter.keyword.trim() || undefined,
     inspector: filter.inspector.trim() || undefined,
     from: from || undefined,
-    to: to || undefined
+    to: to || undefined,
+    // 从标准页「查看这批单」跳过来时带的版本筛选。界面上没有对应的下拉，
+    // 所以必须有一条可见的提示条告诉人「列表被削过」——看不见的筛选条件
+    // 是最容易把人搞晕的东西：行数对不上时会先怀疑系统丢了数据
+    standardId: filter.standardId ?? undefined
   }
 }
 
@@ -204,7 +220,7 @@ function reload() {
 }
 
 function resetFilters() {
-  Object.assign(filter, { keyword: '', status: '', result: '', productId: undefined, inspector: '', range: null })
+  Object.assign(filter, { keyword: '', status: '', result: '', productId: undefined, inspector: '', range: null, standardId: undefined })
   reload()
 }
 
@@ -245,7 +261,19 @@ async function loadProducts() {
   products.value = await http.get('/products')
 }
 
+/** 关掉提示条 = 不再按标准版本过滤，否则会出现「提示没了但数据还是被削过的」 */
+function clearStandardFilter() {
+  filter.standardId = undefined
+  reload()
+}
+
 onMounted(() => {
+  // 从标准页「查看这批单」跳过来时带着版本 id。URL 是这个筛选条件的唯一来源，
+  // 所以刷新页面、分享链接都能复现同一份列表
+  const std = Number(route.query.standardId)
+  if (std) {
+    filter.standardId = std
+  }
   loadProducts()
   load()
 })

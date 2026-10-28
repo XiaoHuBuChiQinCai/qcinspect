@@ -174,6 +174,7 @@ Base URL：`http://localhost:8080/api`
 | POST | `/standards/{id}/publish` | 以该版本为模板创建下一版**草稿**（改完再 activate 生效） |
 | POST | `/standards/{id}/activate` | 启用草稿版本（同产品旧 ACTIVE 自动置 OBSOLETE） |
 | GET | `/standards/{id}/diff` | 与上一版的判定口径差异，`against` 可指定对比版本 |
+| GET | `/standards/stale-usage` | 已作废但仍挂着判定单的版本，`productId` 可选（省略即全库） |
 
 `GET /standards/{id}/diff` 响应（质量问题追溯时的第一眼：这一版是不是放宽了）：
 
@@ -223,6 +224,46 @@ Base URL：`http://localhost:8080/api`
   「全检改抽检反而更严」的荒谬结论，所以只在两边都是 SAMPLE 时才比
 - **BigDecimal 用 `compareTo`**：`equals` 会把 12.0 和 12.00 判成不同，
   从 Excel 粘进来的限值小数位从来不统一，那样会造出一堆假差异把真差异淹掉
+
+`GET /standards/stale-usage?productId=` —— **已作废、但仍挂着判定单的版本**（`productId` 可省略，省略即全库）：
+
+```json
+{
+  "rows": [
+    { "product_code": "P-FLANGE", "product_name": "法兰盘",
+      "standard_id": 3, "standard_code": "S-FLANGE-01",
+      "version": 1, "status": "OBSOLETE", "effective_from": "2026-09-01",
+      "current_version": 2,
+      "inspection_count": 12, "pass_count": 10, "fail_count": 2,
+      "last_used_date": "2026-10-20" }
+  ],
+  "versionCount": 1,
+  "inspectionCount": 12,
+  "failCount": 2,
+  "withoutStandard": 3,
+  "note": "有 12 张已判定单据是按已作废的标准版本下的结论，其中 2 张判为不合格——标准若在作废前收紧过，这批判定值得复核"
+}
+```
+
+改版本身不会回头处理旧单：旧版判过的结论留在库里，它们建立在当时的口径上。
+这个接口回答的就是「有多少结论已经站在一个不作数的标准上」，以及它们判成了什么。
+
+口径四条：
+
+- **只算 `SUBMITTED` / `CLOSED`**：草稿还没定论，不该算「按旧版判的」
+- **只算关联得上的**（`qc_inspection.standard_id = qc_standard.id`）：早期数据只存了版本号
+  没存 id，关联不上就不硬凑。这部分由 `withoutStandard` 单独报总数——
+  只说「能查出来的这些」，会让人以为旧版单就这么点
+- **`HAVING count > 0`**：从没开过单的作废版本不占版面
+- **`current_version` 取该产品当前 `ACTIVE` 版**，同产品只有一个 ACTIVE
+  （唯一索引 `uk_standard_active`），不会把单据行数放大
+
+`note` 分三种情况说：没有旧版单 / 有旧版单且含不合格 / 有旧版单但全是合格。
+**不能合成一句「未发现」**——「没有旧版单」和「有旧版单但一张都关联不上」是两件事，
+混在一起会让后者永远没人去处理。
+
+点进明细走 `GET /inspections/page?standardId=`（按版本筛检验单，导出走同一个
+`InspectionQuery`，屏幕几行导出的就是几行）。
 
 **标准（固定抽样）**
 ```json

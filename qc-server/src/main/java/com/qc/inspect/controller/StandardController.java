@@ -89,6 +89,18 @@ public class StandardController {
         return R.ok(standardService.diff(id, against));
     }
 
+    /**
+     * 已作废、但仍挂着判定单的标准版本。
+     *
+     * <p>改版后质量管理要复查的就是这批单。只读，登录即可——
+     * 检验员看到这个提示是有用的（他知道自己某张单是旧口径下的），
+     * 不含任何人事信息，没有隐藏的必要。
+     */
+    @GetMapping("/stale-usage")
+    public R<Map<String, Object>> staleUsage(@RequestParam(required = false) Long productId) {
+        return R.ok(standardService.staleUsage(productId));
+    }
+
     /** 新建草稿标准 */
     @PostMapping
     @PreAuthorize("hasRole('ADMIN')")

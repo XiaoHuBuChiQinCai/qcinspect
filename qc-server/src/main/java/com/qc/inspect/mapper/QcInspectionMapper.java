@@ -156,4 +156,72 @@ public interface QcInspectionMapper extends BaseMapper<QcInspection> {
             ORDER BY cnt DESC
             """)
     List<Map<String, Object>> statDefect();
+
+    /**
+     * 已经被作废、但还挂着判定单的标准版本。
+     *
+     * <p>改版不是「改完就没事了」：旧版判过的单还躺在库里，它们的结论是按旧口径下的。
+     * 质量管理要复查「哪些结论建立在一个已经不作数的标准上」，此前只能一张张点开看。
+     *
+     * <p>三个口径：
+     * <ul>
+     *   <li>只算 {@code SUBMITTED}/{@code CLOSED}：草稿还没定论，不该算「按旧版判的」</li>
+     *   <li>只算 {@code standard_id} 对得上的：早期数据只存了版本号没存 id，
+     *       关联不上就不硬凑——那部分单独由 {@link #countWithoutStandard} 报出总数，
+     *       免得让人以为「旧版单就这么多」</li>
+     *   <li>{@code HAVING count(i.id) > 0}：从没开过单的作废版本不占版面</li>
+     * </ul>
+     *
+     * <p>LEFT JOIN 当前生效版本取 {@code current_version}：同产品只有一个 ACTIVE
+     * （唯一索引 {@code uk_standard_active} 保证），不会把单据行数放大。
+     */
+    @Select("""
+            <script>
+            SELECT s.product_id,
+                   p.product_code,
+                   p.product_name,
+                   s.id            AS standard_id,
+                   s.standard_code,
+                   s.version,
+                   s.status,
+                   to_char(s.effective_from, 'YYYY-MM-DD') AS effective_from,
+                   cur.version     AS current_version,
+                   count(i.id)     AS inspection_count,
+                   count(i.id) FILTER (WHERE i.result = 'PASS') AS pass_count,
+                   count(i.id) FILTER (WHERE i.result = 'FAIL') AS fail_count,
+                   to_char(max(coalesce(i.inspected_at, i.created_at)) AT TIME ZONE 'Asia/Shanghai',
+                           'YYYY-MM-DD') AS last_used_date
+            FROM qc_standard s
+            JOIN qc_product p ON p.id = s.product_id
+            LEFT JOIN qc_standard cur
+                   ON cur.product_id = s.product_id AND cur.status = 'ACTIVE' AND cur.del_flag = 0
+            LEFT JOIN qc_inspection i
+                   ON i.standard_id = s.id
+                  AND i.del_flag = 0
+                  AND i.status IN ('SUBMITTED', 'CLOSED')
+            WHERE s.del_flag = 0
+              AND s.status &lt;&gt; 'ACTIVE'
+              <if test="productId != null">AND s.product_id = #{productId}</if>
+            GROUP BY s.id, s.product_id, p.product_code, p.product_name,
+                     s.standard_code, s.version, s.status, s.effective_from, cur.version
+            HAVING count(i.id) &gt; 0
+            ORDER BY count(i.id) DESC, s.product_id, s.version DESC
+            </script>
+            """)
+    List<Map<String, Object>> staleStandardUsage(@Param("productId") Long productId);
+
+    /**
+     * 早期数据只记了版本号、没记 standardId 的已判定单数。
+     *
+     * <p>单独报这个数是为了把话说全：旧版标准下有多少单能查出来，
+     * 还有多少单压根关联不上——只说前者会让人以为「就这些了」。
+     */
+    @Select("""
+            SELECT count(*)
+            FROM qc_inspection
+            WHERE del_flag = 0
+              AND status IN ('SUBMITTED', 'CLOSED')
+              AND standard_id IS NULL
+            """)
+    long countWithoutStandard();
 }

@@ -1672,9 +1672,99 @@ class InspectionFlowIT {
         assertThat(dec(rows(d2).get(0).get("maxValue"))).isEqualByComparingTo("12.20");
     }
 
+    @Test
+    @Order(30)
+    @DisplayName("旧版标准单据汇总：作废版本还挂着几张判定单、判成了什么，点进去能看明细")
+    void staleStandardUsage() {
+        QcProduct p = new QcProduct();
+        p.setProductCode("IT-STALE");
+        p.setProductName("旧版标准复查件");
+        p.setUnit("件");
+        productMapper.insert(p);
+        Long productId = p.getId();
+
+        // ---- 先有一张「没有旧版单」的状态：此时不能报出任何旧版单据 ----
+        assertThat(asList(data(get("/api/standards/stale-usage?productId=" + productId))
+                .get("rows"))).as("还没开过单，没有旧版单可报").isEmpty();
+
+        Long v1 = num(data(post("/api/standards", Map.of(
+                "productId", productId, "standardCode", "S-IT-STALE",
+                "samplingType", "FULL", "sampleSize", 1, "allowedNgCount", 0))).get("id"));
+        assertThat(num(post("/api/standards/" + v1 + "/items",
+                List.of(diffItem("11.95", "12.05"))).get("code"))).isZero();
+        assertThat(num(post("/api/standards/" + v1 + "/activate", Map.of()).get("code"))).isZero();
+
+        // 旧版下判两张：一张合格、一张不合格——汇总要能分开数
+        Long idPass = num(data(post("/api/inspections",
+                Map.of("batchId", ctxBatch("IT-STALE-B1", productId)))).get("inspectionId"));
+        data(post("/api/inspections/" + idPass + "/submit",
+                Map.of("lines", fillCompliant(detail(idPass)))));
+        Long idFail = num(data(post("/api/inspections",
+                Map.of("batchId", ctxBatch("IT-STALE-B2", productId)))).get("inspectionId"));
+        data(post("/api/inspections/" + idFail + "/submit",
+                Map.of("lines", fillViolating(detail(idFail)))));
+
+        assertThat(asMap(detail(idFail).get("inspection")).get("result")).isEqualTo("FAIL");
+
+        // ---- 改版并生效：v1 变 OBSOLETE，v2 上限收紧 ----
+        Long v2 = num(data(post("/api/standards/" + v1 + "/publish", Map.of())).get("id"));
+        assertThat(num(post("/api/standards/" + v2 + "/items",
+                List.of(diffItem("11.95", "11.99"))).get("code"))).isZero();
+        assertThat(num(post("/api/standards/" + v2 + "/activate", Map.of()).get("code"))).isZero();
+
+        // 新版下再判一张合格的：它是现行版本，不该出现在「旧版」清单里
+        Long idNew = num(data(post("/api/inspections",
+                Map.of("batchId", ctxBatch("IT-STALE-B3", productId)))).get("inspectionId"));
+        data(post("/api/inspections/" + idNew + "/submit",
+                Map.of("lines", fillCompliant(detail(idNew)))));
+
+        Map<String, Object> usage = data(get("/api/standards/stale-usage?productId=" + productId));
+        List<Map<String, Object>> rows = asList(usage.get("rows"));
+
+        assertThat(rows).as("只有作废的 v1 该出现，现行版和没开单的草稿都不算").hasSize(1);
+        Map<String, Object> row = rows.get(0);
+        assertThat(num(row.get("standard_id"))).isEqualTo(v1);
+        assertThat(num(row.get("version"))).isEqualTo(1L);
+        assertThat(String.valueOf(row.get("status"))).isEqualTo("OBSOLETE");
+        assertThat(num(row.get("current_version"))).as("要说得出现行是第几版").isEqualTo(2L);
+        assertThat(num(row.get("inspection_count"))).as("v1 下判过 2 张").isEqualTo(2L);
+        assertThat(num(row.get("pass_count"))).isEqualTo(1L);
+        assertThat(num(row.get("fail_count"))).isEqualTo(1L);
+        assertThat(String.valueOf(row.get("product_name"))).isEqualTo("旧版标准复查件");
+        assertThat(String.valueOf(row.get("last_used_date")))
+                .as("要能看出这批旧版单判到哪一天").matches("\\d{4}-\\d{2}-\\d{2}");
+
+        assertThat(num(usage.get("versionCount"))).isEqualTo(1L);
+        assertThat(num(usage.get("inspectionCount"))).as("总数按行求和，不能让前端自己算").isEqualTo(2L);
+        assertThat(num(usage.get("failCount"))).isEqualTo(1L);
+        assertThat(String.valueOf(usage.get("note")))
+                .as("有不合格的单时要提醒复核，而不是只报个数").contains("不合格");
+        assertThat(usage.get("withoutStandard")).as("关联不上的早期单也要报出来，不能只说查得到的")
+                .isNotNull();
+
+        // ---- 点进来看明细：按标准版本筛检验单 ----
+        List<Map<String, Object>> oldRows = asList(
+                data(get("/api/inspections/page?current=1&size=50&standardId=" + v1)).get("records"));
+        assertThat(oldRows).as("v1 下就是那两张，含判 FAIL 的").hasSize(2);
+        assertThat(oldRows).extracting(r -> String.valueOf(r.get("result")))
+                .containsExactlyInAnyOrder("PASS", "FAIL");
+
+        List<Map<String, Object>> newRows = asList(
+                data(get("/api/inspections/page?current=1&size=50&standardId=" + v2)).get("records"));
+        assertThat(newRows).as("v2 下只有新判的那一张").hasSize(1);
+
+        // 不带标准条件时是全部三张——筛选是真在过滤，不是恒真
+        assertThat(asList(data(get("/api/inspections/page?current=1&size=50&productId=" + productId))
+                .get("records"))).hasSize(3);
+
+        // ---- 不带 productId 时是全库视角，本产品的行照样在里面 ----
+        List<Map<String, Object>> all = asList(data(get("/api/standards/stale-usage")).get("rows"));
+        assertThat(all).extracting(r -> String.valueOf(r.get("product_code")))
+                .contains("IT-STALE");
+    }
+
     /** 标准上下文用例的批次夹具：指定产品，一件，待检 */
-    private Long ctxBatch(String batchNo, Long productId) {
-        QcBatch b = new QcBatch();
+    private Long ctxBatch(String batchNo, Long productId) {        QcBatch b = new QcBatch();
         b.setBatchNo(batchNo);
         b.setProductId(productId);
         b.setInspectType("IQC");

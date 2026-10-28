@@ -6,6 +6,7 @@ import com.qc.inspect.entity.QcItem;
 import com.qc.inspect.entity.QcStandard;
 import com.qc.inspect.entity.QcStandardItem;
 import com.qc.inspect.judge.EnumOption;
+import com.qc.inspect.mapper.QcInspectionMapper;
 import com.qc.inspect.mapper.QcItemMapper;
 import com.qc.inspect.mapper.QcStandardItemMapper;
 import com.qc.inspect.mapper.QcStandardMapper;
@@ -41,6 +42,7 @@ public class StandardService {
     private final QcStandardItemMapper standardItemMapper;
     private final QcItemMapper itemMapper;
     private final SamplingPlanService samplingPlanService;
+    private final QcInspectionMapper inspectionMapper;
     private final ObjectMapper objectMapper;
 
     // ==================== 草稿维护 ====================
@@ -540,6 +542,64 @@ public class StandardService {
         m.put("createdAt", s.getCreatedAt());
         m.put("remark", s.getRemark());
         return m;
+    }
+
+    /**
+     * 已作废、但仍挂着判定单的标准版本汇总。
+     *
+     * <p>改版本身不会回头处理旧单——旧版判过的结论留在库里，它们建立在当时的口径上。
+     * 这里回答的是「有多少结论已经站在一个不作数的标准上」，以及它们判成了什么。
+     *
+     * <p>为什么不复用检验单列表逐条查：那要先把该产品的所有单捞出来、再逐条比对版本，
+     * 一页十条的列表翻一年也看不完总数。汇总一次算清楚，点进去才是明细。
+     */
+    public Map<String, Object> staleUsage(Long productId) {
+        List<Map<String, Object>> rows = inspectionMapper.staleStandardUsage(productId);
+
+        long inspections = 0;
+        long fails = 0;
+        for (Map<String, Object> r : rows) {
+            inspections += asLong(r.get("inspection_count"));
+            fails += asLong(r.get("fail_count"));
+        }
+        // 早期数据只记了版本号没记 id，关联不上。报出来是为了把话说全：
+        // 只说「能查出来的这些」，会让人以为旧版单就这么点
+        long withoutStandard = inspectionMapper.countWithoutStandard();
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("rows", rows);
+        m.put("versionCount", rows.size());
+        m.put("inspectionCount", inspections);
+        m.put("failCount", fails);
+        m.put("withoutStandard", withoutStandard);
+        m.put("note", staleNote(rows.isEmpty(), inspections, fails, withoutStandard));
+        return m;
+    }
+
+    /**
+     * 一句话结论。三种情况分开说，不能合成一句——
+     * 「没有旧版单」和「有旧版单但一张都关联不上」是完全不同的两件事，
+     * 混成一句「未发现」会让后者永远没人去处理。
+     */
+    private static String staleNote(boolean noRows, long inspections, long fails, long withoutStandard) {
+        if (noRows) {
+            if (withoutStandard > 0) {
+                return "没有能关联到具体标准版本的旧版单据，但有 " + withoutStandard
+                        + " 张已判定单据未记录标准版本（早期数据），无法逐一核对";
+            }
+            return "所有已判定单据都按各自产品的现行标准判定，没有需要复查的旧版结论";
+        }
+        String s = "有 " + inspections + " 张已判定单据是按已作废的标准版本下的结论";
+        if (fails > 0) {
+            s += "，其中 " + fails + " 张判为不合格——标准若在作废前收紧过，这批判定值得复核";
+        } else {
+            s += "，全部判为合格——标准若在作废前放宽过，这批放行值得复核";
+        }
+        return s;
+    }
+
+    private static long asLong(Object v) {
+        return v instanceof Number n ? n.longValue() : 0L;
     }
 
     /**

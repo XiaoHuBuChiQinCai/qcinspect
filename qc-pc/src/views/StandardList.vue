@@ -9,6 +9,52 @@
       <el-button type="primary" :disabled="!productId" @click="createDraft">新建标准</el-button>
     </div>
 
+    <!-- 改版遗留：旧版判过的单还躺在库里，它们的结论建立在一个已经不作数的口径上。
+         只在真有时才出现——常态下没有，那它就不该常驻占位（常驻的空提示会被当装饰品） -->
+    <el-alert v-if="stale.rows.length" type="warning" :closable="false" class="stale">
+      <template #title>
+        <div class="stale-head">
+          <span>
+            {{ stale.versionCount }} 个已作废版本下还有
+            <strong>{{ stale.inspectionCount }}</strong> 张已判定单据
+            <span class="muted">（其中 {{ stale.failCount }} 张不合格）</span>
+          </span>
+          <el-button link type="primary" size="small" @click="staleOpen = !staleOpen">
+            {{ staleOpen ? '收起' : '展开明细' }}
+          </el-button>
+        </div>
+      </template>
+      <div class="stale-note">{{ stale.note }}</div>
+      <el-table v-if="staleOpen" :data="stale.rows" size="small" class="stale-table">
+        <el-table-column label="版本" width="70">
+          <template #default="{ row }">v{{ row.version }}</template>
+        </el-table-column>
+        <el-table-column label="现行版本" width="90">
+          <template #default="{ row }">{{ row.current_version ? `v${row.current_version}` : '无' }}</template>
+        </el-table-column>
+        <el-table-column label="判定单" width="80">
+          <template #default="{ row }">{{ row.inspection_count }} 张</template>
+        </el-table-column>
+        <el-table-column label="合格 / 不合格" width="120">
+          <template #default="{ row }">
+            <span class="ok">{{ row.pass_count }}</span>
+            <span class="muted"> / </span>
+            <span :class="row.fail_count > 0 ? 'ng' : ''">{{ row.fail_count }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最后判定" width="110">
+          <template #default="{ row }">{{ row.last_used_date || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="操作">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openStaleInspections(row)">
+              查看这批单
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-alert>
+
     <el-table :data="rows" v-loading="loading">
       <el-table-column label="标准编号" width="180">
         <template #default="{ row }">{{ row.standard.standardCode }}</template>
@@ -21,6 +67,11 @@
           <el-tag :type="{ ACTIVE: 'success', DRAFT: 'info', OBSOLETE: 'danger' }[row.standard.status]" size="small">
             {{ { ACTIVE: '生效中', DRAFT: '草稿', OBSOLETE: '已作废' }[row.standard.status] }}
           </el-tag>
+          <!-- 作废不等于没事了：这一版判过的单还在。数字直接标在版本上，
+               不用再点进提示条才知道「这版还牵扯多少单」 -->
+          <div v-if="staleOf(row.standard.id)" class="stale-tag">
+            {{ staleOf(row.standard.id) }} 张单按此版判定
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="抽样方式" width="120">
@@ -110,7 +161,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
@@ -122,6 +173,25 @@ const products = ref([])
 const productId = ref(null)
 const rows = ref([])
 const loading = ref(false)
+
+// 改版遗留：已作废版本下还挂着的判定单。三处会用到（顶部提示、状态列数字、明细表），
+// 所以只在这里存一份
+const stale = ref({ rows: [], versionCount: 0, inspectionCount: 0, failCount: 0, withoutStandard: 0, note: '' })
+const staleOpen = ref(false)
+
+const staleMap = computed(() => {
+  const m = {}
+  for (const r of stale.value.rows) {
+    m[r.standard_id] = r.inspection_count
+  }
+  return m
+})
+const staleOf = id => staleMap.value[id] || 0
+
+function openStaleInspections(row) {
+  // 带上版本号只为在列表页显示一句「仅看 v2」的提示，真正的过滤靠 standardId
+  router.push({ path: '/inspections', query: { standardId: row.standard_id, standardVersion: row.version } })
+}
 
 function samplingText(std) {
   // AQL 模式下样本量和 Ac 都是批量算出来的，列表上写具体件数会误导
@@ -148,7 +218,21 @@ async function load() {
   }
   loading.value = true
   try {
-    rows.value = await http.get('/standards', { params: { productId: productId.value } })
+    // 两个请求一起发：旧版单据的提示和版本列表是同一屏里的东西，
+    // 分两次加载会出现「先看到一个没有提示的标准列表，半秒后蹦出一条黄色告警」
+    const [list, usage] = await Promise.all([
+      http.get('/standards', { params: { productId: productId.value } }),
+      // 带上 productId：这一页看的是一个产品，别的产品的旧版单不该混进来。
+      // 查询失败不能让整页打不开——提示条是附加信息，没有它照样能改标准
+      http.get('/standards/stale-usage', { params: { productId: productId.value } })
+        .catch(() => ({ rows: [], versionCount: 0, inspectionCount: 0, failCount: 0, note: '' }))
+    ])
+    rows.value = list
+    stale.value = usage
+    // 没有旧版单时把展开状态也复位，否则下次真有数据时会莫名地自己展开
+    if (!usage.rows?.length) {
+      staleOpen.value = false
+    }
   } finally {
     loading.value = false
   }
@@ -242,6 +326,13 @@ onMounted(async () => {
 .bar { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; }
 .spacer { flex: 1; }
 .tip { margin-top: 16px; }
+.stale { margin-bottom: 14px; }
+.stale-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.stale-note { font-size: 13px; line-height: 1.6; margin: 6px 0 10px; }
+.stale-table { margin-top: 4px; }
+.stale-tag { margin-top: 4px; font-size: 12px; color: var(--el-color-warning); }
+.ok { color: var(--el-color-success); }
+.ng { color: var(--el-color-danger); font-weight: 600; }
 .diff-loading { padding: 24px; text-align: center; color: var(--el-text-color-secondary); }
 .diff-head { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
 .diff-advice { font-size: 13px; line-height: 1.6; color: var(--el-text-color-regular); flex: 1; }

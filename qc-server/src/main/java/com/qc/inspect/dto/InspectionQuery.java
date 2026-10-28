@@ -21,7 +21,7 @@ import com.qc.inspect.entity.QcInspection;
  */
 public record InspectionQuery(String status, Long batchId, Long productId,
                               String keyword, String inspector, String result,
-                              String from, String to) {
+                              String from, String to, Long standardId) {
 
     public LambdaQueryWrapper<QcInspection> toWrapper() {
         String kw = blankToNull(keyword);
@@ -33,6 +33,9 @@ public record InspectionQuery(String status, Long batchId, Long productId,
                 .eq(batchId != null, QcInspection::getBatchId, batchId)
                 .eq(productId != null, QcInspection::getProductId, productId)
                 .eq(!isBlank(result), QcInspection::getResult, result)
+                // 按标准版本捞单：改版后复查「哪些结论是按已经作废的那版判的」，
+                // 从标准列表点进来时带的就是这个 id
+                .eq(standardId != null, QcInspection::getStandardId, standardId)
                 .like(!isBlank(inspector), QcInspection::getInspectorName, inspector)
                 .and(kw != null, w -> w
                         .like(QcInspection::getInspectionNo, kw)

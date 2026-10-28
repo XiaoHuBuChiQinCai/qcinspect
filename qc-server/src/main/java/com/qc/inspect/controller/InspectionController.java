@@ -129,10 +129,11 @@ public class InspectionController {
                                       @RequestParam(required = false) String inspector,
                                       @RequestParam(required = false) String result,
                                       @RequestParam(required = false) String from,
-                                      @RequestParam(required = false) String to) {
+                                      @RequestParam(required = false) String to,
+                                      @RequestParam(required = false) Long standardId) {
         Page<QcInspection> page = new Page<>(current, size);
         InspectionQuery query = new InspectionQuery(status, batchId, productId,
-                keyword, inspector, result, from, to);
+                keyword, inspector, result, from, to, standardId);
         inspectionMapper.selectPage(page, query.toWrapper().orderByDesc(QcInspection::getId));
         viewService.fill(page.getRecords());
         return R.ok(page);

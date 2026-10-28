@@ -40,9 +40,10 @@ public class ExportController {
                                               @RequestParam(required = false) String inspector,
                                               @RequestParam(required = false) String result,
                                               @RequestParam(required = false) String from,
-                                              @RequestParam(required = false) String to) {
+                                              @RequestParam(required = false) String to,
+                                              @RequestParam(required = false) Long standardId) {
         return csv(exportService.inspectionLedger(
-                new InspectionQuery(status, null, productId, keyword, inspector, result, from, to)),
+                new InspectionQuery(status, null, productId, keyword, inspector, result, from, to, standardId)),
                 "inspections");
     }
 
