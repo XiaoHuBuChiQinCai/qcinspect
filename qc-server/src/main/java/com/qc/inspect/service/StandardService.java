@@ -614,6 +614,12 @@ public class StandardService {
      *
      * <p>一次 IN 查询取齐，不按版本逐条查：工作台全库视角下可能有几十个作废版本，
      * 逐条查就是几十个来回。这里的量级不大但也没必要每家都敲一遍数据库。
+     *
+     * <p>整段包在 try 里：复核记录是<strong>辅助信息</strong>（「查过没有」），
+     * 而它挂在 stale-usage 上，又被工作台的 {@code Promise.all} 依赖——
+     * 这里抛出去就是整页首页白屏。真实会踩的场景是新环境漏跑 V14，
+     * 表不存在 → 一个辅助字段把主功能拖死。降级成「一律显示未复核」+ warn 日志，
+     * 人看到「12 个作废版本全部未复核」时会自己去翻记录，比首页打不开好排查得多。
      */
     private long attachReviews(List<Map<String, Object>> rows) {
         if (rows.isEmpty()) {
@@ -627,10 +633,15 @@ public class StandardService {
         }
         Map<Long, Map<String, Object>> index = new LinkedHashMap<>();
         if (!ids.isEmpty()) {
-            for (Map<String, Object> rv : staleReviewMapper.lastReviewsOf(ids)) {
-                if (rv.get("standard_id") instanceof Number n) {
-                    index.put(n.longValue(), rv);
+            try {
+                for (Map<String, Object> rv : staleReviewMapper.lastReviewsOf(ids)) {
+                    if (rv.get("standard_id") instanceof Number n) {
+                        index.put(n.longValue(), rv);
+                    }
                 }
+            } catch (RuntimeException e) {
+                log.warn("复核记录读不出来，本次按「全部未复核」展示（V14 跑过了吗？）", e);
+                index.clear();
             }
         }
         long reviewed = 0;
