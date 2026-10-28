@@ -20,6 +20,7 @@
             <span class="muted">（其中 {{ stale.failCount }} 张不合格）</span>
             <el-tag v-if="stale.riskText" :type="riskTagType(stale.riskLevel)" size="small"
                     effect="dark" class="stale-risk">{{ stale.riskText }}</el-tag>
+            <span class="muted">已复核 {{ stale.reviewedCount || 0 }}/{{ stale.versionCount }}</span>
           </span>
           <el-button link type="primary" size="small" @click="staleOpen = !staleOpen">
             {{ staleOpen ? '收起' : '展开明细' }}
@@ -55,13 +56,28 @@
             </el-tooltip>
           </template>
         </el-table-column>
+        <!-- 查没查过：审核问的就是这一句 -->
+        <el-table-column label="复核" width="145">
+          <template #default="{ row }">
+            <template v-if="row.reviewed">
+              <el-tag :type="row.review_verdict === 'KEPT' ? 'success' : 'warning'" size="small">
+                {{ row.review_verdict_text }}
+              </el-tag>
+              <div class="stale-tag">{{ row.review_reviewer }} {{ row.review_at }}</div>
+            </template>
+            <el-tag v-else type="info" size="small" effect="plain">未复核</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="最后判定" width="110">
           <template #default="{ row }">{{ row.last_used_date || '—' }}</template>
         </el-table-column>
-        <el-table-column label="操作">
+        <el-table-column label="操作" width="185">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openStaleInspections(row)">
               查看这批单
+            </el-button>
+            <el-button link type="primary" size="small" @click="openStaleReview(row)">
+              记录复核
             </el-button>
           </template>
         </el-table-column>
@@ -164,6 +180,8 @@
       </template>
     </el-dialog>
 
+    <StaleReviewDialog v-model="staleReviewVisible" :row="staleReviewTarget" @done="load" />
+
     <el-alert type="info" :closable="false" class="tip">
       标准不会被原地修改。改版 = 以现有版本为模板创建下一版<strong>草稿</strong> →
       改完检验项后点「保存并生效」→ 旧版本自动置为「已作废」。
@@ -178,6 +196,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
+import StaleReviewDialog from '../components/StaleReviewDialog.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -191,9 +210,18 @@ const loading = ref(false)
 // 所以只在这里存一份
 const stale = ref({
   rows: [], versionCount: 0, inspectionCount: 0, failCount: 0,
-  withoutStandard: 0, note: '', riskLevel: null, riskText: null
+  withoutStandard: 0, note: '', riskLevel: null, riskText: null,
+  reviewedCount: 0, unreviewedCount: 0
 })
 const staleOpen = ref(false)
+/** 复核弹窗：查过要留痕，否则审核时永远答不出「发现之后做了什么」 */
+const staleReviewVisible = ref(false)
+const staleReviewTarget = ref({})
+
+function openStaleReview(row) {
+  staleReviewTarget.value = row
+  staleReviewVisible.value = true
+}
 
 /** 提示条的红色是有代价的：只有「收紧后仍放行」这一种才配用红 */
 const staleAlertType = computed(

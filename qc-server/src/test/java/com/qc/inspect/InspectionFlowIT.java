@@ -1775,6 +1775,106 @@ class InspectionFlowIT {
                 .contains("IT-STALE");
     }
 
+    @Test
+    @Order(31)
+    @DisplayName("改版遗留复核：查过要留痕，否则「发现旧版放行风险」永远是条未闭环项")
+    void staleReview() {
+        QcProduct p = new QcProduct();
+        p.setProductCode("IT-REVIEW");
+        p.setProductName("旧版复核件");
+        p.setUnit("件");
+        productMapper.insert(p);
+        Long productId = p.getId();
+
+        Long v1 = num(data(post("/api/standards", Map.of(
+                "productId", productId, "standardCode", "S-IT-REVIEW",
+                "samplingType", "FULL", "sampleSize", 1, "allowedNgCount", 0))).get("id"));
+        assertThat(num(post("/api/standards/" + v1 + "/items",
+                List.of(diffItem("11.95", "12.05"))).get("code"))).isZero();
+        assertThat(num(post("/api/standards/" + v1 + "/activate", Map.of()).get("code"))).isZero();
+
+        // v1 下判一张合格的：收紧之后，这一张就是「按旧口径放行」的那个
+        Long insId = num(data(post("/api/inspections",
+                Map.of("batchId", ctxBatch("IT-REVIEW-B1", productId)))).get("inspectionId"));
+        data(post("/api/inspections/" + insId + "/submit", Map.of("lines", fillCompliant(detail(insId)))));
+
+        Long v2 = num(data(post("/api/standards/" + v1 + "/publish", Map.of())).get("id"));
+        assertThat(num(post("/api/standards/" + v2 + "/items",
+                List.of(diffItem("11.95", "11.99"))).get("code"))).isZero();
+        assertThat(num(post("/api/standards/" + v2 + "/activate", Map.of()).get("code"))).isZero();
+
+        // ---- 复核之前：清单上有它，并且明确标着「没查过」----
+        Map<String, Object> before = data(get("/api/standards/stale-usage?productId=" + productId));
+        Map<String, Object> row = asList(before.get("rows")).get(0);
+        assertThat(row.get("reviewed")).as("没复核过要给明确的 false，不能靠字段缺失来表达")
+                .isEqualTo(false);
+        assertThat(num(before.get("reviewedCount"))).isZero();
+        assertThat(num(before.get("unreviewedCount"))).as("剩下的没查数量要能直接说出口")
+                .isEqualTo(1L);
+
+        // ---- 校验：结论、理由、对象，三样错一样都不能收 ----
+        assertThat(num(post("/api/standards/" + v1 + "/review",
+                Map.of("verdict", "OK", "remark", "查过了没问题")).get("code")))
+                .as("只认两种结论，含糊的「已阅」等于没记").isNotZero();
+        assertThat(num(post("/api/standards/" + v1 + "/review",
+                Map.of("verdict", "KEPT", "remark", "查了")).get("code")))
+                .as("理由太短，写不出查了什么凭什么").isNotZero();
+        assertThat(num(post("/api/standards/" + v2 + "/review",
+                Map.of("verdict", "KEPT", "remark", "在现行版本上盖章没有意义")).get("code")))
+                .as("现行生效版本不该出现在复核名单里").isNotZero();
+
+        // ---- 正常提交：快照必须和清单上算的一致 ----
+        Map<String, Object> created = data(post("/api/standards/" + v1 + "/review",
+                Map.of("verdict", "KEPT", "remark", "抽查这一批唯一的合格单，关键尺寸在公差内，维持原判")));
+        assertThat(created.get("verdictText")).isEqualTo("维持原判");
+        assertThat(num(created.get("inspectionCount"))).as("快照单数要等于清单上的单数")
+                .isEqualTo(1L);
+        assertThat(String.valueOf(created.get("riskLevel"))).as("风险档也当场快照")
+                .isEqualTo("HIGH");
+        assertThat(String.valueOf(created.get("productName"))).as("产品名快照，改名后记录还能自解释")
+                .isEqualTo("旧版复核件");
+
+        // ---- 回填：清单立刻能看出查过了、谁查的、什么时候 ----
+        Map<String, Object> after = data(get("/api/standards/stale-usage?productId=" + productId));
+        Map<String, Object> row2 = asList(after.get("rows")).get(0);
+        assertThat(row2.get("reviewed")).isEqualTo(true);
+        assertThat(String.valueOf(row2.get("review_verdict_text"))).isEqualTo("维持原判");
+        // 存的是展示名（UserContext.username() 给的就是 displayName），跟 createdBy 一脉相承：
+        // 记录是给人看的证据，用户停用后 ID 查不出名字
+        assertThat(String.valueOf(row2.get("review_reviewer"))).isEqualTo("系统管理员");
+        assertThat(String.valueOf(row2.get("review_at")))
+                .as("要直接显示成日期时分，前端不该自己解析 ISO").matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}");
+        assertThat(num(after.get("reviewedCount"))).isEqualTo(1L);
+        assertThat(num(after.get("unreviewedCount"))).isZero();
+
+        // ---- 再复核一次：追加而不是覆盖，最新一条代表当前状态 ----
+        data(post("/api/standards/" + v1 + "/review",
+                Map.of("verdict", "ACTION", "remark", "客户投诉该批尺寸偏小，已通知返工并追溯已出货部分")));
+        List<Map<String, Object>> history = dataList("/api/standards/" + v1 + "/reviews");
+        assertThat(history).as("两次复核都要留着：覆盖掉等于抹掉「当时查过、当时判断没问题」")
+                .hasSize(2);
+        assertThat(String.valueOf(history.get(0).get("verdict"))).as("最新的排在最前")
+                .isEqualTo("ACTION");
+        assertThat(String.valueOf(history.get(0).get("verdictText"))).isEqualTo("需要处理");
+
+        Map<String, Object> row3 = asList(data(get("/api/standards/stale-usage?productId=" + productId))
+                .get("rows")).get(0);
+        assertThat(String.valueOf(row3.get("review_verdict_text"))).as("清单上跟着显示最新那条")
+                .isEqualTo("需要处理");
+
+        // ---- 权限：检验员不能给质量判定背书 ----
+        String adminToken = token;
+        token = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        try {
+            assertThat(num(post("/api/standards/" + v1 + "/review",
+                    Map.of("verdict", "KEPT", "remark", "检验员不该能提交复核")).get("code")))
+                    .as("限 ADMIN/REVIEWER").isNotZero();
+        } finally {
+            token = adminToken;
+        }
+    }
+
     /** 标准上下文用例的批次夹具：指定产品，一件，待检 */
     private Long ctxBatch(String batchNo, Long productId) {        QcBatch b = new QcBatch();
         b.setBatchNo(batchNo);

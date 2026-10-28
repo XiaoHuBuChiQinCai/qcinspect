@@ -274,6 +274,7 @@
           <div class="spacer" />
           <span class="head-meta">
             {{ stale.inspectionCount }} 张已判定单 · 其中 {{ stale.failCount }} 张不合格
+            · 已复核 {{ stale.reviewedCount || 0 }}/{{ stale.versionCount }}
           </span>
         </div>
       </template>
@@ -308,7 +309,7 @@
         </el-table-column>
         <!-- 风险就是这个功能的全部意义：同样是 10 张旧版单，
              「收紧后被放行」和「放宽后被拦下」要做的事完全不同 -->
-        <el-table-column label="风险" width="105">
+        <el-table-column label="风险" width="100">
           <template #default="{ row }">
             <el-tooltip :content="row.risk_advice" placement="top" effect="dark">
               <el-tag :type="riskTagType(row.risk)" size="small" effect="plain">
@@ -317,12 +318,22 @@
             </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column label="最后判定" width="105">
-          <template #default="{ row }">{{ row.last_used_date || '—' }}</template>
+        <!-- 查没查过比「哪天判的」更重要：审核问的就是这一句 -->
+        <el-table-column label="复核" width="150">
+          <template #default="{ row }">
+            <template v-if="row.reviewed">
+              <el-tag :type="row.review_verdict === 'KEPT' ? 'success' : 'warning'" size="small">
+                {{ row.review_verdict_text }}
+              </el-tag>
+              <div class="sub2">{{ row.review_reviewer }} {{ row.review_at }}</div>
+            </template>
+            <el-tag v-else type="info" size="small" effect="plain">未复核</el-tag>
+          </template>
         </el-table-column>
-        <el-table-column label="操作" width="105" fixed="right">
+        <el-table-column label="操作" width="175" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openStale(row)">查看这批单</el-button>
+            <el-button link type="primary" size="small" @click="openStaleReview(row)">记录复核</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -421,6 +432,7 @@
     </el-card>
 
     <ReviewDialog v-model="reviewVisible" :row="reviewTarget" @done="loadAll" />
+    <StaleReviewDialog v-model="staleReviewVisible" :row="staleReviewTarget" @done="loadAll" />
   </div>
 </template>
 
@@ -429,6 +441,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import http, { getStoredUser } from '../api/http'
 import ReviewDialog from '../components/ReviewDialog.vue'
+import StaleReviewDialog from '../components/StaleReviewDialog.vue'
 
 const router = useRouter()
 const user = getStoredUser() || {}
@@ -449,11 +462,15 @@ const backup = ref(null)
  */
 const stale = ref({
   rows: [], versionCount: 0, inspectionCount: 0, failCount: 0,
-  withoutStandard: 0, note: '', riskLevel: null, riskText: null
+  withoutStandard: 0, note: '', riskLevel: null, riskText: null,
+  reviewedCount: 0, unreviewedCount: 0
 })
 
 const reviewVisible = ref(false)
 const reviewTarget = ref({})
+/** 改版遗留的复核弹窗，跟审核弹窗分开：两者动作、权限、必填项都不一样 */
+const staleReviewVisible = ref(false)
+const staleReviewTarget = ref({})
 const pageSize = 8
 
 const canReview = computed(() => user.role === 'ADMIN' || user.role === 'REVIEWER')
@@ -611,6 +628,11 @@ function openStale(row) {
     path: '/inspections',
     query: { standardId: row.standard_id, standardVersion: row.version }
   })
+}
+
+function openStaleReview(row) {
+  staleReviewTarget.value = row
+  staleReviewVisible.value = true
 }
 
 function severityText(s) {

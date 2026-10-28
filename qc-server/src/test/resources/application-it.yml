@@ -20,6 +20,7 @@ spring:
         - classpath:db/V11__complaint.sql
         - classpath:db/V12__supplier.sql
         - classpath:db/V13__backup_log.sql
+        - classpath:db/V14__stale_review.sql
       continue-on-error: false
 
 mybatis-plus:

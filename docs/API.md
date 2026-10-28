@@ -175,6 +175,8 @@ Base URL：`http://localhost:8080/api`
 | POST | `/standards/{id}/activate` | 启用草稿版本（同产品旧 ACTIVE 自动置 OBSOLETE） |
 | GET | `/standards/{id}/diff` | 与上一版的判定口径差异，`against` 可指定对比版本 |
 | GET | `/standards/stale-usage` | 已作废但仍挂着判定单的版本，`productId` 可选（省略即全库） |
+| POST | `/standards/{id}/review` | 给一个作废版本记一次复核（ADMIN/REVIEWER），`{verdict, remark}` |
+| GET | `/standards/{id}/reviews` | 该版本的全部复核记录，最新在前 |
 
 `GET /standards/{id}/diff` 响应（质量问题追溯时的第一眼：这一版是不是放宽了）：
 
@@ -288,6 +290,56 @@ Base URL：`http://localhost:8080/api`
 
 点进明细走 `GET /inspections/page?standardId=`（按版本筛检验单，导出走同一个
 `InspectionQuery`，屏幕几行导出的就是几行）。
+
+### 改版遗留的复核记录（V14）
+
+`stale-usage` 只回答「要不要查」，答不了审核员下一句「**发现之后做了什么**」。
+没有记录，这条观察永远是一笔未闭环的不符合项。
+
+```json
+POST /standards/3/review
+{ "verdict": "KEPT", "remark": "抽查这一批唯一的合格单，关键尺寸在公差内，维持原判" }
+```
+
+响应回显快照（`inspectionCount` / `riskLevel` / `productName` 都当场从 `stale-usage` 取，
+不信任前端传值——复核记录是审计证据，里面的数字必须和系统当时算出来的一致）：
+
+```json
+{
+  "id": 7, "standardId": 3, "productId": 1, "version": 1,
+  "standardCode": "S-FLANGE-01", "productName": "法兰盘",
+  "riskLevel": "HIGH", "verdict": "KEPT", "verdictText": "维持原判",
+  "inspectionCount": 12, "reviewer": "系统管理员",
+  "reviewedAt": "2026-10-28T17:58:12"
+}
+```
+
+**校验**（三样错一样都不收）：
+
+- `verdict` 只能是 `KEPT`（维持原判）或 `ACTION`（需要处理）。**不提供「已阅」这类档**——
+  含糊的结论等于没记
+- `remark` 至少 5 个字。写不出「查了什么、凭什么」就不算复核
+- 目标的 `status` 不能是 `ACTIVE`：现行版本没有旧版结论可复核
+- 该版本必须真的挂着判定单（不在 `stale-usage` 清单里就不该被复核）
+
+**只增不改**：同一版本可以复核多轮，每次一行，不做唯一约束。
+「10 月抽查 3 张，结论维持」和「11 月客户投诉后又查一遍，这次发现两张确实超差」
+是同一次复核的不同轮次——覆盖掉等于把「当时查过、当时判断没问题」这个事实抹了。
+`GET /standards/{id}/reviews` 返回全部记录，最新在前；`stale-usage` 的行里回填的是**最新一条**：
+
+| 字段 | 说明 |
+|---|---|
+| `reviewed` | 恒有值，`false` 也要显式给出（没复核不能靠字段缺失表达） |
+| `review_verdict` / `review_verdict_text` | `KEPT`/`ACTION` 与中文 |
+| `review_reviewer` / `review_at` | 复核人展示名 + `YYYY-MM-DD HH:MM` |
+| `review_remark` | 那一次写的理由 |
+| `reviewedCount` / `unreviewedCount`（顶层） | 「12 个作废版本里已复核 3 个」 |
+
+`reviewer` 存的是**展示名**（`UserContext.username()` 给的就是 `displayName`，与 `createdBy` 一致）：
+用户停用后 ID 查不出名字，证据要能自解释。
+
+排序也跟着变：`rows` 先按 `risk_order`，同档内**未复核的排前面**，再按单数降序——
+工作台只露前 8 行，第一行必须是「最该看且还没人看过」的那行。
 
 **标准（固定抽样）**
 ```json

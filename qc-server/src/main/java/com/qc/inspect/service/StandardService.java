@@ -5,9 +5,11 @@ import com.qc.inspect.common.BizException;
 import com.qc.inspect.entity.QcItem;
 import com.qc.inspect.entity.QcStandard;
 import com.qc.inspect.entity.QcStandardItem;
+import com.qc.inspect.entity.QcStaleReview;
 import com.qc.inspect.judge.EnumOption;
 import com.qc.inspect.mapper.QcInspectionMapper;
 import com.qc.inspect.mapper.QcItemMapper;
+import com.qc.inspect.mapper.QcStaleReviewMapper;
 import com.qc.inspect.mapper.QcStandardItemMapper;
 import com.qc.inspect.mapper.QcStandardMapper;
 import com.qc.inspect.report.StaleRisk;
@@ -46,6 +48,8 @@ public class StandardService {
     private final QcItemMapper itemMapper;
     private final SamplingPlanService samplingPlanService;
     private final QcInspectionMapper inspectionMapper;
+    /** 复核记录只读回填用，注入 mapper 而不是 StaleReviewService——那个服务反过来依赖本类 */
+    private final QcStaleReviewMapper staleReviewMapper;
     private final ObjectMapper objectMapper;
 
     // ==================== 草稿维护 ====================
@@ -564,10 +568,15 @@ public class StandardService {
         for (Map<String, Object> r : rows) {
             attachRisk(r);
         }
-        // 高风险排前面。SQL 只能按单数排，而单数多不等于风险大——
-        // 工作台只露前 8 行，第一行必须是该看的那行
+        // 再补「查过没有」。没有这一层的清单只能看不能交差：
+        // 体系审核问的是「发现之后做了什么」，一个字都答不上来
+        long reviewed = attachReviews(rows);
+
+        // 高风险排前面，同档里没复核过的排前面。SQL 只能按单数排，
+        // 而单数多不等于风险大；工作台只露前 8 行，第一行必须是该看的那行
         rows.sort(java.util.Comparator
                 .comparingInt((Map<String, Object> r) -> asInt(r.get("risk_order")))
+                .thenComparing(r -> Boolean.TRUE.equals(r.get("reviewed")))
                 .thenComparing(r -> -asLong(r.get("inspection_count"))));
 
         long inspections = 0;
@@ -593,9 +602,55 @@ public class StandardService {
         m.put("riskLevel", rows.isEmpty() ? null : rows.get(0).get("risk"));
         m.put("riskText", rows.isEmpty() ? null : rows.get(0).get("risk_text"));
         m.put("withoutStandard", withoutStandard);
+        m.put("reviewedCount", reviewed);
+        m.put("unreviewedCount", rows.size() - reviewed);
         m.put("note", staleNote(rows.isEmpty(), inspections, fails, withoutStandard, tightPass,
                 rows.isEmpty() ? null : String.valueOf(rows.get(0).get("risk"))));
         return m;
+    }
+
+    /**
+     * 给每行补上最近的复核记录，返回已复核的版本数。
+     *
+     * <p>一次 IN 查询取齐，不按版本逐条查：工作台全库视角下可能有几十个作废版本，
+     * 逐条查就是几十个来回。这里的量级不大但也没必要每家都敲一遍数据库。
+     */
+    private long attachReviews(List<Map<String, Object>> rows) {
+        if (rows.isEmpty()) {
+            return 0;
+        }
+        List<Long> ids = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            if (r.get("standard_id") instanceof Number n) {
+                ids.add(n.longValue());
+            }
+        }
+        Map<Long, Map<String, Object>> index = new LinkedHashMap<>();
+        if (!ids.isEmpty()) {
+            for (Map<String, Object> rv : staleReviewMapper.lastReviewsOf(ids)) {
+                if (rv.get("standard_id") instanceof Number n) {
+                    index.put(n.longValue(), rv);
+                }
+            }
+        }
+        long reviewed = 0;
+        for (Map<String, Object> r : rows) {
+            Long id = r.get("standard_id") instanceof Number n ? n.longValue() : null;
+            Map<String, Object> rv = id == null ? null : index.get(id);
+            // 字段一律给全（没复核也要有 false），前端就不必写两种取值路径
+            if (rv == null) {
+                r.put("reviewed", false);
+                continue;
+            }
+            reviewed++;
+            r.put("reviewed", true);
+            r.put("review_verdict", rv.get("verdict"));
+            r.put("review_verdict_text", QcStaleReview.KEPT.equals(rv.get("verdict")) ? "维持原判" : "需要处理");
+            r.put("review_reviewer", rv.get("reviewer"));
+            r.put("review_at", rv.get("reviewed_at"));
+            r.put("review_remark", rv.get("remark"));
+        }
+        return reviewed;
     }
 
     /**

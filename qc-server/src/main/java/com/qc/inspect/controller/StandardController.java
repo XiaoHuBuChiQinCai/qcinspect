@@ -3,10 +3,13 @@ package com.qc.inspect.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.common.R;
+import com.qc.inspect.auth.UserContext;
+import com.qc.inspect.entity.QcStaleReview;
 import com.qc.inspect.entity.QcStandard;
 import com.qc.inspect.entity.QcStandardItem;
 import com.qc.inspect.mapper.QcStandardItemMapper;
 import com.qc.inspect.mapper.QcStandardMapper;
+import com.qc.inspect.service.StaleReviewService;
 import com.qc.inspect.service.StandardService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -32,6 +35,7 @@ public class StandardController {
     private final QcStandardMapper standardMapper;
     private final QcStandardItemMapper standardItemMapper;
     private final StandardService standardService;
+    private final StaleReviewService staleReviewService;
 
     /** 某产品的所有标准版本，含已作废 */
     @GetMapping
@@ -99,6 +103,27 @@ public class StandardController {
     @GetMapping("/stale-usage")
     public R<Map<String, Object>> staleUsage(@RequestParam(required = false) Long productId) {
         return R.ok(standardService.staleUsage(productId));
+    }
+
+    /**
+     * 给一个已作废的标准版本记一次复核。
+     *
+     * <p>为什么要这个接口：stale-usage 能说出「12 张单是按已作废的 v1 判的，
+     * 其中 10 张判合格，而现行版本收紧了」，但答不了审核员下一句
+     * 「你们发现之后做了什么」。没有记录，这永远是一条未闭环的不符合项。
+     *
+     * <p>限 ADMIN/REVIEWER：复核是质量判定行为，检验员不能给自己的记录背书。
+     */
+    @PostMapping("/{id}/review")
+    @PreAuthorize("hasAnyRole('ADMIN', 'REVIEWER')")
+    public R<QcStaleReview> review(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        return R.ok(staleReviewService.submit(id, body, UserContext.username()));
+    }
+
+    /** 某作废版本的全部复核记录，最新在前。只读，登录即可 */
+    @GetMapping("/{id}/reviews")
+    public R<List<QcStaleReview>> reviews(@PathVariable Long id) {
+        return R.ok(staleReviewService.listOf(id));
     }
 
     /** 新建草稿标准 */
