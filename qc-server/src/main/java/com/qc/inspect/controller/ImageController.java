@@ -34,10 +34,18 @@ public class ImageController {
         return R.ok(imageService.list(bizType, bizId));
     }
 
-    /** 本地存储模式下由这里代理出图；<img> 标签带不了 Authorization 头，所以放行 */
+    /**
+     * 本地存储模式下由这里代理出图。
+     *
+     * <p>{@code <img>} 标签带不了 {@code Authorization} 头，所以这个口子必须对
+     * 未认证请求开放；但 id 是自增的，光靠放行就等于公开全厂照片。授权改由地址上的
+     * {@code exp + sig} 携带（见 {@code ImageToken}），地址由后端在下发图片列表时签发。
+     */
     @GetMapping("/{id}/raw")
-    public ResponseEntity<byte[]> raw(@PathVariable Long id) {
-        ImageService.RawFile f = imageService.raw(id);
+    public ResponseEntity<byte[]> raw(@PathVariable Long id,
+                                     @RequestParam(required = false) Long exp,
+                                     @RequestParam(required = false) String sig) {
+        ImageService.RawFile f = imageService.raw(id, exp, sig);
         String encoded = URLEncoder.encode(f.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(f.contentType()))

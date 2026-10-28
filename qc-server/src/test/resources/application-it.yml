@@ -21,6 +21,7 @@ spring:
         - classpath:db/V12__supplier.sql
         - classpath:db/V13__backup_log.sql
         - classpath:db/V14__stale_review.sql
+        - classpath:db/V15__image_audit.sql
       continue-on-error: false
 
 mybatis-plus:

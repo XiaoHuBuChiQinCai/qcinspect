@@ -490,6 +490,14 @@ public class InspectionService {
         if (!"SUBMITTED".equals(ins.getStatus())) {
             throw BizException.of("只有已提交的检验单可以解锁，当前状态：" + ins.getStatus());
         }
+        // 解锁的后果比看起来大：解锁后 save/submit 都不再校验归属，也就是说
+        // 「能解锁别人的单」等于「能改别人的判定结论」。质量条线之外只放行本人
+        if (!UserContext.canReview()
+                && ins.getCreatedBy() != null
+                && !ins.getCreatedBy().equals(UserContext.username())) {
+            throw BizException.of("只能解锁自己录入的检验单；这张是 " + ins.getCreatedBy()
+                    + " 录的，需要退回请联系管理员或审核员");
+        }
         String from = ins.getStatus();
         ins.setStatus("DRAFT");
         ins.setResult("NA");

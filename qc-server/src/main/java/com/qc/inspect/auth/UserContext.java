@@ -44,4 +44,13 @@ public final class UserContext {
         LoginUser u = current();
         return u != null && "ADMIN".equals(u.role());
     }
+
+    /**
+     * 质量条线（管理员或审核员）。与各控制器上 {@code hasAnyRole('ADMIN','REVIEWER')}
+     * 的口径一致——服务层需要判「这个人算不算质量」时用它，不要各写一份字符串比较。
+     */
+    public static boolean canReview() {
+        LoginUser u = current();
+        return u != null && ("ADMIN".equals(u.role()) || "REVIEWER".equals(u.role()));
+    }
 }

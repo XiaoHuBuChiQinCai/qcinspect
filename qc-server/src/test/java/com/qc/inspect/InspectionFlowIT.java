@@ -1875,8 +1875,117 @@ class InspectionFlowIT {
         }
     }
 
+    @Test
+    @Order(32)
+    @DisplayName("照片是判定证据：地址要签名、提交后不能删、删了要留痕；作废与解锁不能越权")
+    void imageEvidenceAndActionGuard() {
+        QcProduct p = new QcProduct();
+        p.setProductCode("IT-IMG");
+        p.setProductName("照片证据件");
+        p.setUnit("件");
+        productMapper.insert(p);
+        Long productId = p.getId();
+
+        Long std = num(data(post("/api/standards", Map.of(
+                "productId", productId, "standardCode", "S-IT-IMG",
+                "samplingType", "FULL", "sampleSize", 1, "allowedNgCount", 0))).get("id"));
+        post("/api/standards/" + std + "/items", List.of(diffItem("11.95", "12.05")));
+        post("/api/standards/" + std + "/activate", Map.of());
+
+        Long insId = num(data(post("/api/inspections",
+                Map.of("batchId", ctxBatch("IT-IMG-B1", productId)))).get("inspectionId"));
+
+        // ---- 地址必须带签名 ----
+        Map<String, Object> up = uploadImage(insId, "defect.png");
+        Long imgId = num(data(up).get("id"));
+        String url = String.valueOf(data(up).get("url"));
+        assertThat(url).as("本地存储下地址不带签名，等于全厂照片可以按自增 id 遍历")
+                .contains("?exp=").contains("&sig=");
+
+        // ---- 带签名：匿名也能取。<img> 带不了 Authorization 头，这是必须的 ----
+        ResponseEntity<byte[]> image = rest.getForEntity(url, byte[].class);
+        assertThat(image.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(image.getBody()).as("取到的得是真的图片字节").isNotEmpty();
+
+        // ---- 不带签名：拒。放行「没带签名」等于这次修复没做 ----
+        assertThat(num(get("/api/images/" + imgId + "/raw").get("code")))
+                .as("没有签名就说明不了「谁允许你看这张图」").isNotZero();
+        // 签名改一下就拒。往签名前面插一个字符：长度变了必然对不上，
+        // 而「把第一位换成某个固定字符」有 1/64 的概率换成它自己，用例会偶发假绿
+        assertThat(num(get(url.replace("&sig=", "&sig=Z")).get("code")))
+                .as("改签名必须失败").isNotZero();
+
+        // ---- 草稿：能删，删了要有痕迹 ----
+        assertThat(num(deleteImage(imgId).get("code"))).isZero();
+        assertThat(dataList("/api/inspections/" + insId + "/logs"))
+                .extracting(r -> String.valueOf(r.get("action")))
+                .as("照片没了，但「有人删过」这个事实必须留在日志里")
+                .contains("IMAGE_DELETE");
+
+        // ---- 提交之后：不许删 ----
+        Long img2 = num(data(uploadImage(insId, "second.png")).get("id"));
+        data(post("/api/inspections/" + insId + "/submit",
+                Map.of("lines", fillCompliant(detail(insId)))));
+        Map<String, Object> blocked = deleteImage(img2);
+        assertThat(num(blocked.get("code")))
+                .as("结论已经出去了、照片却还能抹掉，等于证据可以事后修饰").isNotZero();
+        assertThat(String.valueOf(blocked.get("msg"))).contains("证据");
+
+        // ---- 检验员：不能作废，也不能解锁别人的单 ----
+        String adminToken = token;
+        token = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        try {
+            assertThat(num(post("/api/inspections/" + insId + "/void?reason=越权测试", Map.of()).get("code")))
+                    .as("PC 端作废按钮只对质量角色显示，API 却谁调都收——界面约束不是权限约束")
+                    .isNotZero();
+            assertThat(num(post("/api/inspections/" + insId + "/reopen?reason=越权测试", Map.of()).get("code")))
+                    .as("解锁后 save/submit 不校验归属，所以能解锁别人的单 = 能改别人的结论")
+                    .isNotZero();
+        } finally {
+            token = adminToken;
+        }
+
+        // 管理员仍然可以解锁自己这条流程上的单（限制别把正常路径一起堵死）
+        assertThat(num(post("/api/inspections/" + insId + "/reopen?reason=自己录的，补一张量具照", Map.of())
+                .get("code"))).isZero();
+    }
+
+    /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */
+    private static final byte[] PNG_1PX = java.util.Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+
+    /** 以当前 token 上传一张照片 */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> uploadImage(Long inspectionId, String fileName) {
+        org.springframework.util.MultiValueMap<String, Object> form =
+                new org.springframework.util.LinkedMultiValueMap<>();
+        form.add("bizType", "INSPECTION");
+        form.add("bizId", String.valueOf(inspectionId));
+        form.add("file", new org.springframework.core.io.ByteArrayResource(PNG_1PX) {
+            @Override
+            public String getFilename() {
+                return fileName;
+            }
+        });
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        headers.setBearerAuth(token);
+        ResponseEntity<Map> resp = rest.exchange("/api/images", HttpMethod.POST,
+                new HttpEntity<>(form, headers), Map.class);
+        return resp.getBody() == null ? Map.of() : resp.getBody();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> deleteImage(Long id) {
+        ResponseEntity<Map> resp = rest.exchange("/api/images/" + id, HttpMethod.DELETE,
+                new HttpEntity<>(authHeaders()), Map.class);
+        return resp.getBody() == null ? Map.of() : resp.getBody();
+    }
+
     /** 标准上下文用例的批次夹具：指定产品，一件，待检 */
-    private Long ctxBatch(String batchNo, Long productId) {        QcBatch b = new QcBatch();
+    private Long ctxBatch(String batchNo, Long productId) {
+        QcBatch b = new QcBatch();
         b.setBatchNo(batchNo);
         b.setProductId(productId);
         b.setInspectType("IQC");

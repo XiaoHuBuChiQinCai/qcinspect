@@ -98,8 +98,15 @@ public class InspectionController {
         return R.ok();
     }
 
-    /** 作废，必须给理由，会写日志 */
+    /**
+     * 作废，必须给理由，会写日志。
+     *
+     * <p>限质量条线：作废是把整张单的判定结论抹成 {@code NA}，草稿和已提交的都能作废。
+     * 这个限制本来只体现在 PC 端的按钮显隐上（{@code canReview}），API 却谁调都收——
+     * 界面约束不是权限约束，检验员直接发请求就能抹掉自己的判定记录。
+     */
     @PostMapping("/{id}/void")
+    @PreAuthorize("hasAnyRole('ADMIN','REVIEWER')")
     public R<Void> voidInspection(@PathVariable Long id,
                                   @RequestParam String reason,
                                   @RequestParam(required = false, defaultValue = "system") String operator) {

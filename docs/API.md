@@ -1025,8 +1025,8 @@ POST /standards/3/review
 |---|---|---|---|
 | POST | `/images` | 上传，`multipart/form-data` | 登录 |
 | GET | `/images?bizType=INSPECTION&bizId=1` | 某单据的照片列表 | 登录 |
-| GET | `/images/{id}/raw` | 取图片二进制（本地存储模式） | **公开** |
-| DELETE | `/images/{id}` | 删除照片 | 登录 |
+| GET | `/images/{id}/raw?exp=&sig=` | 取图片二进制（本地存储模式） | **凭地址签名** |
+| DELETE | `/images/{id}` | 删除照片 | 登录，且见下方三条限制 |
 
 **上传**
 ```
@@ -1047,15 +1047,42 @@ file=@photo.jpg
   "fileName": "photo.jpg",
   "contentType": "image/jpeg",
   "fileSize": 284913,
-  "url": "/api/images/12/raw",
+  "url": "/api/images/12/raw?exp=1793600000&sig=9Fq2xLm0Wc7rTb1nVh4JkP",
   "createdBy": "系统管理员",
   "createdAt": "2026-10-19T17:30:12"
 }
 ```
 
-> `url` 两种形态：`local` 存储给 `/api/images/{id}/raw`（本服务代理），`minio` 存储给 7 天有效的预签名地址。
+> `url` 两种形态：`local` 存储给 `/api/images/{id}/raw?exp=&sig=`（本服务代理，**必须带签名**），
+> `minio` 存储给 7 天有效的预签名地址。
 > 只接受 jpg / jpeg / png / webp / bmp，单张 ≤ 10MB。`Content-Type` 按扩展名反推，不采信浏览器上报值。
-> `/raw` 放行是因为 `<img src>` 带不了 Authorization 头——**公网部署时必须收紧这里**。
+
+**为什么 `/raw` 要签名**
+
+`<img src>` 带不了 `Authorization` 头，所以这个口子只能对未认证请求放行。而 `id` 是自增的——
+只放行不校验，任何人从 1 开始遍历就能把全厂照片拉走（现场实拍、不良件特写、客户送检样品）。
+现在授权改由地址上的 `exp + HMAC-SHA256` 携带，签名绑 `id` 与过期时间：
+
+| 请求 | 结果 |
+|---|---|
+| 地址来自接口（含 `exp` 与 `sig`），未登录 | 200，正常出图 |
+| 不带 `sig` | 拒绝：「图片链接无效或已过期，请刷新页面」 |
+| 改 `exp` 想延长有效期 | 拒绝（签名对不上） |
+| 拿 A 的签名换 B 的 id | 拒绝（签名绑 id） |
+| 超过 7 天 | 拒绝，刷新页面即可拿到新地址 |
+
+签名与 JWT 共用 `JWT_SECRET`。**换密钥等于全部图片地址作废**，刷新页面自动恢复，属预期行为。
+
+**删除照片的三条限制**
+
+照片是判定证据，删了存储里就没了（硬删，不保留双份），所以：
+
+- **单据非 `DRAFT` 一律拒绝**：判为已提交/已归档时，结论连同照片构成证据链。结论已经出去了、
+  照片还能被抹掉，等于证据可以被事后修饰。要更正必须先走 `reopen` 退回草稿
+- **非管理员只能删自己上传的**：否则谁都能去别人单子上挑照片删
+- **删了要留痕**：往该检验单的操作日志写一条 `IMAGE_DELETE`，全局审计检索
+  （`GET /api/audit/logs?action=IMAGE_DELETE`）能看到谁在什么时候删了哪个文件。
+  量具照片（`bizType=GAUGE`）没有归属单据，落不到操作日志，只记应用日志
 
 ---
 
