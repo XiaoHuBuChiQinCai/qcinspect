@@ -185,6 +185,7 @@ public interface QcInspectionMapper extends BaseMapper<QcInspection> {
                    s.version,
                    s.status,
                    to_char(s.effective_from, 'YYYY-MM-DD') AS effective_from,
+                   cur.id          AS current_id,
                    cur.version     AS current_version,
                    count(i.id)     AS inspection_count,
                    count(i.id) FILTER (WHERE i.result = 'PASS') AS pass_count,
@@ -203,7 +204,8 @@ public interface QcInspectionMapper extends BaseMapper<QcInspection> {
               AND s.status &lt;&gt; 'ACTIVE'
               <if test="productId != null">AND s.product_id = #{productId}</if>
             GROUP BY s.id, s.product_id, p.product_code, p.product_name,
-                     s.standard_code, s.version, s.status, s.effective_from, cur.version
+                     s.standard_code, s.version, s.status, s.effective_from,
+                     cur.id, cur.version
             HAVING count(i.id) &gt; 0
             ORDER BY count(i.id) DESC, s.product_id, s.version DESC
             </script>

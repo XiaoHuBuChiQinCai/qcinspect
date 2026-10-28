@@ -1742,6 +1742,18 @@ class InspectionFlowIT {
         assertThat(usage.get("withoutStandard")).as("关联不上的早期单也要报出来，不能只说查得到的")
                 .isNotNull();
 
+        // ---- 改版方向要真的算出来：v1 → v2 是上限从 12.05 收到 11.99，属于收紧 ----
+        // 这一条同时锁住参数顺序：写成 diff(旧版, 现行版) 会得到 RELAXED，
+        // 于是「收紧后被放行」这个唯一的合规风险会静默变成「放宽后的误判」
+        assertThat(row.get("current_id")).as("要拿到现行版 id 才算得了方向").isNotNull();
+        assertThat(String.valueOf(row.get("change_verdict")))
+                .as("从 v1 到 v2 是收紧").isEqualTo("TIGHTENED");
+        assertThat(String.valueOf(row.get("risk")))
+                .as("收紧之后 v1 下还判过合格，这是放行风险，排最前").isEqualTo("HIGH");
+        assertThat(String.valueOf(usage.get("riskLevel"))).isEqualTo("HIGH");
+        assertThat(String.valueOf(usage.get("note")))
+                .as("要点名有多少张是收紧后仍被放行的，不能只说「值得复核」").contains("优先查");
+
         // ---- 点进来看明细：按标准版本筛检验单 ----
         List<Map<String, Object>> oldRows = asList(
                 data(get("/api/inspections/page?current=1&size=50&standardId=" + v1)).get("records"));

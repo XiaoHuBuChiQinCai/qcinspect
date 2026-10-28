@@ -11,13 +11,15 @@
 
     <!-- 改版遗留：旧版判过的单还躺在库里，它们的结论建立在一个已经不作数的口径上。
          只在真有时才出现——常态下没有，那它就不该常驻占位（常驻的空提示会被当装饰品） -->
-    <el-alert v-if="stale.rows.length" type="warning" :closable="false" class="stale">
+    <el-alert v-if="stale.rows.length" :type="staleAlertType" :closable="false" class="stale">
       <template #title>
         <div class="stale-head">
           <span>
             {{ stale.versionCount }} 个已作废版本下还有
             <strong>{{ stale.inspectionCount }}</strong> 张已判定单据
             <span class="muted">（其中 {{ stale.failCount }} 张不合格）</span>
+            <el-tag v-if="stale.riskText" :type="riskTagType(stale.riskLevel)" size="small"
+                    effect="dark" class="stale-risk">{{ stale.riskText }}</el-tag>
           </span>
           <el-button link type="primary" size="small" @click="staleOpen = !staleOpen">
             {{ staleOpen ? '收起' : '展开明细' }}
@@ -40,6 +42,17 @@
             <span class="ok">{{ row.pass_count }}</span>
             <span class="muted"> / </span>
             <span :class="row.fail_count > 0 ? 'ng' : ''">{{ row.fail_count }}</span>
+          </template>
+        </el-table-column>
+        <!-- 风险与方向：同样是「这版判过几张单」，
+             收紧后被放行和放宽后被拦下要做的事完全不同 -->
+        <el-table-column label="风险" width="110">
+          <template #default="{ row }">
+            <el-tooltip :content="row.risk_advice" placement="top" effect="dark">
+              <el-tag :type="riskTagType(row.risk)" size="small" effect="plain">
+                {{ row.risk_text }}
+              </el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="最后判定" width="110">
@@ -176,8 +189,17 @@ const loading = ref(false)
 
 // 改版遗留：已作废版本下还挂着的判定单。三处会用到（顶部提示、状态列数字、明细表），
 // 所以只在这里存一份
-const stale = ref({ rows: [], versionCount: 0, inspectionCount: 0, failCount: 0, withoutStandard: 0, note: '' })
+const stale = ref({
+  rows: [], versionCount: 0, inspectionCount: 0, failCount: 0,
+  withoutStandard: 0, note: '', riskLevel: null, riskText: null
+})
 const staleOpen = ref(false)
+
+/** 提示条的红色是有代价的：只有「收紧后仍放行」这一种才配用红 */
+const staleAlertType = computed(
+  () => ({ HIGH: 'error', WATCH: 'warning', LOW: 'success' }[stale.value.riskLevel] || 'info')
+)
+const riskTagType = r => ({ HIGH: 'danger', WATCH: 'warning', LOW: 'success' }[r] || 'info')
 
 const staleMap = computed(() => {
   const m = {}
@@ -330,6 +352,7 @@ onMounted(async () => {
 .stale-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .stale-note { font-size: 13px; line-height: 1.6; margin: 6px 0 10px; }
 .stale-table { margin-top: 4px; }
+.stale-risk { margin-left: 8px; vertical-align: 1px; }
 .stale-tag { margin-top: 4px; font-size: 12px; color: var(--el-color-warning); }
 .ok { color: var(--el-color-success); }
 .ng { color: var(--el-color-danger); font-weight: 600; }

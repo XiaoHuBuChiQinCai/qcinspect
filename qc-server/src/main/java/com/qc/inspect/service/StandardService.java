@@ -10,9 +10,11 @@ import com.qc.inspect.mapper.QcInspectionMapper;
 import com.qc.inspect.mapper.QcItemMapper;
 import com.qc.inspect.mapper.QcStandardItemMapper;
 import com.qc.inspect.mapper.QcStandardMapper;
+import com.qc.inspect.report.StaleRisk;
 import com.qc.inspect.report.StandardDiff;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +38,7 @@ import java.util.Set;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class StandardService {
 
     private final QcStandardMapper standardMapper;
@@ -556,11 +559,26 @@ public class StandardService {
     public Map<String, Object> staleUsage(Long productId) {
         List<Map<String, Object>> rows = inspectionMapper.staleStandardUsage(productId);
 
+        // 每行补一个「值不值得复查」：光报数量分不出轻重，
+        // 42 张旧版单里可能一张都不用管，也可能全是放行的合规风险
+        for (Map<String, Object> r : rows) {
+            attachRisk(r);
+        }
+        // 高风险排前面。SQL 只能按单数排，而单数多不等于风险大——
+        // 工作台只露前 8 行，第一行必须是该看的那行
+        rows.sort(java.util.Comparator
+                .comparingInt((Map<String, Object> r) -> asInt(r.get("risk_order")))
+                .thenComparing(r -> -asLong(r.get("inspection_count"))));
+
         long inspections = 0;
         long fails = 0;
+        long tightPass = 0;
         for (Map<String, Object> r : rows) {
             inspections += asLong(r.get("inspection_count"));
             fails += asLong(r.get("fail_count"));
+            if (StaleRisk.HIGH.equals(r.get("risk"))) {
+                tightPass += asLong(r.get("pass_count"));
+            }
         }
         // 早期数据只记了版本号没记 id，关联不上。报出来是为了把话说全：
         // 只说「能查出来的这些」，会让人以为旧版单就这么点
@@ -571,9 +589,41 @@ public class StandardService {
         m.put("versionCount", rows.size());
         m.put("inspectionCount", inspections);
         m.put("failCount", fails);
+        // 最高风险单独给一份：前端要决定顶部提示条用什么颜色，不该自己从 rows 里推
+        m.put("riskLevel", rows.isEmpty() ? null : rows.get(0).get("risk"));
+        m.put("riskText", rows.isEmpty() ? null : rows.get(0).get("risk_text"));
         m.put("withoutStandard", withoutStandard);
-        m.put("note", staleNote(rows.isEmpty(), inspections, fails, withoutStandard));
+        m.put("note", staleNote(rows.isEmpty(), inspections, fails, withoutStandard, tightPass,
+                rows.isEmpty() ? null : String.valueOf(rows.get(0).get("risk"))));
         return m;
+    }
+
+    /**
+     * 给一行补上改版方向与风险档。
+     *
+     * <p>方向靠复用 {@link #diff}：那边已经把「上限调高是放宽」这类判断做完了，
+     * 再写一遍必然两边慢慢走偏。参数顺序是 {@code diff(现在的版本, 拿什么比)}，
+     * 所以传 {@code (现行版, 旧版)}，得到的 verdict 就是「从旧版到现行」的方向。
+     */
+    private void attachRisk(Map<String, Object> r) {
+        Long oldId = asLongObj(r.get("standard_id"));
+        Long curId = asLongObj(r.get("current_id"));
+        String verdict = null;
+        if (oldId != null && curId != null) {
+            try {
+                verdict = String.valueOf(diff(curId, oldId).get("verdict"));
+            } catch (RuntimeException e) {
+                // 某一版的标准项读不出来，不能让整个工作台跟着 500：
+                // 这批单照样要报出来，只是风险降级成「人工核对」
+                log.warn("改版方向算不出来，按未知处理: 旧版={} 现行={}", oldId, curId, e);
+            }
+        }
+        StaleRisk.Verdict v = StaleRisk.judge(verdict, asLong(r.get("pass_count")), asLong(r.get("fail_count")));
+        r.put("change_verdict", verdict);
+        r.put("risk", v.level());
+        r.put("risk_text", v.text());
+        r.put("risk_advice", v.advice());
+        r.put("risk_order", v.order());
     }
 
     /**
@@ -581,7 +631,8 @@ public class StandardService {
      * 「没有旧版单」和「有旧版单但一张都关联不上」是完全不同的两件事，
      * 混成一句「未发现」会让后者永远没人去处理。
      */
-    private static String staleNote(boolean noRows, long inspections, long fails, long withoutStandard) {
+    private static String staleNote(boolean noRows, long inspections, long fails,
+                                    long withoutStandard, long tightPass, String topRisk) {
         if (noRows) {
             if (withoutStandard > 0) {
                 return "没有能关联到具体标准版本的旧版单据，但有 " + withoutStandard
@@ -590,16 +641,34 @@ public class StandardService {
             return "所有已判定单据都按各自产品的现行标准判定，没有需要复查的旧版结论";
         }
         String s = "有 " + inspections + " 张已判定单据是按已作废的标准版本下的结论";
-        if (fails > 0) {
-            s += "，其中 " + fails + " 张判为不合格——标准若在作废前收紧过，这批判定值得复核";
+        s += fails > 0 ? "，其中 " + fails + " 张判为不合格" : "，全部判为合格";
+
+        // 结论按风险档定调，不再用「若收紧过 / 若放宽过」这种要人去推的说法：
+        // 方向已经算出来了，就该直说。四种档位要说出四件不同的事
+        if (tightPass > 0) {
+            s += "；其中 " + tightPass + " 张判合格的，是在判定之后标准又收紧了，"
+                    + "按现行标准可能不合格，优先查这批";
+        } else if (StaleRisk.WATCH.equals(topRisk)) {
+            s += "；改版方向不一或只是放宽，出厂合规上没有问题，但可能有误判，值得抽查";
+        } else if (StaleRisk.UNKNOWN.equals(topRisk)) {
+            s += "；有版本读不到现行标准，算不出改版方向，只能人工核对";
         } else {
-            s += "，全部判为合格——标准若在作废前放宽过，这批放行值得复核";
+            s += "；现行标准的变化不改变这批结论，不用复查";
         }
         return s;
     }
 
     private static long asLong(Object v) {
         return v instanceof Number n ? n.longValue() : 0L;
+    }
+
+    private static int asInt(Object v) {
+        return v instanceof Number n ? n.intValue() : 0;
+    }
+
+    /** 允许 null 的取数：SQL 的 LEFT JOIN 取不到现行版本时那一列就是 null */
+    private static Long asLongObj(Object v) {
+        return v instanceof Number n ? n.longValue() : null;
     }
 
     /**

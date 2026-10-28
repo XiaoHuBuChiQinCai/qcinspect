@@ -257,6 +257,80 @@
       </el-table>
     </el-card>
 
+    <!-- 改版遗留：标准改版后旧版判过的单还躺在库里，结论是按已经不作数的口径下的。
+         质量经理要的是一眼看到全厂有多少，不想一个个产品点进去看——
+         所以这块出的是全库视角，按单数从多到少排。只在真有时才占版面 -->
+    <el-card v-if="canReview && stale.rows.length" id="sec-stale" class="block">
+      <template #header>
+        <div class="head">
+          <span>
+            改版遗留
+            <el-tag type="info" size="small" class="ml">{{ stale.versionCount }} 个作废版本</el-tag>
+            <!-- 档位放最前面：这块要回答的不是「有多少」，而是「要不要动手」 -->
+            <el-tag :type="riskTagType(stale.riskLevel)" size="small" class="ml" effect="dark">
+              {{ stale.riskText || '—' }}
+            </el-tag>
+          </span>
+          <div class="spacer" />
+          <span class="head-meta">
+            {{ stale.inspectionCount }} 张已判定单 · 其中 {{ stale.failCount }} 张不合格
+          </span>
+        </div>
+      </template>
+
+      <div class="flag note">{{ stale.note }}</div>
+      <!-- 关联不上的早期单不能只字不提：那批永远查不出来，
+           只报查得到的会让人以为旧版单就这么点 -->
+      <div v-if="stale.withoutStandard" class="flag warn-line">
+        · 另有 {{ stale.withoutStandard }} 张已判定单是早期数据，没记标准版本，无法逐一核对
+      </div>
+
+      <el-table :data="stalePaged" size="small" class="mt" empty-text="没有改版遗留">
+        <el-table-column prop="product_name" label="产品" min-width="130" show-overflow-tooltip />
+        <el-table-column label="版本" width="140">
+          <template #default="{ row }">
+            <span>v{{ row.version }}</span>
+            <span class="sep">→</span>
+            <span :class="row.current_version ? '' : 'ng'">
+              {{ row.current_version ? `现行 v${row.current_version}` : '无现行' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="判定单" width="80" align="right">
+          <template #default="{ row }">{{ row.inspection_count }} 张</template>
+        </el-table-column>
+        <el-table-column label="合格 / 不合格" width="115">
+          <template #default="{ row }">
+            <span class="ok">{{ row.pass_count }}</span>
+            <span class="sep">/</span>
+            <span :class="row.fail_count > 0 ? 'ng' : ''">{{ row.fail_count }}</span>
+          </template>
+        </el-table-column>
+        <!-- 风险就是这个功能的全部意义：同样是 10 张旧版单，
+             「收紧后被放行」和「放宽后被拦下」要做的事完全不同 -->
+        <el-table-column label="风险" width="105">
+          <template #default="{ row }">
+            <el-tooltip :content="row.risk_advice" placement="top" effect="dark">
+              <el-tag :type="riskTagType(row.risk)" size="small" effect="plain">
+                {{ row.risk_text }}
+              </el-tag>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="最后判定" width="105">
+          <template #default="{ row }">{{ row.last_used_date || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="105" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openStale(row)">查看这批单</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-if="stale.rows.length > stalePaged.length" class="more">
+        共 {{ stale.rows.length }} 个作废版本，先显示 {{ stalePaged.length }} 个，其余去「标准管理」按产品看
+      </div>
+    </el-card>
+
     <!-- 我的草稿 / 被退回 -->
     <el-card id="sec-mine" class="block">
       <template #header>
@@ -369,6 +443,14 @@ const complaints = ref([])
 const batches = ref([])
 /** 备份健康。只有管理员才拉——检验员看见了也做不了什么 */
 const backup = ref(null)
+/**
+ * 改版遗留（全库）。形状跟标准页那个提示条一致，但那边是按产品查的：
+ * 这里不带 productId，出的是全厂的旧版结论清单
+ */
+const stale = ref({
+  rows: [], versionCount: 0, inspectionCount: 0, failCount: 0,
+  withoutStandard: 0, note: '', riskLevel: null, riskText: null
+})
 
 const reviewVisible = ref(false)
 const reviewTarget = ref({})
@@ -440,6 +522,16 @@ const stats = computed(() => {
       key: 'gauge', label: '超期量具', sec: 'sec-gauge', cls: 'info',
       count: summary.value.overdueGauge || 0, hint: '超期数据不认'
     },
+    // 只在真有遗留时给这张卡：常态下多一个恒为 0 的格子，除了稀释别的数字没别的用
+    ...(canReview.value && stale.value.rows.length
+      ? [{
+          key: 'stale', label: '旧版标准结论', sec: 'sec-stale',
+          // 红还是黄跟着风险走：收紧后放行的才配红色，别的红多了红色就不值钱了
+          cls: stale.value.riskLevel === 'HIGH' ? 'danger' : 'warn',
+          count: stale.value.inspectionCount,
+          hint: stale.value.riskText || `${stale.value.versionCount} 个作废版本`
+        }]
+      : []),
     {
       key: 'draft', label: '我的草稿', sec: 'sec-mine', cls: 'primary',
       count: summary.value.myDraft || 0, hint: `其中被退回 ${summary.value.myRejected || 0} 张`
@@ -456,6 +548,8 @@ const rejectedIds = computed(() => new Set((summary.value.__rejected || []).map(
  * 真正要翻页找单据，去对应的列表页。
  */
 const pagedDefects = computed(() => defects.value.slice(0, pageSize))
+/** 旧版结论按单数从多到少排（后端已排），工作台只铺头部，全量去标准页 */
+const stalePaged = computed(() => stale.value.rows.slice(0, pageSize))
 const mineSorted = computed(() => {
   const rows = mine.value.slice()
   rows.sort((a, b) => {
@@ -476,6 +570,8 @@ const batchLevelType = l =>
 
 const resultText = r => ({ PASS: '合格', FAIL: '不合格', NA: '未判定' }[r] || r || '—')
 const resultType = r => ({ PASS: 'success', FAIL: 'danger', NA: 'info' }[r] || 'info')
+/** 改版遗留的风险档：红=放行可能站不住，黄=可能是误判，绿=不用管 */
+const riskTagType = r => ({ HIGH: 'danger', WATCH: 'warning', LOW: 'success' }[r] || 'info')
 const dispositionText = d =>
   ({ REWORK: '返工', SCRAP: '报废', CONCESSION: '让步接收', RETURN: '退货' }[d] || '待定')
 
@@ -505,6 +601,18 @@ function goComplaint(row) {
   router.push({ path: '/complaints', query: { focus: row.id } })
 }
 
+/**
+ * 跳到检验单列表看这批旧版单。
+ * 带 standardVersion 只为让列表页那句提示说出「仅看 v2」——
+ * 真正过滤靠 standardId，界面上没有对应的下拉，不加提示人会以为数据丢了
+ */
+function openStale(row) {
+  router.push({
+    path: '/inspections',
+    query: { standardId: row.standard_id, standardVersion: row.version }
+  })
+}
+
 function severityText(s) {
   return { HIGH: '严重', MEDIUM: '一般', LOW: '轻微' }[s] || s || '—'
 }
@@ -524,14 +632,17 @@ async function loadAll() {
     summary.value = { ...s, __rejected: m.rejected || [] }
     mine.value = m.drafts || []
 
-    const [r, d, g, c, b, bk] = await Promise.all([
+    const [r, d, g, c, b, bk, st] = await Promise.all([
       canReview.value ? http.get('/todo/reviews', { params: { limit: 50 } }) : Promise.resolve([]),
       http.get('/todo/defects'),
       http.get('/todo/gauges'),
       http.get('/todo/complaints', { params: { limit: 50 } }),
       http.get('/todo/batches', { params: { limit: 20 } }),
       // 备份是管理员的事，别的角色不发这个请求——发了也是 403
-      isAdmin.value ? http.get('/system/backup-health') : Promise.resolve(null)
+      isAdmin.value ? http.get('/system/backup-health') : Promise.resolve(null),
+      // 改版遗留只给管质量的看：检验员看到「有 30 张旧版单」也做不了什么，
+      // 他自己那张单的上下文在检验单详情里已经单独说了
+      canReview.value ? http.get('/standards/stale-usage') : Promise.resolve(null)
     ])
     reviews.value = r || []
     defects.value = d || []
@@ -539,6 +650,7 @@ async function loadAll() {
     complaints.value = c || []
     batches.value = b || []
     backup.value = bk || null
+    if (st) stale.value = st
   } finally {
     loading.value = false
   }
@@ -584,4 +696,8 @@ onMounted(loadAll)
 .head-meta { font-size: 12px; color: var(--el-text-color-secondary); font-weight: 400; }
 .mt { margin-top: 10px; }
 .sub2 { font-size: 12px; color: var(--el-text-color-secondary); }
+/* 结论句和表格之间留一点缝，否则读起来像表头的一部分 */
+.note { margin-bottom: 4px; }
+/* 关联不上的那批用警示色：它不是「注意一下」，是「永远查不出来」 */
+.warn-line { color: var(--el-color-warning); margin-bottom: 2px; }
 </style>
