@@ -58,6 +58,7 @@ public class ComplaintService {
     private final QcBatchMapper batchMapper;
     private final QcProductMapper productMapper;
     private final QcShipmentMapper shipmentMapper;
+    private final DocNoService docNoService;
 
     /**
      * 登记客诉。
@@ -264,8 +265,8 @@ public class ComplaintService {
 
     private String nextNo() {
         String day = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
-        long count = complaintMapper.countByDayPrefix(day);
-        return "TS" + day + String.format("%03d", count + 1);
+        // 取号必须原子，理由见 DocNoService
+        return docNoService.next("TS", 3, () -> complaintMapper.countByDayPrefix(day));
     }
 
     private static String normalize(String value, Set<String> allowed, String fallback) {

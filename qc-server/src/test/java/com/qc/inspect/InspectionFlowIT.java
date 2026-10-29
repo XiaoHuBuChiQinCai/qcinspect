@@ -104,6 +104,9 @@ class InspectionFlowIT {
     private QcStandardMapper standardMapper;
     @Autowired
     private QcStandardItemMapper standardItemMapper;
+    /* 取号器的并发用例直接调服务，不绕接口：接口那层还有别的校验，会把并发压成串行 */
+    @Autowired
+    private com.qc.inspect.service.DocNoService docNoService;
     @Autowired
     private QcDefectMapper defectMapper;
     /* 备份记录平时是外部脚本写的，测试里直接插一行，模拟脚本落库的那一刻 */
@@ -1949,6 +1952,37 @@ class InspectionFlowIT {
         // 管理员仍然可以解锁自己这条流程上的单（限制别把正常路径一起堵死）
         assertThat(num(post("/api/inspections/" + insId + "/reopen?reason=自己录的，补一张量具照", Map.of())
                 .get("code"))).isZero();
+    }
+
+    @Test
+    @Order(33)
+    @DisplayName("并发取号不会分到同一个号——原来 count(*)+1 会，撞唯一索引直接 500")
+    void docNoAtomic() throws Exception {
+        // 这条必须真并发才有意义：顺序调用时 count(*)+1 也永远是对的。
+        // 现场的场景是换班时几个人同时开单，第二个人拿到 500 + 一段 PG 英文报错
+        int n = 8;
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(n);
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        List<java.util.concurrent.Future<String>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < n; i++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    // seed 传 0：前面用例已经开过单、计数器存在，这里只考并发 bump
+                    return docNoService.next("QC", 4, () -> 0L);
+                }));
+            }
+            start.countDown();
+            java.util.Set<String> nos = new java.util.LinkedHashSet<>();
+            for (java.util.concurrent.Future<String> f : futures) {
+                nos.add(f.get(30, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            assertThat(nos).as("%d 个并发请求各拿一个号，不能有重复", n).hasSize(n);
+            assertThat(nos).as("号码形状不能被这次改造改掉：QC + 8 位日期 + 4 位流水")
+                    .allMatch(no -> no.matches("QC\\d{12}"));
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */

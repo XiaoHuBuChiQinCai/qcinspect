@@ -74,6 +74,7 @@ public class InspectionService {
     private final NoticeService noticeService;
     private final SamplingPlanService samplingPlanService;
     private final StandardService standardService;
+    private final DocNoService docNoService;
     private final ObjectMapper objectMapper;
 
     // ==================== 建单（含标准快照） ====================
@@ -784,8 +785,9 @@ public class InspectionService {
 
     private String nextNo() {
         String day = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
-        long count = inspectionMapper.countByDayPrefix(day);
-        return "QC" + day + String.format("%04d", count + 1);
+        // 取号必须原子：原来 count(*)+1 在并发下会分配出重复的号，
+        // 撞唯一索引后抛 PG 原始报错（见 DocNoService）
+        return docNoService.next("QC", 4, () -> inspectionMapper.countByDayPrefix(day));
     }
 
     private String toJson(List<String> values) {

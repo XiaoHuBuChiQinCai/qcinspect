@@ -972,6 +972,15 @@ POST /standards/3/review
 
 出货单号格式 `SH + yyyyMMdd + 3 位日流水`（如 `SH20261021001`），和检验单号一样按日计数、删除后不复用。
 
+> **单号由 `qc_no_seq` 计数器分配，不是 `count(*) + 1`。** 后者在两个人同时开单时会分配出同一个号，
+> 撞上唯一索引后抛 PostgreSQL 原始报错（`duplicate key value violates unique constraint`）——
+> 用户看到的是 500 加一段英文，既看不懂也不知道重试一下就好。唯一索引挡住的只是「写进库」，
+> 挡不住「号已经重复分配」这件事本身。
+>
+> 现在取号走 `UPDATE qc_no_seq SET last_no = last_no + 1 ... RETURNING last_no`，
+> 同一前缀的并发请求在行锁上排队，各自拿到不同的值；且与单据插入同事务，
+> 回滚时计数一起回滚，不留空号也不重复。检验单（QC）/ 出货单（SH）/ 客诉（TS）共用这一套。
+
 ### 出货作废（红冲）
 
 `POST /shipments/{id}/void`

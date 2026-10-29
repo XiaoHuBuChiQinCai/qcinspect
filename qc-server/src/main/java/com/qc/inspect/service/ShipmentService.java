@@ -51,6 +51,7 @@ public class ShipmentService {
     private final QcShipmentMapper shipmentMapper;
     private final QcProductMapper productMapper;
     private final QcComplaintMapper complaintMapper;
+    private final DocNoService docNoService;
 
     /** 出货前置信息：前端弹窗用来显示「还剩多少可发」「检验结论是什么」 */
     public Map<String, Object> context(Long batchId) {
@@ -267,8 +268,8 @@ public class ShipmentService {
 
     private String nextNo() {
         String day = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
-        long count = shipmentMapper.countByDayPrefix(day);
-        return "SH" + day + String.format("%03d", count + 1);
+        // 取号必须原子，理由见 DocNoService
+        return docNoService.next("SH", 3, () -> shipmentMapper.countByDayPrefix(day));
     }
 
     private static boolean isBlank(String s) {
