@@ -25,6 +25,11 @@
 
     <view v-if="locked" class="banner lock">{{ lockText }}</view>
 
+    <!-- 别人建的单：不拦（换班代录是常态，拦了就是共用账号），但得让人知道自己签的是谁的单 -->
+    <view v-if="handoverFrom" class="banner handover">
+      这张单是 {{ handoverFrom }} 建的，你正在代录。提交时日志会记「代 {{ handoverFrom }} 提交」
+    </view>
+
     <view v-if="judge" :class="['banner', judge.pass ? 'ok' : 'ng']">
       {{ judge.pass ? '批合格' : '批不合格' }} · {{ judge.reason }}
     </view>
@@ -131,7 +136,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { absUrl, api, uploadImage } from '../../common/api'
+import { absUrl, api, getUser, uploadImage } from '../../common/api'
 import { judgeGauge } from '../../common/gauge'
 import { todayLocal } from '../../common/dict'
 import { lineState, valueState, STATE, STATE_TEXT } from '../../common/specHint'
@@ -144,6 +149,20 @@ const locked = ref(false)
 const inspectionId = ref(null)
 const gauges = ref([])
 const images = ref([])
+const me = ref(getUser())
+
+/**
+ * 这张单的建单人，若不是当前登录的人就返回他。
+ *
+ * <p>后端存的是展示名（`UserContext.username()` 给的 displayName），所以拿 realName 比，
+ * 别拿账号名比——两个字段对不上，提示永远不出现。
+ */
+const handoverFrom = computed(() => {
+  const by = info.value.createdBy
+  const who = me.value && (me.value.realName || me.value.username)
+  if (!by || !who || by === who) return null
+  return by
+})
 
 const lockText = computed(() => {
   const s = info.value.status
@@ -508,6 +527,7 @@ async function submit() {
 .banner.ok { background: #f0f9eb; color: #4e9a51; }
 .banner.ng { background: #fef0f0; color: #c45656; }
 .banner.lock { background: #fdf6ec; color: #b88230; }
+.banner.handover { background: #eef4ff; color: #3a6ea5; }
 
 .group { background: #fff; border-radius: 16rpx; margin-bottom: 20rpx; overflow: hidden; }
 .group-head { display: flex; justify-content: space-between; padding: 22rpx 24rpx; background: #fafbfc; }
