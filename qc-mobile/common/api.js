@@ -119,7 +119,15 @@ export const api = {
   reopen: (id, reason) => request(`/inspections/${id}/reopen?reason=${encodeURIComponent(reason)}`, {
     method: 'POST'
   }),
-  gauges: () => request('/gauges?status=ACTIVE'),
+  /**
+   * 全部量具，**不带 status=ACTIVE**。
+   *
+   * 停用和报废的量具后端提交时一律硬拦（`GaugeService.assertUsable`），
+   * 前端要是把它们藏起来，草稿里已选的那把一旦被停用就会显示成「未选择」——
+   * 人以为没选，提交却被驳回「已停用」，完全对不上。要让人看见它为什么不能用。
+   */
+  gauges: () => request('/gauges'),
+  gaugeCalibrations: id => request(`/gauges/${id}/calibrations`),
   images: (bizType, bizId) => request(`/images?bizType=${bizType}&bizId=${bizId}`),
   removeImage: id => request(`/images/${id}`, { method: 'DELETE' }),
   report: id => request(`/reports/inspection/${id}`),

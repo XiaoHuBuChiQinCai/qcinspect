@@ -1985,6 +1985,53 @@ class InspectionFlowIT {
         }
     }
 
+    @Test
+    @Order(34)
+    @DisplayName("代提交要留痕：数字是 A 录的、结论是 B 按下的，日志里得看得出来")
+    void handoverSubmitIsLogged() {
+        // 这条口径是刻意选的：草稿允许代录（换班、请假、两人一组是常态，
+        // 硬拦「只能改自己的草稿」的结果是共用账号，审计反而更差），
+        // 但必须留下「谁最后改的、谁按下的」两个记号，否则出了争议只知道「有人提了」
+        String adminToken = token;
+        String inspectorToken = (String) data(post("/api/auth/login",
+                Map.of("username", "it_inspector", "password", "it123456"))).get("token");
+        assertThat(inspectorToken).isNotBlank();
+
+        Long id;
+        Map<String, Object> created;
+        token = inspectorToken;
+        try {
+            id = num(data(post("/api/inspections", Map.of("batchId", batchId, "sampleQty", 1)))
+                    .get("inspectionId"));
+            created = asMap(detail(id).get("inspection"));
+            assertThat(String.valueOf(created.get("createdBy"))).contains("集成检验员");
+        } finally {
+            token = adminToken;
+        }
+
+        // 换管理员把这单填完：暂存就该把「最后动过的人」刷成实际操作人
+        data(post("/api/inspections/" + id + "/save", Map.of("lines", fillCompliant(detail(id)))));
+        Map<String, Object> afterSave = asMap(detail(id).get("inspection"));
+        assertThat(afterSave.get("updatedBy"))
+                .as("暂存后 updated_by 要变成实际操作人，否则建单人会一直被当成录入人")
+                .isNotEqualTo(afterSave.get("createdBy"));
+
+        data(post("/api/inspections/" + id + "/submit", Map.of("lines", fillCompliant(detail(id)))));
+
+        Map<String, Object> afterSubmit = asMap(detail(id).get("inspection"));
+        assertThat(afterSubmit.get("status")).isEqualTo("SUBMITTED");
+
+        Map<String, Object> submitLog = asList(get("/api/inspections/" + id + "/logs").get("data")).stream()
+                .filter(l -> "SUBMIT".equals(l.get("action")))
+                .findFirst().orElseThrow(() -> new AssertionError("提交没有留下 SUBMIT 日志"));
+        assertThat(String.valueOf(submitLog.get("reason")))
+                .as("代提交要写明替谁交的")
+                .isEqualTo("代 " + afterSubmit.get("createdBy") + " 提交");
+        assertThat(submitLog.get("operator")).isNotEqualTo(afterSubmit.get("createdBy"));
+        // 判定理由不能被这行话挤掉：reason 是「谁交的」，summary 是「判成什么」
+        assertThat(String.valueOf(submitLog.get("summary"))).isNotBlank();
+    }
+
     /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */
     private static final byte[] PNG_1PX = java.util.Base64.getDecoder().decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");

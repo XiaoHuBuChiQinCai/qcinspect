@@ -91,9 +91,14 @@
             :disabled="locked"
             @change="e => pickGauge(line, e)"
           >
-            <view :class="['gauge-pick', line._gaugeId ? 'picked' : '']">{{ gaugeLabel(line) }}</view>
+            <view :class="['gauge-pick', line._gaugeId ? 'picked' : '', gaugeBad(line) ? 'bad' : '']">{{ gaugeLabel(line) }}</view>
           </picker>
-          <text v-if="line.measureTool" class="gauge-tip">建议 {{ line.measureTool }}</text>
+          <text v-if="line.measureTool && !line._gaugeId" class="gauge-tip">建议 {{ line.measureTool }}</text>
+        </view>
+
+        <!-- 选了不能用的量具：当场说清楚，别等 40 个框填完提交才被驳回 -->
+        <view v-if="line.valueType === 'NUMBER' && gaugeBad(line)" class="gauge-warn">
+          {{ gaugeLabel(line) }} {{ gaugeBad(line).text }}，测出的数据不能采信。请换一把或先送检
         </view>
 
         <view v-if="line.judgeReason" class="reason">{{ line.judgeReason }}</view>
@@ -127,6 +132,8 @@
 import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { absUrl, api, uploadImage } from '../../common/api'
+import { judgeGauge } from '../../common/gauge'
+import { todayLocal } from '../../common/dict'
 import { lineState, valueState, STATE, STATE_TEXT } from '../../common/specHint'
 
 const info = ref({})
@@ -319,18 +326,44 @@ function collectLines() {
 // ==================== 量具 ====================
 
 /**
- * 量具选项：建议的测量手段排在最前面。
+ * 量具能不能用，判据与后端 `GaugeService.assertUsable` 完全一致（见 common/gauge.js）。
+ *
+ * 为什么要在选的时候就判：一把超期的卡尺，选的时候不吭声，等 40 个输入框填完
+ * 点提交才被驳回「已于 2026-10-01 到期」——那 40 个数字全白填，还得重来。
+ */
+function gaugeJudge(line) {
+  if (!line._gaugeId) return null
+  const hit = gauges.value.find(g => g.id === line._gaugeId)
+  return judgeGauge(hit, todayLocal())
+}
+
+/** 不可用的量具，返回判定结果；可用返回 null。模板里用它控制红字提示 */
+function gaugeBad(line) {
+  const j = gaugeJudge(line)
+  return j && !j.usable ? j : null
+}
+
+/**
+ * 量具选项：建议的测量手段排最前，不能用的排最后并标出原因。
  * 检验员手上可能同时有卡尺、千分尺、硬度计，按项推荐能少翻一半的台账。
+ *
+ * 不把不能用的藏掉：他手里那把卡尺就在列表里却找不到，只会以为系统坏了。
  */
 function choicesFor(line) {
   const tool = line.measureTool
-  const list = gauges.value.map(g => ({
-    id: g.id,
-    label: g.gaugeCode + ' ' + g.gaugeName,
-    tool: g.gaugeType,
-    hit: !!tool && (g.gaugeType === tool || (g.gaugeName || '').indexOf(tool) >= 0)
-  }))
-  list.sort((a, b) => (b.hit ? 1 : 0) - (a.hit ? 1 : 0))
+  const today = todayLocal()
+  const list = gauges.value.map(g => {
+    const j = judgeGauge(g, today)
+    return {
+      id: g.id,
+      label: g.gaugeCode + ' ' + g.gaugeName + (j.level === 'OK' ? '' : ' · ' + j.text),
+      tool: g.gaugeType,
+      usable: j.usable,
+      hit: !!tool && (g.gaugeType === tool || (g.gaugeName || '').indexOf(tool) >= 0)
+    }
+  })
+  // 可用的排前面，其次按「是否吻合建议量具」；不可用的沉底
+  list.sort((a, b) => (b.usable ? 1 : 0) - (a.usable ? 1 : 0) || (b.hit ? 1 : 0) - (a.hit ? 1 : 0))
   return [{ id: null, label: '不记录量具' }].concat(list)
 }
 
@@ -339,7 +372,7 @@ function gaugeLabel(line) {
     return line.measureTool ? '未选择（建议 ' + line.measureTool + '）' : '未选择'
   }
   const hit = gauges.value.find(g => g.id === line._gaugeId)
-  return hit ? hit.gaugeCode : '未选择'
+  return hit ? hit.gaugeCode : '量具已删除'
 }
 
 function pickGauge(line, e) {
@@ -347,6 +380,12 @@ function pickGauge(line, e) {
   const opts = choicesFor(line)
   const idx = Number(e.detail.value)
   const pick = opts[idx]
+  // picker 没有单项禁用，只能选完再拒：不能让一把停用的卡尺混进提交，
+  // 后端提交时会拦这一单，连带同批其他项一起卡住
+  if (pick && pick.id && !pick.usable) {
+    uni.showToast({ title: pick.label + ' 不能用', icon: 'none' })
+    return
+  }
   line._gaugeId = pick ? pick.id : null
 }
 
@@ -501,7 +540,12 @@ async function submit() {
   background: #f5f6f8; border-radius: 8rpx;
 }
 .gauge-pick.picked { color: #1989fa; background: #eaf3ff; }
+.gauge-pick.bad { color: #c45656; background: #fef0f0; }
 .gauge-tip { font-size: 22rpx; color: #b0b6bd; margin-left: auto; }
+.gauge-warn {
+  font-size: 22rpx; color: #c45656; background: #fef0f0;
+  border-radius: 8rpx; padding: 8rpx 12rpx; margin-top: 10rpx;
+}
 
 .photos { display: flex; flex-wrap: wrap; gap: 14rpx; padding: 22rpx 24rpx; }
 .photo { position: relative; width: 150rpx; height: 150rpx; border-radius: 12rpx; overflow: hidden; background: #f5f6f8; }

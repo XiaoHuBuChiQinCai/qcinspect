@@ -344,6 +344,11 @@ public class InspectionService {
      * <p>抽 5 件 × 8 项 = 40 个输入框，没人能一口气填完。没有暂存，切件或误退出就全丢。
      * 这不是离线能力，只是把值落到服务端——草稿依旧是草稿。
      * 不写操作日志：暂存太频繁，日志会被刷爆，日志只记状态变化。
+     *
+     * <p><b>草稿允许代录，但必须留下「谁最后动过」</b>：换班、请假、两人一组是常态，
+     * 硬拦「只能改自己的草稿」的结果是共用账号，审计反而更差。所以这里不校验归属，
+     * 只把 {@code updated_by} 刷成实际操作人；提交时再记一条「代 XX 提交」。
+     * 事后要回答的是「这些数字是谁录的」，只记建单人回答不了。
      */
     @Transactional
     public void saveDraft(Long inspectionId, List<InspectionSubmitReq.LineValue> inputLines, String operator) {
@@ -376,6 +381,11 @@ public class InspectionService {
             line.setUpdatedAt(now);
             lineMapper.updateById(line);
         }
+
+        // 记下最后一个动草稿的人。created_by 是建单人，未必是填数的人
+        ins.setUpdatedBy(operator);
+        ins.setUpdatedAt(now);
+        inspectionMapper.updateById(ins);
     }
 
     // ==================== 提交判定 ====================
@@ -474,8 +484,13 @@ public class InspectionService {
             batchMapper.updateById(batch);
         }
 
-        // 提交即锁定：日志里记下判定结论，这是后续追溯的第一条证据
-        writeLog(inspectionId, "SUBMIT", from, "SUBMITTED", operator, null, outcome.reason());
+        // 提交即锁定：日志里记下判定结论，这是后续追溯的第一条证据。
+        // 代提交（操作人 ≠ 建单人）单独标注——数字是 A 录的、结论是 B 按下的，
+        // 出了争议要能一眼看出这道关是谁守的
+        String handover = ins.getCreatedBy() != null && !ins.getCreatedBy().equals(operator)
+                ? "代 " + ins.getCreatedBy() + " 提交"
+                : null;
+        writeLog(inspectionId, "SUBMIT", from, "SUBMITTED", operator, handover, outcome.reason());
         return outcome;
     }
 

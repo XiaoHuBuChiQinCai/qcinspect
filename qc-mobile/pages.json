@@ -43,6 +43,12 @@
       }
     },
     {
+      "path": "pages/gauge/gauge",
+      "style": {
+        "navigationBarTitleText": "量具状态"
+      }
+    },
+    {
       "path": "pages/todo/todo",
       "style": {
         "navigationBarTitleText": "待办"

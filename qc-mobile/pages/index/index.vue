@@ -25,6 +25,10 @@
         <text class="cell-title">客诉登记</text>
         <text class="cell-sub">客户反馈当场记下</text>
       </view>
+      <view class="cell wide" @click="openGauge">
+        <text class="cell-title">量具状态</text>
+        <text :class="['cell-sub', summary.overdueGauge ? 'warn' : '']">{{ gaugeSub }}</text>
+      </view>
     </view>
 
     <view class="tabs">
@@ -69,12 +73,19 @@ const todoSub = computed(() => {
   if (s.pendingReview) parts.push('待审 ' + s.pendingReview)
   if (s.pendingDefect) parts.push('待处置 ' + s.pendingDefect)
   if (s.myRejected) parts.push('退回 ' + s.myRejected)
-  if (s.overdueGauge) parts.push('量具超期 ' + s.overdueGauge)
+  // 量具超期不在这列：它已经有自己的一格，同一件事出现两遍，人会以为有两件事
   return parts.length ? parts.join(' · ') : '暂无待办'
 })
 
 /** 退回是唯一「别人卡着你、你必须动」的事，值得一个角标 */
 const todoBadge = computed(() => Number(summary.value?.myRejected) || 0)
+
+/** 量具那格的一句话：超期几把最要紧，没有超期就说清「还有几把快到期」 */
+const gaugeSub = computed(() => {
+  const overdue = Number(summary.value?.overdueGauge) || 0
+  if (overdue) return overdue + ' 把已超期，不能用于判活'
+  return '查这把卡尺还能不能用'
+})
 
 async function load() {
   if (!getToken()) {
@@ -109,6 +120,10 @@ function openShip() {
 
 function openComplaint() {
   uni.navigateTo({ url: '/pages/complaint/complaint' })
+}
+
+function openGauge() {
+  uni.navigateTo({ url: '/pages/gauge/gauge' })
 }
 
 function switchTab(t) {
@@ -192,6 +207,8 @@ onShow(load)
   width: calc(50% - 8rpx); box-sizing: border-box;
   background: #fff; border-radius: 16rpx; padding: 24rpx;
 }
+/* 第 5 格跨整行：2 列排 5 个，最后会剩半个空格，看着像少了一块 */
+.cell.wide { width: 100%; }
 .cell-title { display: block; font-size: 28rpx; color: #303133; }
 .cell-sub { display: block; font-size: 22rpx; color: #a8abb2; margin-top: 10rpx; line-height: 1.4; }
 .cell-sub.warn { color: #c45656; }
