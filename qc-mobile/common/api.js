@@ -132,6 +132,21 @@ export const api = {
   /** 按检验单号找单据。keyword 同时匹配单号和批次号，所以要自己筛 */
   inspectionSearch: kw => request(`/inspections/page?keyword=${encodeURIComponent(kw)}&size=5`),
 
+  // ---------- 出货 ----------
+  /** 出货前置信息：还剩多少可发、最新检验结论、会被什么拦下 */
+  shipmentContext: batchId => request(`/shipments/context/${batchId}`),
+  /**
+   * 登记出货。force=true 表示确认「例外放行」（不合格 / 无结论 / 有未关闭客诉的批次），
+   * 后端会在备注里打上 [例外放行] 标记，别在别处再编一个同义字段
+   */
+  createShipment: body => request('/shipments', { method: 'POST', data: body }),
+  shipmentsOfBatch: batchId => request(`/shipments?batchId=${batchId}`),
+
+  // ---------- 客诉 ----------
+  /** 登记客诉。批次必填、客户与问题描述必填，日期不能晚于今天 */
+  createComplaint: body => request('/complaints', { method: 'POST', data: body }),
+  complaintsOfBatch: batchId => request(`/complaints?batchId=${batchId}`),
+
   // ---------- 待办 ----------
   todoSummary: () => request('/todo/summary'),
   todoReviews: () => request('/todo/reviews'),

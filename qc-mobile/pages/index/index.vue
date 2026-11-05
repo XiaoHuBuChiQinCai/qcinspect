@@ -8,23 +8,22 @@
 
     <view class="me" v-if="user">当前：{{ user.realName || user.username }}</view>
 
-    <view class="todo" @click="openTodo">
-      <text class="todo-title">我的待办</text>
-      <view class="todo-right">
-        <text v-if="summary.pendingReview" class="chip">待审 {{ summary.pendingReview }}</text>
-        <text v-if="summary.pendingDefect" class="chip">待处置 {{ summary.pendingDefect }}</text>
-        <text v-if="summary.myRejected" class="chip red">退回 {{ summary.myRejected }}</text>
-        <text v-if="summary.overdueGauge" class="chip warn">量具超期 {{ summary.overdueGauge }}</text>
-        <text v-if="!summary.actionable && !summary.overdueGauge" class="chip none">暂无</text>
-        <text class="arrow">›</text>
+    <view class="grid">
+      <view class="cell" @click="openTodo">
+        <text class="cell-title">我的待办</text>
+        <text :class="['cell-sub', todoBadge ? 'warn' : '']">{{ todoSub }}</text>
       </view>
-    </view>
-
-    <view class="todo" @click="openTrace">
-      <text class="todo-title">追溯查询</text>
-      <view class="todo-right">
-        <text class="chip none">扫码查批次履历</text>
-        <text class="arrow">›</text>
+      <view class="cell" @click="openTrace">
+        <text class="cell-title">追溯查询</text>
+        <text class="cell-sub">扫码查批次履历</text>
+      </view>
+      <view class="cell" @click="openShip">
+        <text class="cell-title">出货登记</text>
+        <text class="cell-sub">发货时录客户与数量</text>
+      </view>
+      <view class="cell" @click="openComplaint">
+        <text class="cell-title">客诉登记</text>
+        <text class="cell-sub">客户反馈当场记下</text>
       </view>
     </view>
 
@@ -51,7 +50,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { api, clearSession, getToken, getUser } from '../../common/api'
 
@@ -62,6 +61,20 @@ const tab = ref('PENDING')
 const summary = ref({})
 
 const statusText = s => ({ PENDING: '待检', INSPECTING: '检验中', DONE: '已完成' }[s] || s)
+
+/** 待办摘要压成一行小字：手机上四宫格里放不下四个彩色小标签 */
+const todoSub = computed(() => {
+  const s = summary.value || {}
+  const parts = []
+  if (s.pendingReview) parts.push('待审 ' + s.pendingReview)
+  if (s.pendingDefect) parts.push('待处置 ' + s.pendingDefect)
+  if (s.myRejected) parts.push('退回 ' + s.myRejected)
+  if (s.overdueGauge) parts.push('量具超期 ' + s.overdueGauge)
+  return parts.length ? parts.join(' · ') : '暂无待办'
+})
+
+/** 退回是唯一「别人卡着你、你必须动」的事，值得一个角标 */
+const todoBadge = computed(() => Number(summary.value?.myRejected) || 0)
 
 async function load() {
   if (!getToken()) {
@@ -88,6 +101,14 @@ function openTodo() {
 
 function openTrace() {
   uni.navigateTo({ url: '/pages/trace/trace' })
+}
+
+function openShip() {
+  uni.navigateTo({ url: '/pages/ship/ship' })
+}
+
+function openComplaint() {
+  uni.navigateTo({ url: '/pages/complaint/complaint' })
 }
 
 function switchTab(t) {
@@ -166,20 +187,14 @@ onShow(load)
 .link { margin-left: 24rpx; color: #1989fa; font-size: 28rpx; }
 .me { margin-bottom: 16rpx; font-size: 24rpx; color: #8a9199; }
 
-.todo {
-  display: flex; align-items: center; justify-content: space-between;
-  background: #fff; border-radius: 16rpx; padding: 22rpx 24rpx; margin-bottom: 20rpx;
+.grid { display: flex; flex-wrap: wrap; gap: 16rpx; margin-bottom: 24rpx; }
+.cell {
+  width: calc(50% - 8rpx); box-sizing: border-box;
+  background: #fff; border-radius: 16rpx; padding: 24rpx;
 }
-.todo-title { font-size: 28rpx; color: #303133; }
-.todo-right { display: flex; align-items: center; }
-.chip {
-  font-size: 22rpx; padding: 4rpx 14rpx; border-radius: 8rpx; margin-left: 10rpx;
-  background: #eef2f7; color: #5a6b7b;
-}
-.chip.red { background: #fef0f0; color: #c45656; }
-.chip.warn { background: #fdf6ec; color: #b88230; }
-.chip.none { color: #a8abb2; }
-.arrow { margin-left: 12rpx; color: #c0c4cc; font-size: 32rpx; }
+.cell-title { display: block; font-size: 28rpx; color: #303133; }
+.cell-sub { display: block; font-size: 22rpx; color: #a8abb2; margin-top: 10rpx; line-height: 1.4; }
+.cell-sub.warn { color: #c45656; }
 
 .tabs { display: flex; gap: 12rpx; margin-bottom: 20rpx; }
 .tab {

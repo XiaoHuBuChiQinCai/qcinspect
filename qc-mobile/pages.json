@@ -31,6 +31,18 @@
       }
     },
     {
+      "path": "pages/ship/ship",
+      "style": {
+        "navigationBarTitleText": "出货登记"
+      }
+    },
+    {
+      "path": "pages/complaint/complaint",
+      "style": {
+        "navigationBarTitleText": "客诉登记"
+      }
+    },
+    {
       "path": "pages/todo/todo",
       "style": {
         "navigationBarTitleText": "待办"

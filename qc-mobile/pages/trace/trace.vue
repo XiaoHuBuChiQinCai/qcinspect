@@ -115,8 +115,16 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { onLoad } from '@dcloudio/uni-app'
 import { api } from '../../common/api'
-import { batchStatusText, dispositionStatusText, fmtTime, resultText } from '../../common/dict'
+import {
+  batchStatusText,
+  dispositionStatusText,
+  fmtTime,
+  resultText,
+  severityText
+} from '../../common/dict'
+import { matchBatches, normalizeCode, pickBatch, scanCode } from '../../common/lookup'
 
 const kw = ref('')
 const data = ref(null)
@@ -158,28 +166,14 @@ const verdictReason = computed(() => {
   return latest.value.inspection.judgeReason || '—'
 })
 
-function severityText(s) {
-  return { HIGH: '严重', MEDIUM: '一般', LOW: '轻微' }[s] || s || '—'
-}
-
 function go() {
   resolve(kw.value)
 }
 
 function scan() {
-  uni.scanCode({
-    success: res => {
-      kw.value = (res.result || '').trim()
-      resolve(kw.value)
-    },
-    fail: err => {
-      const m = (err && err.errMsg) || ''
-      // H5 走 http 时 uni.scanCode 直接不可用（要求安全上下文）。
-      // 用户取消扫码的 errMsg 是 "scanCode:fail cancel"，不该弹这个提示。
-      if (/not support|不支持|无法使用/i.test(m)) {
-        uni.showToast({ title: '当前环境不支持扫码，请手输单号', icon: 'none' })
-      }
-    }
+  scanCode(code => {
+    kw.value = code
+    resolve(code)
   })
 }
 
@@ -194,7 +188,7 @@ function scan() {
  * 先看前缀就会把批次当检验单号，直接跳到一个不存在的报告页。
  */
 async function resolve(raw) {
-  const code = String(raw || '').trim().toUpperCase().replace(/\s+/g, '')
+  const code = normalizeCode(raw)
   if (!code) {
     uni.showToast({ title: '请输入或扫码', icon: 'none' })
     return
@@ -203,17 +197,13 @@ async function resolve(raw) {
   loading.value = true
   data.value = null
   try {
-    // keyword 是模糊匹配，拿到结果必须自己再精确比一次：
-    // 搜 "B001" 会把 B0011、B0012 一起带出来，点错就查到别人的批次。
-    const list = await api.batchByKeyword(code)
-    const exact = (list || []).filter(b => b.batchNo === code || b.workOrderNo === code)
-    if (exact.length === 1) {
-      data.value = await api.traceByBatch(exact[0].id)
-      return
-    }
-    if (exact.length > 1) {
+    // keyword 是模糊匹配，matchBatches 里已经按 === 再精确筛过一遍
+    const exact = await matchBatches(code)
+    if (exact.length) {
       // 工单号可能挂多个批次（分批做），让人自己选，别替他猜
-      pickBatch(exact)
+      const hit = await pickBatch(exact)
+      if (!hit) return
+      data.value = await api.traceByBatch(hit.id)
       return
     }
     if (code.startsWith('SH')) {
@@ -232,22 +222,6 @@ async function resolve(raw) {
   }
 }
 
-/** 工单号可能挂多个批次（分批做），让人自己选，别替他猜 */
-function pickBatch(list) {
-  const top = list.slice(0, 6)
-  uni.showActionSheet({
-    itemList: top.map(b => `${b.batchNo}（${b.qty} 件）`),
-    success: async res => {
-      loading.value = true
-      try {
-        data.value = await api.traceByBatch(top[res.tapIndex].id)
-      } finally {
-        loading.value = false
-      }
-    }
-  })
-}
-
 /** 扫到检验单号时，用户要的是那张报告，不是它的批次 */
 async function openInspectionByNo(no) {
   const page = await api.inspectionSearch(no)
@@ -263,6 +237,25 @@ async function openInspectionByNo(no) {
 function openReport(id) {
   uni.navigateTo({ url: '/pages/report/report?id=' + id })
 }
+
+// 从出货登记页跳过来时带着批次 id：那边刚登记完一笔，直接看这个批次的履历
+onLoad(options => {
+  const id = options && options.id
+  if (!id) return
+  loading.value = true
+  api
+    .traceByBatch(id)
+    .then(d => {
+      data.value = d
+      kw.value = (d && d.batch && d.batch.batchNo) || ''
+    })
+    .catch(() => {
+      data.value = null
+    })
+    .finally(() => {
+      loading.value = false
+    })
+})
 </script>
 
 <style>
