@@ -25,6 +25,12 @@
       }
     },
     {
+      "path": "pages/trace/trace",
+      "style": {
+        "navigationBarTitleText": "追溯查询"
+      }
+    },
+    {
       "path": "pages/todo/todo",
       "style": {
         "navigationBarTitleText": "待办"

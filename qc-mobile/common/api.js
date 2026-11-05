@@ -124,6 +124,14 @@ export const api = {
   removeImage: id => request(`/images/${id}`, { method: 'DELETE' }),
   report: id => request(`/reports/inspection/${id}`),
 
+  // ---------- 追溯 ----------
+  /** 批次号 / 工单号模糊搜，调用方必须自己再精确比一次 */
+  batchByKeyword: kw => request('/batches?keyword=' + encodeURIComponent(kw)),
+  traceByBatch: id => request(`/trace/batch/${id}`),
+  traceByShipment: no => request(`/trace/shipment/${encodeURIComponent(no)}`),
+  /** 按检验单号找单据。keyword 同时匹配单号和批次号，所以要自己筛 */
+  inspectionSearch: kw => request(`/inspections/page?keyword=${encodeURIComponent(kw)}&size=5`),
+
   // ---------- 待办 ----------
   todoSummary: () => request('/todo/summary'),
   todoReviews: () => request('/todo/reviews'),

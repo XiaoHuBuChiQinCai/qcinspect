@@ -20,6 +20,14 @@
       </view>
     </view>
 
+    <view class="todo" @click="openTrace">
+      <text class="todo-title">追溯查询</text>
+      <view class="todo-right">
+        <text class="chip none">扫码查批次履历</text>
+        <text class="arrow">›</text>
+      </view>
+    </view>
+
     <view class="tabs">
       <view :class="['tab', tab === 'PENDING' ? 'on' : '']" @click="switchTab('PENDING')">待检</view>
       <view :class="['tab', tab === 'INSPECTING' ? 'on' : '']" @click="switchTab('INSPECTING')">检验中</view>
@@ -78,6 +86,10 @@ function openTodo() {
   uni.navigateTo({ url: '/pages/todo/todo' })
 }
 
+function openTrace() {
+  uni.navigateTo({ url: '/pages/trace/trace' })
+}
+
 function switchTab(t) {
   tab.value = t
   load()
@@ -110,6 +122,13 @@ function scan() {
         openBatch(hit)
       } else {
         uni.showToast({ title: '未匹配到批次：' + code, icon: 'none' })
+      }
+    },
+    fail: err => {
+      const m = (err && err.errMsg) || ''
+      // H5 走 http 时扫码接口不可用（要求安全上下文）；用户主动取消不该弹提示
+      if (/not support|不支持|无法使用/i.test(m)) {
+        uni.showToast({ title: '当前环境不支持扫码，可在追溯页手输单号', icon: 'none' })
       }
     }
   })

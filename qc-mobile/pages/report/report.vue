@@ -21,8 +21,8 @@
       <view class="kv"><text class="k">产品</text><text class="v">{{ product.productName || '—' }} {{ product.spec || '' }}</text></view>
       <view class="kv"><text class="k">抽样</text><text class="v">{{ samplingText }} · {{ ins.sampleQty }} 件 · 允收 {{ ins.acceptQty }}</text></view>
       <view class="kv"><text class="k">检验员</text><text class="v">{{ ins.inspectorName || '—' }}</text></view>
-      <view class="kv"><text class="k">检验时间</text><text class="v">{{ fmt(ins.inspectedAt) }}</text></view>
-      <view class="kv"><text class="k">审核</text><text class="v">{{ ins.reviewedBy ? ins.reviewedBy + ' · ' + fmt(ins.reviewedAt) : '未审核' }}</text></view>
+      <view class="kv"><text class="k">检验时间</text><text class="v">{{ fmtTime(ins.inspectedAt) }}</text></view>
+      <view class="kv"><text class="k">审核</text><text class="v">{{ ins.reviewedBy ? ins.reviewedBy + ' · ' + fmtTime(ins.reviewedAt) : '未审核' }}</text></view>
     </view>
 
     <view :class="['card', 'result', finalPass ? 'pass' : 'fail']">
@@ -56,7 +56,7 @@
       <view v-for="d in defects" :key="d.id" class="defect">
         <view class="defect-head">
           <text class="defect-name">{{ d.defectName }}</text>
-          <text class="defect-status">{{ statusText(d.dispositionStatus) }}</text>
+          <text class="defect-status">{{ dispositionStatusText(d.dispositionStatus) }}</text>
         </view>
         <view class="defect-sub">
           第 {{ d.pieceNo }} 件 · {{ dispositionText(d.disposition) }}<text v-if="d.dispositionBy"> · {{ d.dispositionBy }}</text>
@@ -82,7 +82,7 @@
     <view v-if="logs.length" class="card">
       <view class="card-title">操作留痕</view>
       <view v-for="l in logs" :key="l.id" class="log">
-        <text class="log-time">{{ fmt(l.createdAt) }}</text>
+        <text class="log-time">{{ fmtTime(l.createdAt) }}</text>
         <text class="log-action">{{ actionText(l.action) }}</text>
         <text class="log-op">{{ l.operator }}</text>
         <view v-if="l.summary" class="log-sum">{{ l.summary }}</view>
@@ -97,6 +97,7 @@
 import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { absUrl, api } from '../../common/api'
+import { dispositionStatusText, dispositionText, fmtTime } from '../../common/dict'
 
 const ins = ref({})
 const batch = ref({})
@@ -159,18 +160,6 @@ function stdText(row) {
   }
   if (row.valueType === 'BOOL') return row.boolPassValue ? '合格值：有' : '合格值：无'
   return ''
-}
-
-function fmt(t) {
-  return t ? String(t).replace('T', ' ').slice(0, 16) : '—'
-}
-
-function statusText(s) {
-  return { PENDING: '待处理', PROCESSING: '处理中', DONE: '已完成', WAIVED: '已让步' }[s] || s || ''
-}
-
-function dispositionText(d) {
-  return { REWORK: '返工', SCRAP: '报废', CONCESSION: '让步接收', RETURN: '退货' }[d] || '未定'
 }
 
 function actionText(a) {

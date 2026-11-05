@@ -161,6 +161,7 @@
 import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { api, getToken, getUser } from '../../common/api'
+import { dispositionStatusText as statusText, dispositionText } from '../../common/dict'
 
 const tabs = [
   { key: 'review', label: '待审' },
@@ -315,14 +316,6 @@ async function doConcession() {
   conVisible.value = false
   uni.showToast({ title: '已记录让步', icon: 'success' })
   load()
-}
-
-function statusText(s) {
-  return { PENDING: '待处理', PROCESSING: '处理中', DONE: '已完成', WAIVED: '已让步' }[s] || s || ''
-}
-
-function dispositionText(d) {
-  return { REWORK: '返工', SCRAP: '报废', CONCESSION: '让步接收', RETURN: '退货' }[d] || '未定'
 }
 
 onShow(load)
