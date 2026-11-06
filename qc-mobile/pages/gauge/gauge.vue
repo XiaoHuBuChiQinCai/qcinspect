@@ -13,6 +13,12 @@
       <view class="btn ghost" @click="scan">扫码</view>
     </view>
 
+    <!-- 点检入口：校准一年一次，点检每月一次，现场问得最勤的其实是「这个月点过没」 -->
+    <view class="task" @click="gotoCheck()">
+      <text class="task-t">{{ taskText }}</text>
+      <text class="task-go">去点检 ›</text>
+    </view>
+
     <view v-if="hit" class="detail">
       <view class="dhead">
         <text class="code">{{ hit.gaugeCode }}</text>
@@ -23,12 +29,16 @@
       <view class="kv"><text class="k">状态</text><text class="v">{{ gaugeStatusText(hit.status) }}</text></view>
       <view class="kv"><text class="k">上次校准</text><text class="v">{{ hit.calibrateDate || '—' }}</text></view>
       <view class="kv"><text class="k">下次到期</text><text class="v">{{ hit.nextCalibrateDate || '未校准' }}</text></view>
+      <view class="kv"><text class="k">上次点检</text><text class="v">{{ hit.lastCheckDate || '还没点检过' }}</text></view>
       <view class="kv"><text class="k">校准周期</text><text class="v">{{ hit.calibrateCycleDays ? hit.calibrateCycleDays + ' 天' : '—' }}</text></view>
       <view class="kv"><text class="k">使用部门</text><text class="v">{{ hit.ownerDept || '—' }}</text></view>
       <view class="kv" v-if="hit.accuracy"><text class="k">精度</text><text class="v">{{ hit.accuracy }}</text></view>
 
       <view v-if="!judge.usable" class="block">{{ judge.text }}。{{ gaugeAdvice(judge.level) }}</view>
       <view v-else-if="judge.level === 'SOON'" class="note">{{ judge.text }}，还能用，记得安排送检</view>
+
+      <view v-if="hit.status === 'ACTIVE'" class="go-check" @click="gotoCheck(hit.id)">点检这把量具</view>
+      <view v-else class="note">停用/报废的量具不能点检，先按上面的处置走</view>
 
       <view class="sec">校准履历{{ cals.length ? '（' + cals.length + ' 次）' : '' }}</view>
       <view v-for="c in cals" :key="c.id" class="cal">
@@ -79,8 +89,15 @@ const kw = ref('')
 const filter = ref('BAD')
 const hit = ref(null)
 const cals = ref([])
+const pendingCount = ref(null)
 
 const judge = computed(() => judgeGauge(hit.value, todayLocal()))
+
+/** 点检那一条：数字来自 /gauges/checks/pending，和点检页同一个出处，别在这里另算 */
+const taskText = computed(() => {
+  if (pendingCount.value === null) return '本月点检'
+  return pendingCount.value ? '本月还有 ' + pendingCount.value + ' 把没点检' : '本月点检都做完了'
+})
 
 /** 台账拉下来就在本地算一遍结论：一个页面要按结论分组、排序、筛选，不该为此发三次请求 */
 const counts = computed(() => {
@@ -110,11 +127,22 @@ async function load() {
       .map(g => ({ ...g, _judge: judgeGauge(g, today) }))
       // 不能用的排最前，其次快到期：这一页就是来看「哪几把有问题」的
       .sort((a, b) => rank(a._judge) - rank(b._judge) || String(a.gaugeCode).localeCompare(String(b.gaugeCode)))
+    // 点检数量拉不到不该挡住台账
+    try {
+      const pend = await api.gaugePendingChecks()
+      pendingCount.value = (pend || []).length
+    } catch (e) {
+      pendingCount.value = null
+    }
   } catch (e) {
     list.value = []
   } finally {
     loading.value = false
   }
+}
+
+function gotoCheck(id) {
+  uni.navigateTo({ url: '/pages/gauge/check' + (id ? '?id=' + id : '') })
 }
 
 function rank(j) {
@@ -183,6 +211,18 @@ function scan() {
   background: #1989fa; color: #fff; border-radius: 12rpx; font-size: 28rpx;
 }
 .btn.ghost { background: #fff; color: #1989fa; }
+
+.task {
+  display: flex; align-items: center; justify-content: space-between;
+  background: #fff; border-radius: 12rpx; padding: 22rpx 24rpx; margin-bottom: 20rpx;
+}
+.task-t { font-size: 26rpx; color: #303133; }
+.task-go { font-size: 26rpx; color: #1989fa; }
+
+.go-check {
+  margin-top: 18rpx; height: 72rpx; line-height: 72rpx; text-align: center;
+  border: 1rpx solid #1989fa; color: #1989fa; border-radius: 12rpx; font-size: 26rpx;
+}
 
 .detail { background: #fff; border-radius: 16rpx; padding: 24rpx; margin-bottom: 20rpx; }
 .dhead { display: flex; align-items: center; justify-content: space-between; }

@@ -1,6 +1,7 @@
 package com.qc.inspect.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -36,11 +37,23 @@ public class QcGauge {
     /** 由 calibrateDate + cycle 推算，程序维护 */
     private LocalDate nextCalibrateDate;
 
-    /** ACTIVE / SCRAPPED */
+    /** ACTIVE / SUSPENDED / SCRAPPED */
     private String status;
+
+    /** 停用原因：校准不合格 / 点检不合格。停用时写入，复校合格后清空 */
+    private String suspendReason;
 
     private String ownerDept;
     private String remark;
+
+    /**
+     * 最近一次点检日期。瞬态字段，由 {@code GaugeService.list} 按 id 批量回填。
+     *
+     * <p>不落库：落库就要在每次点检时同步，总有一次忘了同步，
+     * 表现是「点检记录有、台账显示没点检」，比没有这一列更难查。
+     */
+    @TableField(exist = false)
+    private LocalDate lastCheckDate;
 
     @TableLogic
     private Integer delFlag;

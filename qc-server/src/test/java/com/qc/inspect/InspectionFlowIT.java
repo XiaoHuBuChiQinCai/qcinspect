@@ -2032,6 +2032,89 @@ class InspectionFlowIT {
         assertThat(String.valueOf(submitLog.get("summary"))).isNotBlank();
     }
 
+    @Test
+    @Order(35)
+    @DisplayName("量具点检：等于允差算合格、超差即停用、停用原因说清是点检不是校准")
+    void gaugeCheckStopsGauge() {
+        LocalDate today = LocalDate.now();
+        Long g = num(data(post("/api/gauges", Map.of(
+                "gaugeCode", "IT-G-CHK", "gaugeName", "IT 点检卡尺", "gaugeType", "卡尺",
+                "accuracy", "0.01mm",
+                "calibrateDate", today.minusDays(10).toString(), "calibrateCycleDays", 365))).get("id"));
+
+        // 新量具本月没点检过，就该出现在待点检列表里
+        assertThat(asList(get("/api/gauges/checks/pending").get("data")))
+                .extracting(p -> num(asMap(p.get("gauge")).get("id")))
+                .as("本月未点检的量具要能列出来").contains(g);
+
+        // 没有标准件编号的「点检」证明不了任何事
+        assertThat(num(post("/api/gauges/" + g + "/check", Map.of(
+                "checkDate", today.toString(), "standardValue", 10, "measuredValue", 10,
+                "tolerance", 0.01)).get("code")))
+                .as("必须填标准件编号").isNotEqualTo(0);
+
+        // 边界：偏差正好等于允差算合格。前端 gaugeCheck.js 用的是同一个口径，
+        // 写成 < 就会出现「界面说超差、后端说合格」
+        Map<String, Object> eq = data(post("/api/gauges/" + g + "/check", Map.of(
+                "checkDate", today.minusDays(1).toString(), "standardNo", "STD-10",
+                "standardValue", 10, "measuredValue", 10.01, "tolerance", 0.01)));
+        assertThat(asMap(eq.get("check")).get("result")).as("等于允差算合格").isEqualTo("PASS");
+        assertThat(String.valueOf(asMap(eq.get("check")).get("deviation"))).startsWith("0.01");
+        assertThat(asMap(eq.get("gauge")).get("status")).isEqualTo("ACTIVE");
+
+        // 手抖点两下、两个人同时录，都不能长出两条一样的记录
+        assertThat(num(post("/api/gauges/" + g + "/check", Map.of(
+                "checkDate", today.minusDays(1).toString(), "standardNo", "STD-10",
+                "standardValue", 10, "measuredValue", 10, "tolerance", 0.01)).get("code")))
+                .as("同一天不许重复点检").isNotEqualTo(0);
+
+        // 超差 0.02 > 允差 0.01 → 不合格，量具立刻停用
+        Map<String, Object> bad = data(post("/api/gauges/" + g + "/check", Map.of(
+                "checkDate", today.toString(), "standardNo", "STD-10",
+                "standardValue", 10, "measuredValue", 10.02, "tolerance", 0.01,
+                "remark", "量出来偏大")));
+        assertThat(asMap(bad.get("check")).get("result")).isEqualTo("FAIL");
+        assertThat(asMap(bad.get("gauge")).get("status")).as("点检不合格必须停用").isEqualTo("SUSPENDED");
+        assertThat(String.valueOf(asMap(bad.get("gauge")).get("suspendReason")))
+                .as("停用原因要写清是点检不合格，别让人白跑一趟计量院")
+                .contains("点检不合格");
+
+        // 已停用的量具不该再催点检，也不该允许继续点检
+        assertThat(asList(get("/api/gauges/checks/pending").get("data")))
+                .extracting(p -> num(asMap(p.get("gauge")).get("id"))).doesNotContain(g);
+        Map<String, Object> again = post("/api/gauges/" + g + "/check", Map.of(
+                "checkDate", today.minusDays(3).toString(), "standardNo", "STD-10",
+                "standardValue", 10, "measuredValue", 10, "tolerance", 0.01));
+        assertThat(num(again.get("code"))).as("停用期间不许再点检").isNotEqualTo(0);
+        assertThat(String.valueOf(again.get("msg"))).contains("停用");
+
+        // 真正的闸门还是在提交：拿点检不合格的量具判活要被拦，且说的是点检
+        Long nb = aqlBatch("IT-G-CHK-BATCH", 20);
+        Long ins = num(data(post("/api/inspections", Map.of("batchId", nb))).get("inspectionId"));
+        List<Map<String, Object>> lines = fillCompliant(detail(ins));
+        lines.get(0).put("gaugeId", g);
+        Map<String, Object> blocked = post("/api/inspections/" + ins + "/submit", Map.of("lines", lines));
+        assertThat(num(blocked.get("code"))).as("点检不合格的量具不许用于检验").isNotEqualTo(0);
+        assertThat(String.valueOf(blocked.get("msg"))).contains("点检不合格");
+
+        // 送检复校合格即恢复可用，停用原因必须清掉
+        Map<String, Object> fixed = data(post("/api/gauges/" + g + "/calibrate", Map.of(
+                "calibrateDate", today.toString(), "result", "PASS", "agency", "市计量院",
+                "certificateNo", "JL-2026-2001", "remark", "点检超差后复校")));
+        assertThat(fixed.get("status")).as("复校合格即恢复可用").isEqualTo("ACTIVE");
+        assertThat(fixed.get("suspendReason")).as("恢复后不能再挂着旧原因").isNull();
+        assertThat(asList(get("/api/gauges/checks/pending").get("data")))
+                .extracting(p -> num(asMap(p.get("gauge")).get("id")))
+                .as("刚点检过（本月）就不该再催").doesNotContain(g);
+
+        // 履历：只增不改，倒序
+        List<Map<String, Object>> his = asList(get("/api/gauges/" + g + "/checks").get("data"));
+        assertThat(his).hasSize(2);
+        assertThat(his.get(0).get("result")).isEqualTo("FAIL");
+        assertThat(his.get(0).get("standardNo")).isEqualTo("STD-10");
+        assertThat(String.valueOf(his.get(0).get("checkedBy"))).isNotBlank();
+    }
+
     /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */
     private static final byte[] PNG_1PX = java.util.Base64.getDecoder().decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");

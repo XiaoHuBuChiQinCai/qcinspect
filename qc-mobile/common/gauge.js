@@ -80,7 +80,10 @@ export function judgeGauge(g, today) {
     return { level: 'SCRAPPED', text: '已报废', usable: false, days: null }
   }
   if (status === 'SUSPENDED') {
-    return { level: 'SUSPENDED', text: '上次校准不合格，已停用', usable: false, days: null }
+    // 停用可能是校准不合格，也可能是点检不合格。两句话的下一步不一样：
+    // 一个要送计量院，一个可能只是标准件对不上。照实说，别写死
+    const why = g.suspendReason ? String(g.suspendReason) : '上次校准不合格'
+    return { level: 'SUSPENDED', text: '已停用：' + why, usable: false, days: null }
   }
   const next = dateOnly(g.nextCalibrateDate)
   const now = dateOnly(today)

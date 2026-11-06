@@ -1,18 +1,28 @@
 package com.qc.inspect.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.entity.QcGauge;
 import com.qc.inspect.entity.QcGaugeCalibration;
+import com.qc.inspect.entity.QcGaugeCheck;
 import com.qc.inspect.mapper.QcGaugeCalibrationMapper;
+import com.qc.inspect.mapper.QcGaugeCheckMapper;
 import com.qc.inspect.mapper.QcGaugeMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 量具台账与校准有效性。
@@ -27,12 +37,40 @@ public class GaugeService {
 
     private final QcGaugeMapper gaugeMapper;
     private final QcGaugeCalibrationMapper calibrationMapper;
+    private final QcGaugeCheckMapper checkMapper;
+
+    /** 偏差与允差保留 4 位，和 numeric(18,4) 对齐：库里的值和界面上算的必须是同一个 */
+    private static final int AMOUNT_SCALE = 4;
 
     /** 全部量具，默认含已过期的（要让人看见问题，而不是藏起来） */
     public List<QcGauge> list(String status) {
-        return gaugeMapper.selectList(new LambdaQueryWrapper<QcGauge>()
+        List<QcGauge> rows = gaugeMapper.selectList(new LambdaQueryWrapper<QcGauge>()
                 .eq(status != null && !status.isBlank(), QcGauge::getStatus, status)
                 .orderByAsc(QcGauge::getGaugeCode));
+        fillLastCheckDate(rows);
+        return rows;
+    }
+
+    /** 按 id 批量回填「最近一次点检」，一次查询搞定，别在循环里查库 */
+    private void fillLastCheckDate(List<QcGauge> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        List<Long> ids = new ArrayList<>();
+        for (QcGauge g : rows) {
+            ids.add(g.getId());
+        }
+        List<QcGaugeCheck> checks = checkMapper.selectList(new LambdaQueryWrapper<QcGaugeCheck>()
+                .in(QcGaugeCheck::getGaugeId, ids)
+                .orderByDesc(QcGaugeCheck::getCheckDate)
+                .orderByDesc(QcGaugeCheck::getId));
+        Map<Long, LocalDate> last = new HashMap<>();
+        for (QcGaugeCheck c : checks) {
+            last.putIfAbsent(c.getGaugeId(), c.getCheckDate());
+        }
+        for (QcGauge g : rows) {
+            g.setLastCheckDate(last.get(g.getId()));
+        }
     }
 
     /** 未来 N 天内到期（含已过期）的量具，用于首页提醒 */
@@ -165,19 +203,39 @@ public class GaugeService {
         LocalDate current = g.getCalibrateDate();
         boolean newest = current == null || !calibrateDate.isBefore(current);
         if (newest) {
-            g.setUpdatedAt(now);
-            g.setUpdatedBy(operator);
-            if ("FAIL".equals(r)) {
+            boolean fail = "FAIL".equals(r);
+            // 停用要说清是哪种不合格。点检不合格也走这条停用，
+            // 文案写死成「校准不合格」会让人白跑一趟计量院
+            String reason = fail
+                    ? truncate("校准不合格 " + calibrateDate
+                               + (remark == null || remark.isBlank() ? "" : "：" + remark))
+                    : null;
+
+            LambdaUpdateWrapper<QcGauge> up = new LambdaUpdateWrapper<QcGauge>()
+                    .eq(QcGauge::getId, id)
+                    .set(QcGauge::getUpdatedAt, now)
+                    .set(QcGauge::getUpdatedBy, operator)
+                    // 复校合格必须把停用原因清掉，否则界面还在说这把「点检不合格」
+                    .set(QcGauge::getSuspendReason, reason);
+            if (fail) {
                 // 有效期原样留着（多半已经过期或即将过期），量具停下等人修
-                g.setStatus("SUSPENDED");
+                up.set(QcGauge::getStatus, "SUSPENDED");
             } else {
+                up.set(QcGauge::getCalibrateDate, calibrateDate)
+                        .set(QcGauge::getCalibrateCycleDays, cycle)
+                        .set(QcGauge::getNextCalibrateDate, next)
+                        .set(QcGauge::getStatus, "ACTIVE");
                 g.setCalibrateDate(calibrateDate);
                 g.setCalibrateCycleDays(cycle);
                 g.setNextCalibrateDate(next);
-                // 之前因校准不合格停用的，修好后重新校准合格就恢复可用
-                g.setStatus("ACTIVE");
             }
-            gaugeMapper.updateById(g);
+            gaugeMapper.update(null, up);
+
+            // 返回体要和库里一致：前端拿它直接刷详情卡，不能还是旧状态
+            g.setStatus(fail ? "SUSPENDED" : "ACTIVE");
+            g.setSuspendReason(reason);
+            g.setUpdatedAt(now);
+            g.setUpdatedBy(operator);
         }
         return g;
     }
@@ -194,6 +252,177 @@ public class GaugeService {
         return calibrationMapper.selectCount(new LambdaQueryWrapper<QcGaugeCalibration>()
                 .eq(QcGaugeCalibration::getGaugeId, gaugeId)
                 .eq(QcGaugeCalibration::getCalibrateDate, date)) > 0;
+    }
+
+    // ==================== 点检（期间核查） ====================
+
+    /** 某把量具的点检履历，按日期倒序 */
+    public List<QcGaugeCheck> checks(Long gaugeId) {
+        return checkMapper.selectList(new LambdaQueryWrapper<QcGaugeCheck>()
+                .eq(QcGaugeCheck::getGaugeId, gaugeId)
+                .orderByDesc(QcGaugeCheck::getCheckDate)
+                .orderByDesc(QcGaugeCheck::getId));
+    }
+
+    /**
+     * 登记一次点检：拿标准件量一遍，偏差在允差内就继续用。
+     *
+     * <p>几条规矩都是现场来的：
+     * <ol>
+     *   <li><b>必须有标准件编号</b>：没有标准件的「点检」只是又量了一遍，证明不了任何事</li>
+     *   <li><b>等于允差算合格</b>：与判定引擎一致，边界一律闭区间。
+     *       偏差与允差都按 4 位小数取整后再比，否则 {@code 10.01 - 10} 在 double 里
+     *       是 0.010000000000000675，界面说超差、后端说合格</li>
+     *   <li><b>不合格立即停用</b>：点检的意义就是发现漂移，发现了还让它继续干活等于没查</li>
+     *   <li><b>停用期间不许再点检</b>：这把已经不能用了，再点检只是往履历里堆噪声，
+     *       该做的是送检复校</li>
+     * </ol>
+     */
+    @Transactional
+    public CheckResult submitCheck(Long gaugeId, LocalDate checkDate, String standardNo,
+                                   BigDecimal standardValue, BigDecimal measuredValue,
+                                   BigDecimal tolerance, String remark, String operator) {
+        QcGauge g = gaugeMapper.selectById(gaugeId);
+        if (g == null) {
+            throw BizException.of("量具不存在：" + gaugeId);
+        }
+        if ("SCRAPPED".equals(g.getStatus())) {
+            throw BizException.of("量具 " + g.getGaugeCode() + " 已报废，不用再点检");
+        }
+        if ("SUSPENDED".equals(g.getStatus())) {
+            throw BizException.of("量具 " + g.getGaugeCode() + " 已停用："
+                    + (g.getSuspendReason() == null ? "原因未记录" : g.getSuspendReason())
+                    + "。请先送检复校，合格恢复可用后再点检");
+        }
+        if (checkDate == null) {
+            throw BizException.of("必须填写点检日期");
+        }
+        if (checkDate.isAfter(LocalDate.now())) {
+            throw BizException.of("点检日期不能是未来时间");
+        }
+        if (standardNo == null || standardNo.isBlank()) {
+            throw BizException.of("必须填写标准件编号——没有标准件的点检，证明不了任何事");
+        }
+        if (standardValue == null || measuredValue == null) {
+            throw BizException.of("标准件标称值和实测值都要填");
+        }
+        if (tolerance == null) {
+            throw BizException.of("必须填写允差，否则无从判断合格与否");
+        }
+        if (tolerance.signum() < 0) {
+            throw BizException.of("允差不能是负数，按 ± 填绝对值");
+        }
+
+        BigDecimal std = standardValue.setScale(AMOUNT_SCALE, RoundingMode.HALF_UP);
+        BigDecimal mea = measuredValue.setScale(AMOUNT_SCALE, RoundingMode.HALF_UP);
+        BigDecimal tol = tolerance.setScale(AMOUNT_SCALE, RoundingMode.HALF_UP);
+        BigDecimal dev = mea.subtract(std);
+        // 闭区间：偏差正好等于允差算合格
+        boolean pass = dev.abs().compareTo(tol) <= 0;
+
+        if (existsCheckOn(gaugeId, checkDate)) {
+            throw BizException.of("该量具 " + checkDate + " 已点检过，同一天不能重复登记");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        QcGaugeCheck c = new QcGaugeCheck();
+        c.setGaugeId(gaugeId);
+        c.setCheckDate(checkDate);
+        c.setStandardNo(standardNo.trim());
+        c.setStandardValue(std);
+        c.setMeasuredValue(mea);
+        c.setTolerance(tol);
+        c.setDeviation(dev);
+        c.setResult(pass ? "PASS" : "FAIL");
+        c.setCheckedBy(operator);
+        c.setRemark(trimToNull(remark));
+        c.setCreatedAt(now);
+        checkMapper.insert(c);
+
+        if (!pass) {
+            String reason = truncate("点检不合格 " + checkDate
+                    + "（偏差 " + dev.toPlainString() + "，允差 ±" + tol.toPlainString() + "）");
+            gaugeMapper.update(null, new LambdaUpdateWrapper<QcGauge>()
+                    .eq(QcGauge::getId, gaugeId)
+                    .set(QcGauge::getStatus, "SUSPENDED")
+                    .set(QcGauge::getSuspendReason, reason)
+                    .set(QcGauge::getUpdatedBy, operator)
+                    .set(QcGauge::getUpdatedAt, now));
+            g.setStatus("SUSPENDED");
+            g.setSuspendReason(reason);
+            g.setUpdatedAt(now);
+            g.setUpdatedBy(operator);
+        }
+        g.setLastCheckDate(checkDate);
+        return new CheckResult(c, g);
+    }
+
+    /** 点检结果：带上更新后的量具状态，前端不用再查一次就知道有没有被停用 */
+    public record CheckResult(QcGaugeCheck check, QcGauge gauge) {
+    }
+
+    /**
+     * 本月还没点检的量具。
+     *
+     * <p>只算 ACTIVE 的：停用和报废的已经不能用了，催着点检没有意义，
+     * 反而会把「该送检」的人引去「再量一遍」。
+     *
+     * @param daysSince 距上次点检多少天；从没点检过为 {@link Integer#MAX_VALUE}，排最前
+     */
+    public record PendingCheck(QcGauge gauge, LocalDate lastCheckDate, String lastResult, int daysSince) {
+    }
+
+    public List<PendingCheck> pendingChecks() {
+        LocalDate today = LocalDate.now();
+        LocalDate monthStart = today.withDayOfMonth(1);
+
+        List<QcGauge> actives = gaugeMapper.selectList(new LambdaQueryWrapper<QcGauge>()
+                .eq(QcGauge::getStatus, "ACTIVE")
+                .orderByAsc(QcGauge::getGaugeCode));
+        if (actives.isEmpty()) {
+            return List.of();
+        }
+        List<Long> ids = new ArrayList<>();
+        for (QcGauge g : actives) {
+            ids.add(g.getId());
+        }
+        Map<Long, QcGaugeCheck> last = new HashMap<>();
+        for (QcGaugeCheck c : checkMapper.selectList(new LambdaQueryWrapper<QcGaugeCheck>()
+                .in(QcGaugeCheck::getGaugeId, ids)
+                .orderByDesc(QcGaugeCheck::getCheckDate)
+                .orderByDesc(QcGaugeCheck::getId))) {
+            last.putIfAbsent(c.getGaugeId(), c);
+        }
+
+        List<PendingCheck> out = new ArrayList<>();
+        for (QcGauge g : actives) {
+            QcGaugeCheck c = last.get(g.getId());
+            // 本月已经点检过的不再催
+            if (c != null && !c.getCheckDate().isBefore(monthStart)) {
+                continue;
+            }
+            if (c == null) {
+                out.add(new PendingCheck(g, null, null, Integer.MAX_VALUE));
+            } else {
+                int days = (int) ChronoUnit.DAYS.between(c.getCheckDate(), today);
+                out.add(new PendingCheck(g, c.getCheckDate(), c.getResult(), days));
+            }
+        }
+        // 隔得最久的排最前：这一页是拿来催活的，不是拿来看台账的
+        out.sort(Comparator.comparingInt(PendingCheck::daysSince).reversed()
+                .thenComparing(p -> p.gauge().getGaugeCode()));
+        return out;
+    }
+
+    private boolean existsCheckOn(Long gaugeId, LocalDate date) {
+        return checkMapper.selectCount(new LambdaQueryWrapper<QcGaugeCheck>()
+                .eq(QcGaugeCheck::getGaugeId, gaugeId)
+                .eq(QcGaugeCheck::getCheckDate, date)) > 0;
+    }
+
+    /** 停用原因列只有 200 字符，超了截断，别让一次插入因为备注太长而失败 */
+    private static String truncate(String s) {
+        return s.length() <= 200 ? s : s.substring(0, 199) + "…";
     }
 
     private static String normalizeResult(String result) {
@@ -226,8 +455,13 @@ public class GaugeService {
             throw BizException.of(prefix + "选用的量具 " + g.getGaugeCode() + " 已报废，不能用于检验");
         }
         if ("SUSPENDED".equals(g.getStatus())) {
+            // 停用原因可能是校准不合格，也可能是点检不合格。两句话的下一步不一样：
+            // 一个要送计量院，一个可能只是标准件对不上。所以照实说，别写死一句
+            String why = g.getSuspendReason() == null || g.getSuspendReason().isBlank()
+                    ? "上次校准不合格"
+                    : g.getSuspendReason();
             throw BizException.of(prefix + "选用的量具 " + g.getGaugeCode()
-                    + " 上次校准不合格，已停用。维修并重新校准合格后才能再用");
+                    + " 已停用：" + why + "。维修并重新校准合格后才能再用");
         }
         LocalDate next = g.getNextCalibrateDate();
         if (next == null) {

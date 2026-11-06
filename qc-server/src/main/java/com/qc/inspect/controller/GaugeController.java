@@ -4,6 +4,7 @@ import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.R;
 import com.qc.inspect.entity.QcGauge;
 import com.qc.inspect.entity.QcGaugeCalibration;
+import com.qc.inspect.entity.QcGaugeCheck;
 import com.qc.inspect.service.GaugeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -59,6 +61,32 @@ public class GaugeController {
         return R.ok(gaugeService.calibrations(id));
     }
 
+    /**
+     * 本月还没点检的量具。现场每月拿标准件对一遍，这一页就是催活用的。
+     * 只含 ACTIVE 的——停用与报废的不催，催了也只会把人引去「再量一遍」。
+     */
+    @GetMapping("/checks/pending")
+    public R<List<GaugeService.PendingCheck>> pendingChecks() {
+        return R.ok(gaugeService.pendingChecks());
+    }
+
+    /** 某把量具的点检履历，按日期倒序 */
+    @GetMapping("/{id}/checks")
+    public R<List<QcGaugeCheck>> checks(@PathVariable Long id) {
+        return R.ok(gaugeService.checks(id));
+    }
+
+    /**
+     * 登记点检。谁在现场谁录，所以不设角色限制——
+     * 但点检不合格会把量具置为停用，这个后果要在返回体里带出去，前端得当场告诉人。
+     */
+    @PostMapping("/{id}/check")
+    public R<GaugeService.CheckResult> check(@PathVariable Long id, @RequestBody CheckReq req) {
+        return R.ok(gaugeService.submitCheck(id, req.checkDate(), req.standardNo(),
+                req.standardValue(), req.measuredValue(), req.tolerance(), req.remark(),
+                UserContext.username()));
+    }
+
     @PostMapping("/{id}/scrap")
     @PreAuthorize("hasRole('ADMIN')")
     public R<Void> scrap(@PathVariable Long id, @RequestParam(required = false) String reason) {
@@ -69,5 +97,13 @@ public class GaugeController {
     /** result：PASS 合格 / FAIL 不合格 / LIMITED 限用，不传按 PASS */
     public record CalibrateReq(LocalDate calibrateDate, Integer cycleDays, String result,
                                String certificateNo, String agency, String remark) {
+    }
+
+    /**
+     * 点检入参：标准件标称值 + 允差 + 实测值，结论由后端算。
+     * 不让前端传 result——前端算一遍后端再存一遍，两边算法一岔就成了「界面合格、库里不合格」。
+     */
+    public record CheckReq(LocalDate checkDate, String standardNo, BigDecimal standardValue,
+                           BigDecimal measuredValue, BigDecimal tolerance, String remark) {
     }
 }

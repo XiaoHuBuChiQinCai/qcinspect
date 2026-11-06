@@ -771,9 +771,12 @@ POST /standards/3/review
 | POST | `/gauges` | 新增 / 修改（`nextCalibrateDate` 由后端算，不用传） |
 | POST | `/gauges/{id}/calibrate` | 登记一次校准，JSON body 见下 |
 | GET | `/gauges/{id}/calibrations` | 校准履历，按校准日倒序 |
+| GET | `/gauges/checks/pending` | 本月还没点检的量具（只含 `ACTIVE`），按「多久没点检」倒序 |
+| GET | `/gauges/{id}/checks` | 点检履历，按点检日倒序 |
+| POST | `/gauges/{id}/check` | 登记一次点检，JSON body 见下 |
 | POST | `/gauges/{id}/scrap?reason=跌落损坏` | 报废 |
 
-**状态**：`ACTIVE` 可用 / `SUSPENDED` 校准不合格停用 / `SCRAPPED` 已报废。
+**状态**：`ACTIVE` 可用 / `SUSPENDED` 停用（校准不合格或点检不合格，看 `suspendReason`）/ `SCRAPPED` 已报废。
 
 ### 登记校准
 
@@ -799,16 +802,53 @@ POST /standards/3/review
 | `FAIL` | 不顺延有效期，`status` 置 `SUSPENDED` | 校准不合格还顺延，第二天就有人拿它测活 |
 | `LIMITED` | `remark` 必填 | 不写清范围，下一个人会拿它测不该测的尺寸 |
 
-`SUSPENDED` 的量具修好后重新登记校准，结果 `PASS` 即自动恢复 `ACTIVE`。
+`SUSPENDED` 的量具修好后重新登记校准，结果 `PASS` 即自动恢复 `ACTIVE`，同时清空 `suspendReason`。
 `POST /gauges` 建档、以及编辑时改「上次校准」日期，都会自动补一条履历
 （备注分别注明「建档时」「编辑时修改」），保证主表与履历不脱账。
+
+### 登记点检（期间核查）
+
+校准是外部机构一年一次，点检是车间每月拿标准件对一遍。两件事分开存：
+校准有证书号与机构，点检只有「对标准件量出来多少」。
+
+```json
+{
+  "checkDate": "2026-11-06",
+  "standardNo": "STD-10",
+  "standardValue": 10,
+  "measuredValue": 10.01,
+  "tolerance": 0.01,
+  "remark": "选填"
+}
+```
+
+响应体带上更新后的量具，前端不用再查一次就知道有没有被停用：
+
+```json
+{
+  "check": { "result": "PASS", "deviation": 0.0100, "tolerance": 0.0100, "...": "..." },
+  "gauge": { "id": 3, "status": "ACTIVE", "suspendReason": null }
+}
+```
+
+| 情形 | 行为 | 理由 |
+|---|---|---|
+| 偏差 = 允差 | 判 `PASS` | 边界闭区间，与判定引擎一致 |
+| 偏差 > 允差 | `result=FAIL`，量具置 `SUSPENDED`，`suspendReason` 写「点检不合格 日期（偏差 x，允差 ±y）」 | 点检的意义就是发现漂移，发现了还让它干活等于没查 |
+| 没填标准件编号 | 拦 | 没有标准件的「点检」只是又量了一遍，证明不了任何事 |
+| 同一天重复登记 | 拦（`uk_gauge_check_day` 部分唯一索引兜底） | 手抖点两下不能长出两条一样的记录 |
+| 量具已停用 | 拦，并指出原因 | 停用期间再点检只是往履历里堆噪声，该做的是送检复校 |
+
+`deviation` 与 `tolerance` 都按 `numeric(18,4)` 落库、参与比较前先 `setScale(4, HALF_UP)`。
+不这么做，`10.01 - 10` 在 double 里是 `0.010000000000000675`，前端会算成超差。
+移动端 `common/gaugeCheck.js` 是同一套算法，测试会扒这段 Java 源码比对比较符与取整方式。
 
 ### 提交检验单时的校验
 
 每个 `line` 可带 `gaugeId`，带了就会校验，四种情况都拦：
 
 - 已报废 → `选用的量具 G-00x 已报废，不能用于检验`
-- 已停用 → `上次校准不合格，已停用。维修并重新校准合格后才能再用`
+- 已停用 → `已停用：<suspendReason>。维修并重新校准合格后才能再用`（原因可能是校准，也可能是点检）
 - 无校准记录 → `没有校准记录，不能用于检验`
 - `nextCalibrateDate < 今天` → `已于 yyyy-mm-dd 到期，超期量具测出的数据不可采信。请先送检校准`
 

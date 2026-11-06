@@ -10,12 +10,21 @@
     </el-alert>
 
     <el-alert v-if="suspended.length" type="error" :closable="false" class="mb"
-              :title="`${suspended.length} 把量具上次校准不合格，已停用`">
+              :title="`${suspended.length} 把量具已停用，不能用于检验`">
       <div class="exp-list">
         <el-tag v-for="g in suspended" :key="g.id" type="danger" size="small">
-          {{ g.gaugeCode }} {{ g.gaugeName }}
+          {{ g.gaugeCode }} {{ g.gaugeName }}<template v-if="g.suspendReason"> · {{ g.suspendReason }}</template>
         </el-tag>
         <span class="hint">维修后重新登记校准，结果合格即自动恢复可用</span>
+      </div>
+    </el-alert>
+
+    <el-alert v-if="pendingChecks.length" type="warning" :closable="false" class="mb"
+              :title="`${pendingChecks.length} 把量具本月还没点检——每月拿标准件对一遍，漂移要在它测坏一批活之前发现`">
+      <div class="exp-list">
+        <el-tag v-for="p in pendingChecks" :key="p.gauge.id" type="warning" size="small">
+          {{ p.gauge.gaugeCode }} {{ p.gauge.gaugeName }} · {{ checkHint(p) }}
+        </el-tag>
       </div>
     </el-alert>
 
@@ -26,7 +35,7 @@
           <div class="ops">
             <el-select v-model="statusFilter" placeholder="全部状态" clearable style="width: 150px" @change="load">
               <el-option label="可用" value="ACTIVE" />
-              <el-option label="校准不合格停用" value="SUSPENDED" />
+              <el-option label="停用（校准或点检不合格）" value="SUSPENDED" />
               <el-option label="已报废" value="SCRAPPED" />
             </el-select>
             <el-button type="primary" @click="openForm()">新增量具</el-button>
@@ -49,15 +58,23 @@
             </span>
           </template>
         </el-table-column>
+        <el-table-column label="上次点检" width="120">
+          <template #default="{ row }">
+            <span :class="{ expired: row.status === 'ACTIVE' && !checkedThisMonth(row) }">
+              {{ row.lastCheckDate || '未点检' }}
+            </span>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="ownerDept" label="归属部门" width="100" />
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openHistory(row)">履历</el-button>
+            <el-button size="small" :disabled="row.status !== 'ACTIVE'" @click="openCheck(row)">点检</el-button>
             <el-button size="small" @click="openForm(row)">编辑</el-button>
             <el-button size="small" type="primary" :disabled="row.status === 'SCRAPPED'" @click="openCalibrate(row)">
               登记校准
@@ -158,32 +175,94 @@
       </template>
     </el-dialog>
 
-    <!-- 校准履历 -->
-    <el-drawer v-model="hisVisible" size="720px" :title="hisTitle">
-      <div class="his-head">
-        <span class="hint">一次校准一行，只增不改。外审问「去年的证书呢」，答案在这里。</span>
-      </div>
-      <el-table :data="hisRows" v-loading="hisLoading" size="small" empty-text="还没有校准记录">
-        <el-table-column prop="calibrateDate" label="校准日" width="110" />
-        <el-table-column label="结果" width="86">
-          <template #default="{ row }">
-            <el-tag :type="resultType(row.result)" size="small">{{ resultText(row.result) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="nextCalibrateDate" label="到期日" width="110" />
-        <el-table-column prop="agency" label="校准机构" min-width="120">
-          <template #default="{ row }">{{ row.agency || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="certificateNo" label="证书号" min-width="120">
-          <template #default="{ row }">{{ row.certificateNo || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="calibrateBy" label="登记人" width="90">
-          <template #default="{ row }">{{ row.calibrateBy || '—' }}</template>
-        </el-table-column>
-        <el-table-column prop="remark" label="备注" min-width="160">
-          <template #default="{ row }">{{ row.remark || '—' }}</template>
-        </el-table-column>
-      </el-table>
+    <!-- 点检（期间核查）：每月拿标准件对一遍 -->
+    <el-dialog v-model="chkVisible" title="登记点检" width="520px">
+      <el-form label-width="110px">
+        <el-form-item label="量具">
+          <span>{{ chkTarget?.gaugeCode }} {{ chkTarget?.gaugeName }}</span>
+        </el-form-item>
+        <el-form-item label="点检日期" required>
+          <el-date-picker v-model="chkDate" type="date" value-format="YYYY-MM-DD"
+                          :disabled-date="d => d.getTime() > Date.now()" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="标准件编号" required>
+          <el-input v-model="chkStandardNo" placeholder="刻在标准件上的号，如 STD-10" />
+        </el-form-item>
+        <el-form-item label="标称值" required>
+          <el-input v-model="chkStandardValue" placeholder="标准件上标的 10.000" />
+        </el-form-item>
+        <el-form-item label="实测值" required>
+          <el-input v-model="chkMeasuredValue" placeholder="这把量具量出来多少" />
+        </el-form-item>
+        <el-form-item label="允差 ±" required>
+          <el-input v-model="chkTolerance" :placeholder="chkTarget?.accuracy ? `精度 ${chkTarget.accuracy}，按 ± 填绝对值` : '问清楚允差，别猜'" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="chkRemark" type="textarea" :rows="2" placeholder="选填" />
+        </el-form-item>
+      </el-form>
+
+      <el-alert type="info" :closable="false"
+                title="结论由后端判定：|实测 − 标称| ≤ 允差 为合格，等于允差算合格。不合格会立刻把这把量具置为停用。" />
+      <template #footer>
+        <el-button @click="chkVisible = false">取消</el-button>
+        <el-button type="primary" @click="doCheck">提交点检</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 履历：校准与点检是两件事，分两页看，别混成一张表 -->
+    <el-drawer v-model="hisVisible" size="760px" :title="hisTitle">
+      <el-tabs v-model="hisTab">
+        <el-tab-pane :label="`校准履历（${hisRows.length}）`" name="cal">
+          <span class="hint">一次校准一行，只增不改。外审问「去年的证书呢」，答案在这里。</span>
+          <el-table :data="hisRows" v-loading="hisLoading" size="small" empty-text="还没有校准记录">
+            <el-table-column prop="calibrateDate" label="校准日" width="110" />
+            <el-table-column label="结果" width="86">
+              <template #default="{ row }">
+                <el-tag :type="resultType(row.result)" size="small">{{ resultText(row.result) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="nextCalibrateDate" label="到期日" width="110" />
+            <el-table-column prop="agency" label="校准机构" min-width="120">
+              <template #default="{ row }">{{ row.agency || '—' }}</template>
+            </el-table-column>
+            <el-table-column prop="certificateNo" label="证书号" min-width="120">
+              <template #default="{ row }">{{ row.certificateNo || '—' }}</template>
+            </el-table-column>
+            <el-table-column prop="calibrateBy" label="登记人" width="90">
+              <template #default="{ row }">{{ row.calibrateBy || '—' }}</template>
+            </el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="160">
+              <template #default="{ row }">{{ row.remark || '—' }}</template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane :label="`点检履历（${chkRows.length}）`" name="chk">
+          <span class="hint">每月一次，拿标准件对一遍。偏差一栏是当时算好的，不随标准件改标而变化。</span>
+          <el-table :data="chkRows" size="small" empty-text="还没有点检记录">
+            <el-table-column prop="checkDate" label="点检日" width="110" />
+            <el-table-column label="结果" width="86">
+              <template #default="{ row }">
+                <el-tag :type="row.result === 'FAIL' ? 'danger' : 'success'" size="small">
+                  {{ row.result === 'FAIL' ? '不合格' : '合格' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="standardNo" label="标准件" width="100" />
+            <el-table-column prop="standardValue" label="标称值" width="90" />
+            <el-table-column prop="measuredValue" label="实测值" width="90" />
+            <el-table-column prop="deviation" label="偏差" width="90" />
+            <el-table-column prop="tolerance" label="允差±" width="80" />
+            <el-table-column prop="checkedBy" label="点检人" width="90">
+              <template #default="{ row }">{{ row.checkedBy || '—' }}</template>
+            </el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="140">
+              <template #default="{ row }">{{ row.remark || '—' }}</template>
+            </el-table-column>
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
     </el-drawer>
   </div>
 </template>
@@ -216,8 +295,36 @@ const hisVisible = ref(false)
 const hisTarget = ref(null)
 const hisRows = ref([])
 const hisLoading = ref(false)
+const hisTab = ref('cal')
+const chkRows = ref([])
+
+// 点检表单
+const chkVisible = ref(false)
+const chkTarget = ref(null)
+const chkDate = ref('')
+const chkStandardNo = ref('')
+const chkStandardValue = ref('')
+const chkMeasuredValue = ref('')
+const chkTolerance = ref('')
+const chkRemark = ref('')
+
+const pendingChecks = ref([])
 
 const today = new Date(new Date().toDateString())
+
+/** 当月标记用本地年月拼，别用 toISOString：东八区早 8 点前它会给出昨天，跨月就判错 */
+const _now = new Date()
+const THIS_MONTH = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}`
+
+function checkedThisMonth(row) {
+  return !!row.lastCheckDate && String(row.lastCheckDate).slice(0, 7) === THIS_MONTH
+}
+
+/** 待点检那条的说明：天数由后端给（daysSince），前端不再算一遍 */
+function checkHint(p) {
+  if (!p.lastCheckDate) return '从没点检过'
+  return `${p.lastCheckDate} 点过，${p.daysSince} 天前`
+}
 
 /** 停用的量具单独提示：它们不在「超期」口径里，但同样不能用 */
 const suspended = computed(() => allRows.value.filter(g => g.status === 'SUSPENDED'))
@@ -255,6 +362,9 @@ async function load() {
       ? allRows.value.filter(g => g.status === statusFilter.value)
       : allRows.value
     expiring.value = await http.get('/gauges/expiring', { params: { days: 30 } })
+    // 待点检与「上次点检」列同源：一个来自 /checks/pending，一个来自 list 回填的 lastCheckDate，
+    // 都是后端算的，前端只负责显示
+    pendingChecks.value = await http.get('/gauges/checks/pending')
   } finally {
     loading.value = false
   }
@@ -278,9 +388,16 @@ async function save() {
   await load()
 }
 
+/** 本地日期。别用 toISOString().slice(0,10)：那是 UTC 日期，东八区早 8 点前会给出昨天 */
+function todayLocal() {
+  const d = new Date()
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
 function openCalibrate(row) {
   calTarget.value = row
-  calDate.value = new Date().toISOString().slice(0, 10)
+  calDate.value = todayLocal()
   calCycle.value = row.calibrateCycleDays || 365
   calResult.value = 'PASS'
   calCert.value = ''
@@ -317,11 +434,59 @@ async function openHistory(row) {
   hisTarget.value = row
   hisVisible.value = true
   hisLoading.value = true
+  hisTab.value = 'cal'
+  chkRows.value = []
   try {
     hisRows.value = await http.get(`/gauges/${row.id}/calibrations`)
+    chkRows.value = await http.get(`/gauges/${row.id}/checks`)
   } finally {
     hisLoading.value = false
   }
+}
+
+function openCheck(row) {
+  chkTarget.value = row
+  chkDate.value = todayLocal()
+  chkStandardNo.value = ''
+  chkStandardValue.value = ''
+  chkMeasuredValue.value = ''
+  chkTolerance.value = ''
+  chkRemark.value = ''
+  chkVisible.value = true
+}
+
+async function doCheck() {
+  const num = v => (v === '' || v === null ? NaN : Number(v))
+  if (!chkStandardNo.value.trim()) {
+    ElMessage.warning('填标准件编号——没有标准件的点检，证明不了任何事')
+    return
+  }
+  for (const [label, v] of [['标称值', chkStandardValue.value], ['实测值', chkMeasuredValue.value], ['允差', chkTolerance.value]]) {
+    if (!Number.isFinite(num(v))) {
+      ElMessage.warning(label + '要填数字')
+      return
+    }
+  }
+  const res = await http.post(`/gauges/${chkTarget.value.id}/check`, {
+    checkDate: chkDate.value,
+    standardNo: chkStandardNo.value.trim(),
+    standardValue: num(chkStandardValue.value),
+    measuredValue: num(chkMeasuredValue.value),
+    tolerance: num(chkTolerance.value),
+    remark: chkRemark.value.trim() || null
+  })
+  chkVisible.value = false
+  if (res && res.check && res.check.result === 'FAIL') {
+    await load()
+    ElMessageBox.alert(
+      `${chkTarget.value.gaugeCode} 偏差 ${res.check.deviation}，超出允差 ±${res.check.tolerance}，已置为停用。` +
+      '送检复校合格后才能再用；这段期间用它测过的活要回头查。',
+      '点检不合格', { type: 'error' }
+    )
+    return
+  }
+  ElMessage.success('点检合格，已记录')
+  await load()
 }
 
 async function scrap(row) {

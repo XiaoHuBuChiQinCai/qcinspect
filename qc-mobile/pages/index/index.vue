@@ -67,6 +67,7 @@ const loading = ref(false)
 const user = ref(getUser())
 const tab = ref('PENDING')
 const summary = ref({})
+const pendingCheck = ref(0)
 
 const statusText = s => ({ PENDING: '待检', INSPECTING: '检验中', DONE: '已完成' }[s] || s)
 
@@ -84,10 +85,11 @@ const todoSub = computed(() => {
 /** 退回是唯一「别人卡着你、你必须动」的事，值得一个角标 */
 const todoBadge = computed(() => Number(summary.value?.myRejected) || 0)
 
-/** 量具那格的一句话：超期几把最要紧，没有超期就说清「还有几把快到期」 */
+/** 量具那格的一句话：超期几把最要紧，没有超期就说清「还有几把没点检」 */
 const gaugeSub = computed(() => {
   const overdue = Number(summary.value?.overdueGauge) || 0
   if (overdue) return overdue + ' 把已超期，不能用于判活'
+  if (pendingCheck.value) return pendingCheck.value + ' 把本月还没点检'
   return '查这把卡尺还能不能用'
 })
 
@@ -117,6 +119,13 @@ async function load() {
       summary.value = await api.todoSummary()
     } catch (e) {
       summary.value = {}
+    }
+    // 本月待点检的把这格要说话。和点检页同一个出处，别在这里另算一遍
+    try {
+      const pend = await api.gaugePendingChecks()
+      pendingCheck.value = (pend || []).length
+    } catch (e) {
+      pendingCheck.value = 0
     }
   } finally {
     loading.value = false

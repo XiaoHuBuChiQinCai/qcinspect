@@ -69,6 +69,15 @@ test('停用与未校准都不可用', () => {
   assert.equal(judgeGauge(null, TODAY).usable, false)
 })
 
+test('停用要说清是校准还是点检不合格——两句话的下一步不一样', () => {
+  // 说「上次校准不合格」而实际是点检不合格，人会把量具送去计量院白花一笔钱，
+  // 回来还是不能用。原因写在哪，就照哪念
+  assert.equal(judgeGauge(gauge({ status: 'SUSPENDED' }), TODAY).text, '已停用：上次校准不合格')
+  const j = judgeGauge(gauge({ status: 'SUSPENDED', suspendReason: '点检不合格 2026-11-06' }), TODAY)
+  assert.equal(j.text, '已停用：点检不合格 2026-11-06')
+  assert.equal(j.usable, false)
+})
+
 test('每档都给一句「接下来该干什么」', () => {
   for (const lv of ['EXPIRED', 'SUSPENDED', 'SCRAPPED', 'NOCAL']) {
     assert.ok(gaugeAdvice(lv).length > 4, lv + ' 缺少处置建议')

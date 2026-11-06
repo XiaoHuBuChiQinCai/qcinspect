@@ -55,6 +55,12 @@
       }
     },
     {
+      "path": "pages/gauge/check",
+      "style": {
+        "navigationBarTitleText": "量具点检"
+      }
+    },
+    {
       "path": "pages/todo/todo",
       "style": {
         "navigationBarTitleText": "待办"

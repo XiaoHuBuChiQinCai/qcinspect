@@ -128,6 +128,11 @@ export const api = {
    */
   gauges: () => request('/gauges'),
   gaugeCalibrations: id => request(`/gauges/${id}/calibrations`),
+  /** 本月还没点检的量具（只含在用的）。和点检页同源，别在别处再算一遍 */
+  gaugePendingChecks: () => request('/gauges/checks/pending'),
+  gaugeChecks: id => request(`/gauges/${id}/checks`),
+  /** 登记点检。结论由后端算，前端只传标称值、实测值、允差 */
+  submitGaugeCheck: (id, body) => request(`/gauges/${id}/check`, { method: 'POST', data: body }),
   images: (bizType, bizId) => request(`/images?bizType=${bizType}&bizId=${bizId}`),
   removeImage: id => request(`/images/${id}`, { method: 'DELETE' }),
   report: id => request(`/reports/inspection/${id}`),

@@ -23,6 +23,7 @@ spring:
         - classpath:db/V14__stale_review.sql
         - classpath:db/V15__image_audit.sql
         - classpath:db/V16__doc_no_seq.sql
+        - classpath:db/V17__gauge_check.sql
       continue-on-error: false
 
 mybatis-plus:
