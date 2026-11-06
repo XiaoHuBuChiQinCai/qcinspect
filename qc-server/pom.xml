@@ -22,6 +22,7 @@
         <mybatis-plus.version>3.5.9</mybatis-plus.version>
         <minio.version>8.5.12</minio.version>
         <jjwt.version>0.12.6</jjwt.version>
+        <zxing.version>3.3.3</zxing.version>
         <embedded-postgres.version>2.1.0</embedded-postgres.version>
         <embedded-postgres-binaries.version>16.6.0</embedded-postgres-binaries.version>
     </properties>
@@ -111,6 +112,17 @@
             <groupId>io.minio</groupId>
             <artifactId>minio</artifactId>
             <version>${minio.version}</version>
+        </dependency>
+
+        <!--
+            条码解码。只引 core，不引 javase：
+            javase 那点功能（BufferedImageLuminanceSource）我们用 RGBLuminanceSource 就够了，
+            而它会顺带把 jcommander 拖进来——多一个只为命令行服务的依赖不值得。
+        -->
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>core</artifactId>
+            <version>${zxing.version}</version>
         </dependency>
 
         <dependency>

@@ -82,6 +82,7 @@ import { api } from '../../common/api'
 import { normalizeCode } from '../../common/code'
 import { todayLocal } from '../../common/dict'
 import { calResultText, gaugeAdvice, gaugeStatusText, judgeGauge } from '../../common/gauge'
+import { scanCode } from '../../common/lookup'
 
 const list = ref([])
 const loading = ref(false)
@@ -182,18 +183,10 @@ function find() {
 }
 
 function scan() {
-  uni.scanCode({
-    success: res => {
-      kw.value = (res.result || '').trim()
-      find()
-    },
-    fail: err => {
-      const m = (err && err.errMsg) || ''
-      // 用户主动取消不弹提示；http 下 uni.scanCode 不可用（要求安全上下文）才提示
-      if (/not support|不支持|无法使用/i.test(m)) {
-        uni.showToast({ title: '当前环境不支持扫码，请手输编号', icon: 'none' })
-      }
-    }
+  // 走公共的「拍照识别」，别直接用 uni.scanCode：H5 端那个 API 根本不支持
+  scanCode(code => {
+    kw.value = code
+    find()
   })
 }
 </script>

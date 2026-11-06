@@ -242,3 +242,44 @@ export function uploadImage(filePath, bizType, bizId) {
     })
   })
 }
+
+/**
+ * 拍照识别条码，返回 { text, format, formatText, rotate }。
+ *
+ * 这里**故意不弹 toast**：认不出条码的原因不止「拍糊了」一种（扫成了网址、
+ * 扫到了设备点检码、图里根本没有码），这些必须弹个能看清的说明让人知道下一步怎么做。
+ * toast 一闪而过，人只会站在原地反复点同一个按钮。
+ */
+export function decodeBarcode(filePath) {
+  return new Promise((resolve, reject) => {
+    const token = getToken()
+    uni.uploadFile({
+      url: `${BASE}/scan/decode`,
+      filePath,
+      name: 'file',
+      header: token ? { Authorization: `Bearer ${token}` } : {},
+      success: res => {
+        if (res.statusCode === 401) {
+          goLogin()
+          reject(new Error('登录已过期，重新登录后再扫'))
+          return
+        }
+        let body = null
+        try {
+          body = typeof res.data === 'string' ? JSON.parse(res.data) : res.data
+        } catch (e) {
+          body = null
+        }
+        if (body && body.code === 0) resolve(body.data)
+        else {
+          // 打上 biz 标记：调用方据此区分「后端说认不出」和「传不上去」——
+          // 前者换张图也没用，后者换个传法还有救
+          const err = new Error((body && body.msg) || '识别失败了，重试一次')
+          err.biz = true
+          reject(err)
+        }
+      },
+      fail: () => reject(new Error('照片没传上去，检查一下网络'))
+    })
+  })
+}

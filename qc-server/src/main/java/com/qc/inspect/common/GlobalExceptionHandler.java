@@ -8,6 +8,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @Slf4j
 @RestControllerAdvice
@@ -39,6 +40,18 @@ public class GlobalExceptionHandler {
                 .findFirst()
                 .orElse("参数校验失败");
         return R.fail(400, msg);
+    }
+
+    /**
+     * 上传超限。
+     *
+     * <p>不接的话会落到最下面的兜底，变成「系统异常: Maximum upload size exceeded」——
+     * 现场看到一串英文只会以为系统坏了，看不出是自己传的图太大。
+     */
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public R<Void> handleTooLarge(MaxUploadSizeExceededException e) {
+        log.warn("上传超限: {}", e.getMessage());
+        return R.fail(400, "文件太大了，单张控制在 10MB 以内。手机直接拍一般只有几 MB");
     }
 
     @ExceptionHandler(Exception.class)

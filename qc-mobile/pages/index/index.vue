@@ -61,6 +61,7 @@
 import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { api, clearSession, getToken, getUser } from '../../common/api'
+import { scanCode } from '../../common/lookup'
 
 const batches = ref([])
 const loading = ref(false)
@@ -174,28 +175,18 @@ function logout() {
 }
 
 function scan() {
-  uni.scanCode({
-    success: async res => {
-      const code = (res.result || '').trim()
-      if (!code) return
-      // 当前页签里没匹配到就往全部批次里再找一次，扫到的可能是别的状态的批次
-      let hit = batches.value.find(b => b.batchNo === code || b.workOrderNo === code)
-      if (!hit) {
-        const all = await api.batches()
-        hit = all.find(b => b.batchNo === code || b.workOrderNo === code)
-      }
-      if (hit) {
-        openBatch(hit)
-      } else {
-        uni.showToast({ title: '未匹配到批次：' + code, icon: 'none' })
-      }
-    },
-    fail: err => {
-      const m = (err && err.errMsg) || ''
-      // H5 走 http 时扫码接口不可用（要求安全上下文）；用户主动取消不该弹提示
-      if (/not support|不支持|无法使用/i.test(m)) {
-        uni.showToast({ title: '当前环境不支持扫码，可在追溯页手输单号', icon: 'none' })
-      }
+  // 走公共的「拍照识别」，别直接用 uni.scanCode：H5 端那个 API 根本不支持
+  scanCode(async code => {
+    // 当前页签里没匹配到就往全部批次里再找一次，扫到的可能是别的状态的批次
+    let hit = batches.value.find(b => b.batchNo === code || b.workOrderNo === code)
+    if (!hit) {
+      const all = await api.batches()
+      hit = all.find(b => b.batchNo === code || b.workOrderNo === code)
+    }
+    if (hit) {
+      openBatch(hit)
+    } else {
+      uni.showToast({ title: '未匹配到批次：' + code, icon: 'none' })
     }
   })
 }
