@@ -154,6 +154,21 @@ export const api = {
   /** 登记客诉。批次必填、客户与问题描述必填，日期不能晚于今天 */
   createComplaint: body => request('/complaints', { method: 'POST', data: body }),
   complaintsOfBatch: batchId => request(`/complaints?batchId=${batchId}`),
+  /**
+   * 客诉分页。open=true 只看未关闭的（待处理 + 处理中）。
+   * 不要在前端拉全量再按 status 过滤：客诉是常年累积的，翻到第 3 页就找不到今天这条了
+   */
+  complaintsPage: (params = {}) => {
+    const q = Object.keys(params)
+      .filter(k => params[k] !== undefined && params[k] !== null && params[k] !== '')
+      .map(k => `${k}=${encodeURIComponent(params[k])}`)
+      .join('&')
+    return request('/complaints/page' + (q ? '?' + q : ''))
+  },
+  /** 受理：待处理 → 处理中。重复点无副作用 */
+  startComplaint: id => request(`/complaints/${id}/start`, { method: 'POST' }),
+  /** 关闭：根因、措施、责任归属三项必填，后端仅 ADMIN / REVIEWER 可调 */
+  closeComplaint: (id, body) => request(`/complaints/${id}/close`, { method: 'POST', data: body }),
 
   // ---------- 待办 ----------
   todoSummary: () => request('/todo/summary'),

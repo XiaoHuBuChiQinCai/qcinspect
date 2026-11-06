@@ -95,6 +95,7 @@
         <view class="ok-title">已登记 {{ last.complaintNo }}</view>
         <view class="ok-sub">{{ last.customer }} · {{ complaintCategoryText(last.category) }} · {{ severityText(last.severity) }}</view>
         <view class="ok-sub2">这批现在会被出货拦住，直到客诉关闭。</view>
+        <button class="manage-btn" @click="openManage">去处理这条客诉</button>
       </view>
     </template>
   </view>
@@ -226,6 +227,10 @@ async function submit() {
     saving.value = false
   }
 }
+
+function openManage() {
+  uni.navigateTo({ url: '/pages/complaint/manage' })
+}
 </script>
 
 <style>
@@ -289,4 +294,8 @@ async function submit() {
 .ok-title { font-size: 28rpx; font-weight: 600; color: #c45656; }
 .ok-sub { font-size: 25rpx; color: #5a6b7b; margin-top: 8rpx; }
 .ok-sub2 { font-size: 23rpx; color: #8a9199; margin-top: 6rpx; }
+.manage-btn {
+  margin-top: 18rpx; background: #1989fa; color: #fff;
+  border-radius: 10rpx; font-size: 26rpx; line-height: 72rpx; height: 72rpx;
+}
 </style>

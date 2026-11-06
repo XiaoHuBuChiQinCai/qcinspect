@@ -25,7 +25,11 @@
         <text class="cell-title">客诉登记</text>
         <text class="cell-sub">客户反馈当场记下</text>
       </view>
-      <view class="cell wide" @click="openGauge">
+      <view class="cell" @click="openComplaintManage">
+        <text class="cell-title">客诉处理</text>
+        <text :class="['cell-sub', openComplaintCount ? 'warn' : '']">{{ complaintSub }}</text>
+      </view>
+      <view class="cell" @click="openGauge">
         <text class="cell-title">量具状态</text>
         <text :class="['cell-sub', summary.overdueGauge ? 'warn' : '']">{{ gaugeSub }}</text>
       </view>
@@ -87,6 +91,19 @@ const gaugeSub = computed(() => {
   return '查这把卡尺还能不能用'
 })
 
+/**
+ * 客诉那格：未关闭的条数。
+ *
+ * <p>客诉压着两件事——货发不出去（出货会拦），客户还在等答复。
+ * 所以有数字就标红，不用「暂无」这种中性词把它稀释掉。
+ */
+const openComplaintCount = computed(() => Number(summary.value?.openComplaint) || 0)
+
+const complaintSub = computed(() => {
+  const n = openComplaintCount.value
+  return n ? n + ' 条未关闭，还压着出货' : '没有未关闭的客诉'
+})
+
 async function load() {
   if (!getToken()) {
     uni.reLaunch({ url: '/pages/login/login' })
@@ -120,6 +137,10 @@ function openShip() {
 
 function openComplaint() {
   uni.navigateTo({ url: '/pages/complaint/complaint' })
+}
+
+function openComplaintManage() {
+  uni.navigateTo({ url: '/pages/complaint/manage' })
 }
 
 function openGauge() {
@@ -207,7 +228,7 @@ onShow(load)
   width: calc(50% - 8rpx); box-sizing: border-box;
   background: #fff; border-radius: 16rpx; padding: 24rpx;
 }
-/* 第 5 格跨整行：2 列排 5 个，最后会剩半个空格，看着像少了一块 */
+/* 六格刚好排满三行；.wide 留给将来奇数个入口时跨整行用 */
 .cell.wide { width: 100%; }
 .cell-title { display: block; font-size: 28rpx; color: #303133; }
 .cell-sub { display: block; font-size: 22rpx; color: #a8abb2; margin-top: 10rpx; line-height: 1.4; }

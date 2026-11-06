@@ -43,6 +43,12 @@
       }
     },
     {
+      "path": "pages/complaint/manage",
+      "style": {
+        "navigationBarTitleText": "客诉处理"
+      }
+    },
+    {
       "path": "pages/gauge/gauge",
       "style": {
         "navigationBarTitleText": "量具状态"
