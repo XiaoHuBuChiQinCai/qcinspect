@@ -74,7 +74,9 @@
         <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openHistory(row)">履历</el-button>
-            <el-button size="small" :disabled="row.status !== 'ACTIVE'" @click="openCheck(row)">点检</el-button>
+            <el-button size="small" :disabled="!canCheck(row)"
+                       :title="canCheck(row) ? '' : '超期/停用/报废的量具点检没有意义，先送检校准'"
+                       @click="openCheck(row)">点检</el-button>
             <el-button size="small" @click="openForm(row)">编辑</el-button>
             <el-button size="small" type="primary" :disabled="row.status === 'SCRAPPED'" @click="openCalibrate(row)">
               登记校准
@@ -318,6 +320,11 @@ const THIS_MONTH = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart
 
 function checkedThisMonth(row) {
   return !!row.lastCheckDate && String(row.lastCheckDate).slice(0, 7) === THIS_MONTH
+}
+
+/** 什么时候才允许点检：在用、且校准还没到期。超期量具点检没有意义，点检替代不了校准 */
+function canCheck(row) {
+  return row.status === 'ACTIVE' && !!row.nextCalibrateDate && !isExpired(row)
 }
 
 /** 待点检那条的说明：天数由后端给（daysSince），前端不再算一遍 */

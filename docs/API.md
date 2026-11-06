@@ -771,7 +771,7 @@ POST /standards/3/review
 | POST | `/gauges` | 新增 / 修改（`nextCalibrateDate` 由后端算，不用传） |
 | POST | `/gauges/{id}/calibrate` | 登记一次校准，JSON body 见下 |
 | GET | `/gauges/{id}/calibrations` | 校准履历，按校准日倒序 |
-| GET | `/gauges/checks/pending` | 本月还没点检的量具（只含 `ACTIVE`），按「多久没点检」倒序 |
+| GET | `/gauges/checks/pending` | 本月还没点检的量具（只含在用且校准未到期的），按「多久没点检」倒序 |
 | GET | `/gauges/{id}/checks` | 点检履历，按点检日倒序 |
 | POST | `/gauges/{id}/check` | 登记一次点检，JSON body 见下 |
 | POST | `/gauges/{id}/scrap?reason=跌落损坏` | 报废 |

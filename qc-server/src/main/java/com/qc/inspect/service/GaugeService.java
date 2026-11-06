@@ -294,6 +294,17 @@ public class GaugeService {
                     + (g.getSuspendReason() == null ? "原因未记录" : g.getSuspendReason())
                     + "。请先送检复校，合格恢复可用后再点检");
         }
+        // 点检的前提是这把量具在校准有效期内。
+        // 超期或没校准过的量具本来就不能用于判活，催它点检只会让人以为「量过了就没问题」——
+        // 那是这系统最不能出的一种误解
+        LocalDate expiry = g.getNextCalibrateDate();
+        if (expiry == null) {
+            throw BizException.of("量具 " + g.getGaugeCode() + " 没有校准记录，先登记校准再点检");
+        }
+        if (expiry.isBefore(LocalDate.now())) {
+            throw BizException.of("量具 " + g.getGaugeCode() + " 已于 " + expiry
+                    + " 到期，超期量具点检没有意义，先送检校准");
+        }
         if (checkDate == null) {
             throw BizException.of("必须填写点检日期");
         }
@@ -364,8 +375,8 @@ public class GaugeService {
     /**
      * 本月还没点检的量具。
      *
-     * <p>只算 ACTIVE 的：停用和报废的已经不能用了，催着点检没有意义，
-     * 反而会把「该送检」的人引去「再量一遍」。
+     * <p>只算「现在真能用来判活」的：停用和报废的催也没用，校准已过期或从没校准过的更是——
+     * 它们本来就该送检，混进点检待办会把人引去「再量一遍」。
      *
      * @param daysSince 距上次点检多少天；从没点检过为 {@link Integer#MAX_VALUE}，排最前
      */
@@ -378,6 +389,8 @@ public class GaugeService {
 
         List<QcGauge> actives = gaugeMapper.selectList(new LambdaQueryWrapper<QcGauge>()
                 .eq(QcGauge::getStatus, "ACTIVE")
+                // 校准还没到期的才算在册可用；NULL 的比较结果是 NULL，没有校准记录的自动被排除
+                .ge(QcGauge::getNextCalibrateDate, today)
                 .orderByAsc(QcGauge::getGaugeCode));
         if (actives.isEmpty()) {
             return List.of();

@@ -37,8 +37,8 @@
       <view v-if="!judge.usable" class="block">{{ judge.text }}。{{ gaugeAdvice(judge.level) }}</view>
       <view v-else-if="judge.level === 'SOON'" class="note">{{ judge.text }}，还能用，记得安排送检</view>
 
-      <view v-if="hit.status === 'ACTIVE'" class="go-check" @click="gotoCheck(hit.id)">点检这把量具</view>
-      <view v-else class="note">停用/报废的量具不能点检，先按上面的处置走</view>
+      <view v-if="judge.usable" class="go-check" @click="gotoCheck(hit.id)">点检这把量具</view>
+      <view v-else class="note">超期、停用、报废的量具不能点检，先按上面的处置走——点检替代不了校准</view>
 
       <view class="sec">校准履历{{ cals.length ? '（' + cals.length + ' 次）' : '' }}</view>
       <view v-for="c in cals" :key="c.id" class="cal">

@@ -2113,6 +2113,20 @@ class InspectionFlowIT {
         assertThat(his.get(0).get("result")).isEqualTo("FAIL");
         assertThat(his.get(0).get("standardNo")).isEqualTo("STD-10");
         assertThat(String.valueOf(his.get(0).get("checkedBy"))).isNotBlank();
+
+        // 超期量具不该出现在点检待办里，也不该允许点检：
+        // 它本来就该送检，混进点检清单会让人以为「量过了就能用」
+        Long expired = num(data(post("/api/gauges", Map.of(
+                "gaugeCode", "IT-G-EXP", "gaugeName", "IT 超期卡尺", "gaugeType", "卡尺",
+                "calibrateDate", today.minusDays(400).toString(), "calibrateCycleDays", 365))).get("id"));
+        assertThat(asList(get("/api/gauges/checks/pending").get("data")))
+                .extracting(p -> num(asMap(p.get("gauge")).get("id")))
+                .as("超期的量具不催点检").doesNotContain(expired);
+        Map<String, Object> blockedExpired = post("/api/gauges/" + expired + "/check", Map.of(
+                "checkDate", today.toString(), "standardNo", "STD-10",
+                "standardValue", 10, "measuredValue", 10, "tolerance", 0.01));
+        assertThat(num(blockedExpired.get("code"))).as("超期量具不许点检").isNotEqualTo(0);
+        assertThat(String.valueOf(blockedExpired.get("msg"))).contains("到期");
     }
 
     /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */
