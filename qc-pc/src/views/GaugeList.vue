@@ -60,7 +60,7 @@
         </el-table-column>
         <el-table-column label="上次点检" width="120">
           <template #default="{ row }">
-            <span :class="{ expired: row.status === 'ACTIVE' && !checkedThisMonth(row) }">
+            <span :class="{ expired: canCheck(row) && !checkedThisMonth(row) }">
               {{ row.lastCheckDate || '未点检' }}
             </span>
           </template>
@@ -343,7 +343,7 @@ const backfill = computed(() => {
 })
 
 const hisTitle = computed(() =>
-  hisTarget.value ? `校准履历 · ${hisTarget.value.gaugeCode} ${hisTarget.value.gaugeName}` : '校准履历'
+  hisTarget.value ? `量具履历 · ${hisTarget.value.gaugeCode} ${hisTarget.value.gaugeName}` : '量具履历'
 )
 
 const statusText = s => ({ ACTIVE: '可用', SUSPENDED: '停用', SCRAPPED: '已报废' }[s] || s)
