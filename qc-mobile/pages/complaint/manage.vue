@@ -2,7 +2,9 @@
   <view class="page">
     <view class="head">
       <text class="title">客诉处理</text>
-      <text class="link" @click="load">刷新</text>
+      <!-- 刷新做成 88rpx 高的可点块：原来是一行小字贴着屏幕右边缘，
+           手指点上去经常没反应，看着像「刷新坏了」 -->
+      <view class="link" @click="reload"><text class="link-text">刷新</text></view>
     </view>
 
     <view class="tabs">
@@ -168,6 +170,12 @@ function switchTab(k) {
   load()
 }
 
+/** 刷新按钮单独走一层：直接把 load 绑上去时点击事件对象会当参数传进来，
+ *  虽然 load 不吃参数看不出问题，但排查起来很费劲，索性分开 */
+function reload() {
+  load()
+}
+
 function startIt(c) {
   uni.showModal({
     title: '开始处理',
@@ -232,7 +240,12 @@ onShow(load)
 .page { padding: 24rpx 24rpx 60rpx; }
 .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20rpx; }
 .title { font-size: 34rpx; font-weight: 500; }
-.link { color: #1989fa; font-size: 28rpx; }
+/* 刷新：给足点击区域，别用一行贴着边缘的小字 */
+.link {
+  display: flex; align-items: center; justify-content: flex-end;
+  min-width: 120rpx; height: 72rpx; padding: 0 8rpx;
+}
+.link-text { color: #1989fa; font-size: 28rpx; }
 
 .tabs { display: flex; gap: 12rpx; margin-bottom: 20rpx; }
 .tab {
