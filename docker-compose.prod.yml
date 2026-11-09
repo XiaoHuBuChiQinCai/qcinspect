@@ -7,6 +7,9 @@
 #      Dockerfile 里是 -XX:MaxRAMPercentage=70，宿主 2G 时 JVM 会认领 1.4G 堆，
 #      PG 再要 200M+，机器直接开始 swap 直到被 OOM killer 干掉
 #   4. 只对外暴露 80。数据库和 API 端口都不映射到宿主机
+#   5. 容器日志限 50 MB × 3 份。Docker 默认的 json-file 驱动**没有上限**，
+#      而生产开着 debug 级别 + MyBatis SQL 日志，一天能写几十 MB；
+#      不限制的话，最先被吃满的不是照片也不是备份，是容器日志
 #
 # 用法：
 #   cp .env.example .env      然后改掉 DB_PASSWORD / JWT_SECRET
@@ -14,6 +17,14 @@
 #
 # 注意：2G 机器上直接 build 后端镜像大概率被 OOM kill（Maven 编译要吃 1G+）。
 # 先看 docs/DEPLOY.md 里「在服务器上构建」那一节，加 swap 或本地构建后传镜像。
+
+# 容器日志统一限量。放在锚点里是因为三处写法必须一致——
+# 各写一份迟早出现「app 限制了、web 没限制」，而没人会去逐个核对
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
 
 services:
   db:
@@ -38,6 +49,7 @@ services:
       - max_connections=50
       - -c
       - work_mem=4MB
+    logging: *default-logging
     mem_limit: 512m
     volumes:
       - qc-pgdata:/var/lib/postgresql/data
@@ -80,6 +92,7 @@ services:
       STORAGE_DIR: /app/data/files
       # 覆盖 Dockerfile 里的 MaxRAMPercentage=70
       JAVA_OPTS: "-Xmx512m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC -Dfile.encoding=UTF-8"
+    logging: *default-logging
     mem_limit: 900m
     volumes:
       - qc-files:/app/data/files
@@ -93,6 +106,7 @@ services:
       - app
     ports:
       - "80:80"
+    logging: *default-logging
     mem_limit: 128m
     volumes:
       # 移动端 H5 产物（服务器上 cd qc-mobile && npm run build:h5 生成）
