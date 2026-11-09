@@ -154,6 +154,16 @@ export const api = {
    */
   createShipment: body => request('/shipments', { method: 'POST', data: body }),
   shipmentsOfBatch: batchId => request(`/shipments?batchId=${batchId}`),
+  /**
+   * 红冲（作废）出货单。理由必填；非管理员只能销自己登记的单。
+   *
+   * 后端把「谁登记」「能不能销」都自己判，前端 `common/shipment.js` 的
+   * `voidBlocker` 只是提前把话说清楚，不是权限——别把它当成唯一一道门。
+   */
+  voidShipment: (id, reason) => request(`/shipments/${id}/void`, {
+    method: 'POST',
+    data: { reason }
+  }),
 
   // ---------- 客诉 ----------
   /** 登记客诉。批次必填、客户与问题描述必填，日期不能晚于今天 */
