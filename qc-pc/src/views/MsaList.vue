@@ -45,8 +45,10 @@
           <div class="sub">{{ specText(row) }}</div>
         </template>
       </el-table-column>
-      <el-table-column label="结构" width="100">
-        <template #default="{ row }">{{ row.appraiserCount }} 人 × {{ row.partCount }} 件 × {{ row.trialCount }} 次</template>
+      <el-table-column label="结构" width="150">
+        <template #default="{ row }">
+          <span class="nowrap">{{ row.appraiserCount }} 人 × {{ row.partCount }} 件 × {{ row.trialCount }} 次</span>
+        </template>
       </el-table-column>
       <el-table-column label="%GRR" width="90" align="right">
         <template #default="{ row }">
@@ -361,6 +363,9 @@ function specText(row) {
 .sub {
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+.nowrap {
+  white-space: nowrap;
 }
 .good {
   color: #67c23a;
