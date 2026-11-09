@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qc.inspect.entity.QcBackupLog;
 import com.qc.inspect.mapper.QcBackupLogMapper;
 import com.qc.inspect.report.BackupHealth;
+import com.qc.inspect.report.HumanSize;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -95,24 +96,17 @@ public class BackupHealthService {
     }
 
     /**
-     * 人类可读的体积。空库备份只有十几 KB，一律按 MB 显示会变成「0.0 MB」——
-     * 页面上看着像「没备份成」，实际是有的。所以小于 1 MB 报 KB。
+     * 人类可读的体积。写法统一交给 {@link HumanSize}——磁盘容量、照片占用
+     * 也用同一套，否则页面上会出现「备份 1.2 GB、磁盘 1224 MB」这种要人自己换算的对照。
+     *
+     * <p>这里保留 {@code Object} 入参并返回 null：取数取不到时宁可显示「—」，
+     * 不要编一个「0 B」出来。
      */
     static String sizeText(Object bytes) {
         if (!(bytes instanceof Number num)) {
             return null;
         }
-        long b = num.longValue();
-        if (b < 1024) {
-            return b + " B";
-        }
-        // 先按 KB 取整再判量级：不然 1048575 字节会报成「1024 KB」，
-        // 差一个字节却换了个更长的说法
-        long kb = Math.round(b / 1024.0);
-        if (kb < 1024) {
-            return kb + " KB";
-        }
-        return (Math.round(b / 104857.6) / 10.0) + " MB";
+        return HumanSize.of(num.longValue());
     }
 
     /** 字节转 MB，保留一位小数。备份文件用 KB 表示时看不出量级变化（1200 KB 和 340 KB 差着三倍） */

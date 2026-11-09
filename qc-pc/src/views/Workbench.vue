@@ -27,6 +27,16 @@
       show-icon
     />
 
+    <!-- 磁盘比备份更急：备份断了是「万一」的风险，盘满了是「今天下午」就写不进数据 -->
+    <el-alert
+      v-if="storage && storage.alert"
+      :title="`服务器磁盘空间告急 · ${storageLevelText}`"
+      :description="storage.flags.join('；')"
+      :type="storageAlertType"
+      :closable="false"
+      show-icon
+    />
+
     <div class="stats">
       <div
         v-for="s in stats"
@@ -383,6 +393,68 @@
       </div>
     </el-card>
 
+    <!-- 磁盘与容量。和备份是同一类东西：坏了不会自己喊，
+         等 PostgreSQL 写不进 WAL 的那天，表现是「所有保存都报错」而不是「磁盘满了」 -->
+    <el-card v-if="isAdmin && storage" id="sec-storage" class="block">
+      <template #header>
+        <div class="head">
+          <span>
+            磁盘与容量
+            <el-tag :type="storageTagType" size="small" class="ml">{{ storageLevelText }}</el-tag>
+          </span>
+          <div class="spacer" />
+          <span class="head-meta">可用 {{ storage.usableText }} / 共 {{ storage.totalText }}</span>
+        </div>
+      </template>
+
+      <el-progress
+        :percentage="Math.min(100, Math.max(0, Math.round(storage.usedPercent)))"
+        :status="storageBarStatus"
+        :stroke-width="14"
+      />
+      <div class="more mt8">
+        已用 {{ storage.usedText }}（{{ storage.usedPercent }}%）
+        <template v-if="storage.daysLeft !== null && storage.daysLeft !== undefined">
+          <span class="sep">·</span>
+          按最近 {{ storage.recentDays }} 天速度还能撑 <b>{{ storage.daysLeft }}</b> 天
+        </template>
+      </div>
+
+      <!-- flags 第一条就是上面那行「可用 X / 共 Y」，这里从第二条开始，不重复念 -->
+      <div v-for="f in storage.flags.slice(1)" :key="f" class="flag">· {{ f }}</div>
+
+      <div class="more">
+        数据库 {{ storage.dbText }}
+        <span class="sep">·</span>照片 {{ storage.imageCount }} 张占 {{ storage.imageText }}
+        <span class="sep">·</span>最近 {{ storage.recentDays }} 天新增 {{ storage.recentImageText }}
+      </div>
+      <div class="more">
+        监控路径 <code class="path">{{ storage.path }}</code>
+        <template v-if="storage.storageType !== 'local'">
+          <span class="sep">·</span>{{ storage.note }}
+        </template>
+      </div>
+
+      <el-table
+        v-if="storage.largestTables && storage.largestTables.length"
+        :data="storage.largestTables"
+        size="small"
+        class="mt"
+      >
+        <el-table-column prop="tableName" label="表" min-width="220" />
+        <el-table-column prop="sizeText" label="占用" width="120" />
+        <el-table-column label="行数（估）" width="130">
+          <template #default="{ row }">{{ row.rows == null ? '—' : row.rows }}</template>
+        </el-table-column>
+      </el-table>
+      <div class="more">
+        提醒线：可用不足 {{ storage.thresholds.warnUsableText }} 或按速度撑不过
+        {{ storage.thresholds.warnDays }} 天算「需要清理」；不足
+        {{ storage.thresholds.criticalUsableText }} 或撑不过 {{ storage.thresholds.criticalDays }} 天算「告急」。
+        告急时每天早上八点半会推一条通知给管理员，同一个问题一天只推一次。
+      </div>
+    </el-card>
+
     <!-- 数据备份：每天 02:00 由 systemd timer 跑，结果由脚本写进库。
          这一块要回答的只有一句「现在手上这份备份有多旧」 -->
     <el-card v-if="isAdmin" id="sec-backup" class="block">
@@ -456,6 +528,8 @@ const complaints = ref([])
 const batches = ref([])
 /** 备份健康。只有管理员才拉——检验员看见了也做不了什么 */
 const backup = ref(null)
+/** 磁盘与容量。同样只给管理员：检验员既不能删照片也不能扩盘 */
+const storage = ref(null)
 /**
  * 改版遗留（全库）。形状跟标准页那个提示条一致，但那边是按产品查的：
  * 这里不带 productId，出的是全厂的旧版结论清单
@@ -493,6 +567,25 @@ const backupTagType = computed(
 )
 /** 只是错过一轮时用黄色：红的用多了就没人当回事了 */
 const backupAlertType = computed(() => (backup.value?.level === 'STALE' ? 'warning' : 'error'))
+/**
+ * 磁盘状态的说法。用「需要清理 / 空间告急」而不是「警告 / 严重」——
+ * 前者带一个动作，后者只是让人紧张。
+ */
+const STORAGE_TEXT = {
+  OK: '正常',
+  WARN: '需要清理',
+  CRITICAL: '空间告急',
+  UNKNOWN: '读不到容量'
+}
+const storageLevelText = computed(() => STORAGE_TEXT[storage.value?.level] || '—')
+const storageTagType = computed(
+  () => ({ OK: 'success', WARN: 'warning', CRITICAL: 'danger', UNKNOWN: 'info' }[storage.value?.level] || 'info')
+)
+const storageBarStatus = computed(
+  () => ({ WARN: 'warning', CRITICAL: 'exception' }[storage.value?.level] || 'success')
+)
+/** 只是「该清了」用黄色，红的用多了就没人当回事 */
+const storageAlertType = computed(() => (storage.value?.level === 'WARN' ? 'warning' : 'error'))
 /** 需要人动手的那几个（当天刚建批的不算） */
 const batchUrgent = computed(() => batches.value.filter(b => b.urgent).length)
 const shippedNoInspection = computed(() => batches.value.some(b => b.level === 'SHIPPED'))
@@ -654,14 +747,15 @@ async function loadAll() {
     summary.value = { ...s, __rejected: m.rejected || [] }
     mine.value = m.drafts || []
 
-    const [r, d, g, c, b, bk, st] = await Promise.all([
+    const [r, d, g, c, b, bk, sg, st] = await Promise.all([
       canReview.value ? http.get('/todo/reviews', { params: { limit: 50 } }) : Promise.resolve([]),
       http.get('/todo/defects'),
       http.get('/todo/gauges'),
       http.get('/todo/complaints', { params: { limit: 50 } }),
       http.get('/todo/batches', { params: { limit: 20 } }),
-      // 备份是管理员的事，别的角色不发这个请求——发了也是 403
+      // 备份与磁盘都是管理员的事，别的角色不发这两个请求——发了也是 403
       isAdmin.value ? http.get('/system/backup-health') : Promise.resolve(null),
+      isAdmin.value ? http.get('/system/storage-health') : Promise.resolve(null),
       // 改版遗留只给管质量的看：检验员看到「有 30 张旧版单」也做不了什么，
       // 他自己那张单的上下文在检验单详情里已经单独说了
       canReview.value ? http.get('/standards/stale-usage') : Promise.resolve(null)
@@ -672,6 +766,7 @@ async function loadAll() {
     complaints.value = c || []
     batches.value = b || []
     backup.value = bk || null
+    storage.value = sg || null
     if (st) stale.value = st
   } finally {
     loading.value = false
@@ -687,6 +782,8 @@ onMounted(loadAll)
 .hi { font-size: 18px; font-weight: 600; color: var(--el-text-color-primary); }
 .sub { font-size: 13px; color: var(--el-text-color-secondary); margin-top: 4px; }
 .hl { color: var(--el-color-danger); font-size: 15px; }
+.mt8 { margin-top: 8px; }
+.path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .spacer { flex: 1; }
 
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }

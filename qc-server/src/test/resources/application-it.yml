@@ -25,6 +25,7 @@ spring:
         - classpath:db/V16__doc_no_seq.sql
         - classpath:db/V17__gauge_check.sql
         - classpath:db/V18__notice_push.sql
+        - classpath:db/V19__system_alert.sql
       continue-on-error: false
 
 mybatis-plus:

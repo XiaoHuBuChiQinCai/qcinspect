@@ -3,6 +3,7 @@ package com.qc.inspect.controller;
 import com.qc.inspect.common.R;
 import com.qc.inspect.notify.NoticePushService;
 import com.qc.inspect.service.BackupHealthService;
+import com.qc.inspect.service.StorageHealthService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,7 +18,7 @@ import java.util.Map;
 /**
  * 系统自身的健康状况。
  *
- * <p>目前有两件事：备份、企业微信推送。以后如果加磁盘、证书到期，也放这里——
+ * <p>目前有三件事：备份、磁盘容量、企业微信推送。以后如果加证书到期，也放这里——
  * 这些都是「管理员该知道、但和质检业务无关」的信息，不该混进检验单或报表接口。
  *
  * <p>只给 ADMIN：检验员看到「备份已 80 小时没有成功」什么都做不了，
@@ -29,7 +30,20 @@ import java.util.Map;
 public class SystemController {
 
     private final BackupHealthService backupHealthService;
+    private final StorageHealthService storageHealthService;
     private final NoticePushService noticePushService;
+
+    /**
+     * 磁盘与容量。
+     *
+     * <p>只读接口，顺手会带上最大的几张表——「数据库占了 8 GB」这句话本身没有下一步动作，
+     * 指出是哪张表在涨，才知道该清日志还是清历史单据。
+     */
+    @GetMapping("/storage-health")
+    @PreAuthorize("hasRole('ADMIN')")
+    public R<Map<String, Object>> storageHealth() {
+        return R.ok(storageHealthService.health());
+    }
 
     /**
      * 备份健康。

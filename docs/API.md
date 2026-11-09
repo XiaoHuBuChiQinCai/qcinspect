@@ -1917,3 +1917,77 @@ timer 照样触发、目录照样在（不报错的时候），只有真出事�
 **脚本一侧的约束**：写库失败绝不能让备份本身失败。库挂掉的时候最需要一份备份，
 这时候因为「记不上账」退出，等于在最坏的时刻放弃干活；所以脚本里写库一律吞错误，
 只往 stderr 喊一句。`V13` 没跑过时表不存在，脚本照样正常备份，只是页面显示 `NO_RECORD`。
+
+### 磁盘与容量
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/system/storage-health` | ADMIN | 盘容量、数据库大小、照片占用、表体积排行 |
+
+**为什么不只看「用了百分之几」。** 50 GB 的盘用了 90% 还剩 5 GB，什么事都没有；
+20 GB 的盘用了 90% 只剩 2 GB，一次 `pg_dump` 就可能顶穿。百分比给人的是错觉，
+真正决定「会不会出事」的是**可用字节数**。所以判定以绝对空间为主：
+可用不足 3 GB 算 `WARN`、不足 1 GB 算 `CRITICAL`。
+
+**为什么还要算「能撑几天」。** 只说「剩 2 GB」没人会紧张——它听着还挺多。
+把最近 30 天新增的照片字节数除以天数，得出「按这个速度还能撑 3 天」，才有人今天就动手。
+增速只算照片，不算数据库：日志表和历史单据没有明确的保留期口径，
+估出来的日增会随业务波动乱跳，反而误导。
+
+| 级别 | 条件 | 含义 |
+|---|---|---|
+| `OK` | 可用 ≥ 3 GB 且撑得过 7 天 | 正常 |
+| `WARN` | 可用 < 3 GB，或撑不过 7 天 | 还能用，该安排清理 |
+| `CRITICAL` | 可用 < 1 GB，或撑不过 2 天 | PostgreSQL 写 WAL 可能失败，当天就得处理 |
+| `UNKNOWN` | 读不到盘容量 | **不能当 OK**：容器挂错卷、目录不存在、只读文件系统都是这个样子 |
+
+**`UNKNOWN` 为什么也要 `alert=true`。** 这一栏存在的前提是「读不到就是坏事」。
+如果读不到时页面安安静静，那容器挂错卷这种最容易发生的错，表现就是
+「一切正常，直到某天所有保存都失败」。
+
+**`path` 必须露在页面上。** 它说明当前监控的是哪个目录。挂错卷的时候，
+页面会显示「还有 40 GB」而真实照片盘早已满了——这种「看着正常」的错最难查。
+
+```json
+{
+  "level": "WARN", "alert": true,
+  "flags": [
+    "可用 2.4 GB / 共 50.0 GB（已用 95%）",
+    "按最近 30 天的存图速度，还能撑 15 天，趁还没紧张先把旧照片清一清",
+    "其中照片 8200 张占 12.6 GB，是已用空间的 26%"
+  ],
+  "path": "/app/data/files", "storageType": "local",
+  "totalBytes": 53687091200, "usableBytes": 2576980377, "usedBytes": 51110110823,
+  "totalText": "50.0 GB", "usableText": "2.4 GB", "usedText": "47.6 GB", "usedPercent": 95.2,
+  "dbBytes": 743440384, "dbText": "709.0 MB",
+  "imageCount": 8200, "imageBytes": 13529146982, "imageText": "12.6 GB",
+  "recentImageBytes": 4294967296, "recentImageText": "4.0 GB", "recentDays": 30,
+  "dailyGrowthBytes": 143165576, "dailyGrowthText": "136.5 MB", "daysLeft": 18,
+  "thresholds": {
+    "warnUsableText": "3.0 GB", "criticalUsableText": "1.0 GB",
+    "warnDays": 7, "criticalDays": 2
+  },
+  "largestTables": [
+    { "tableName": "qc_inspection_line", "sizeText": "312.0 MB", "rows": 184320 },
+    { "tableName": "qc_audit_log", "sizeText": "96.0 MB", "rows": 51200 }
+  ]
+}
+```
+
+其他约定：
+
+- `dailyGrowthBytes` / `daysLeft` **估不出来就是 `null`**（最近没存过图、增速低于每天 100 KB、
+  或者要十年以上才满），返回体里直接省略。不要在文案里编一个天数——
+  「还能撑 12000 天」这种正确的废话会让人从此不看这一栏
+- 体积文案统一由后端的 `HumanSize` 算，跟备份那边同一套：不足 1 KB 报字节、
+  不足 1 MB 报 KB、其余 MB/GB。各写一份迟早出现「备份 1.2 GB、磁盘 1224 MB」
+- `largestTables` 的行数是 `pg_stat_user_tables` 的估算值（依赖 autovacuum 更新），
+  只用来让人对量级有感觉，不参与任何判定
+- `note` 只在 `storageType != local` 时出现：走 MinIO 时照片不在这台机器上，
+  不说这一句，人会把「盘很空」误当成「照片也安全」
+
+**主动提醒。** `StorageHealthService.morningCheck()` 每天 08:30 跑一次，
+`WARN` 与 `CRITICAL` 都会给所有启用的管理员推一条站内通知（走 `qc_notice`，
+顺带过企业微信那条通道）。去重靠 `qc_system_alert` 的 `(alert_key, alert_date)` 唯一索引：
+**同一个等级一天只推一次**。为什么不只在状态变化时推——状态变成 `CRITICAL` 那天
+正好没人上班，就永远错过了；问题没解决，第二天还是要顶在眼前。
