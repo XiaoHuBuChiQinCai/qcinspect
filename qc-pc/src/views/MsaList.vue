@@ -68,9 +68,11 @@
           <span v-else class="sub">算不出</span>
         </template>
       </el-table-column>
-      <el-table-column prop="createdBy" label="录入人" width="95" />
-      <el-table-column label="日期" width="150">
-        <template #default="{ row }">{{ (row.createdAt || '').replace('T', ' ').slice(0, 16) }}</template>
+      <el-table-column label="录入人 / 日期" width="135">
+        <template #default="{ row }">
+          <div>{{ row.createdBy }}</div>
+          <div class="sub">{{ (row.createdAt || '').replace('T', ' ').slice(0, 16) }}</div>
+        </template>
       </el-table-column>
       <el-table-column label="操作" width="130" fixed="right">
         <template #default="{ row }">
