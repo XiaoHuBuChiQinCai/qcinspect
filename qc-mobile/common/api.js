@@ -63,7 +63,11 @@ function goLogin() {
   })
 }
 
-export function request(path, { method = 'GET', data } = {}) {
+/**
+ * @param silent 不在这一层弹提示，把错误原文交给调用方自己展示。
+ *               登录页要用：锁定提示是一整句话，toast 只显示一行，后半句「等多久、找谁」会被切掉
+ */
+export function request(path, { method = 'GET', data, silent = false } = {}) {
   return new Promise((resolve, reject) => {
     const token = getToken()
     uni.request({
@@ -73,7 +77,9 @@ export function request(path, { method = 'GET', data } = {}) {
       header: token ? { Authorization: `Bearer ${token}` } : {},
       success: res => {
         if (res.statusCode === 401) {
-          uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
+          if (!silent) {
+            uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
+          }
           goLogin()
           reject(new Error('unauthorized'))
           return
@@ -83,12 +89,16 @@ export function request(path, { method = 'GET', data } = {}) {
           resolve(body.data)
         } else {
           const msg = (body && body.msg) || '请求失败'
-          uni.showToast({ title: msg, icon: 'none' })
+          if (!silent) {
+            uni.showToast({ title: msg, icon: 'none' })
+          }
           reject(new Error(msg))
         }
       },
       fail: err => {
-        uni.showToast({ title: '网络异常，请检查服务端', icon: 'none' })
+        if (!silent) {
+          uni.showToast({ title: '网络异常，请检查服务端', icon: 'none' })
+        }
         reject(err)
       }
     })
@@ -98,7 +108,9 @@ export function request(path, { method = 'GET', data } = {}) {
 export const api = {
   login: (username, password) => request('/auth/login', {
     method: 'POST',
-    data: { username, password }
+    data: { username, password },
+    // 错误原文由登录页自己展示：锁定提示太长，toast 装不下
+    silent: true
   }),
   batches: status => request('/batches' + (status ? `?status=${status}` : '')),
   createInspection: batchId => request('/inspections', {

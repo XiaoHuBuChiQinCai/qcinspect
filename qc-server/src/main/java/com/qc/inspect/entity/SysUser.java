@@ -1,6 +1,7 @@
 package com.qc.inspect.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -37,6 +38,27 @@ public class SysUser {
      * 比不推更糟。
      */
     private String wecomUserid;
+
+    /** 连续密码错误次数；达到上限即锁定，并在锁定的同时清零（解锁后重新给满机会） */
+    private Integer failedAttempts;
+
+    /** 锁定截止时间。为空表示未锁定；过期自动放行，不需要人操作 */
+    private LocalDateTime lockedUntil;
+
+    private LocalDateTime lastFailedAt;
+
+    /**
+     * 现在是否锁着。瞬态字段，不落库——由服务端按 {@code lockedUntil} 与当前时间算好再返回。
+     *
+     * <p>不让前端自己比时间：浏览器与服务器的时钟差几分钟是常事，
+     * 差的这几分钟会让「页面显示已锁定、提交却能过」这种矛盾状态出现。
+     */
+    @TableField(exist = false)
+    private Boolean locked;
+
+    /** 还剩几分钟解锁（已解锁为 null）。同上，服务端算 */
+    @TableField(exist = false)
+    private Long lockMinutes;
 
     @TableLogic
     private Integer delFlag;

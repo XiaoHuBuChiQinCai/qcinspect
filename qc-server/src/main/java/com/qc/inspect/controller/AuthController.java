@@ -60,6 +60,19 @@ public class AuthController {
         return R.ok();
     }
 
+    /**
+     * 解锁一个被「连续密码错误」锁住的账号。
+     *
+     * <p>锁本来就会在 15 分钟后自己解开，这个接口是给「等不了」的场景：
+     * 人站在产线旁打电话说登不上，管理员顺手点一下，比让他盯着表等十五分钟合理。
+     */
+    @PostMapping("/users/{id}/unlock")
+    @PreAuthorize("hasRole('ADMIN')")
+    public R<Void> unlock(@PathVariable Long id) {
+        authService.unlock(id);
+        return R.ok();
+    }
+
     public record LoginReq(String username, String password) {
     }
 

@@ -47,7 +47,16 @@ export default {
         saveSession(data.token, data.user)
         uni.reLaunch({ url: '/pages/index/index' })
       } catch (e) {
-        // 接口层已弹提示
+        // 错误原文在这一页展示，因为「密码连续输错 5 次，账号已锁定 15 分钟」
+        // 这类话必须整句看到——被截掉后半句，人只会以为还是密码错，接着再撞
+        const msg = (e && e.message) || '网络异常，请检查服务端'
+        if (msg === 'unauthorized') {
+          uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
+        } else if (msg.length > 18) {
+          uni.showModal({ title: '登录失败', content: msg, showCancel: false, confirmText: '知道了' })
+        } else {
+          uni.showToast({ title: msg, icon: 'none' })
+        }
       } finally {
         this.loading = false
       }

@@ -50,19 +50,31 @@
           <el-tag v-else type="info" size="small">只收站内通知</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" width="150">
         <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
-            {{ row.enabled ? '启用' : '停用' }}
-          </el-tag>
+          <!-- 锁定要盖过「启用」：账号是启用的，但这个人现在确实进不来，
+               两件事同时为真时，先说挡着他的那一件 -->
+          <el-tooltip v-if="row.locked" :content="lockTip(row)" placement="top">
+            <el-tag type="danger" size="small">已锁定 {{ row.lockMinutes }} 分钟</el-tag>
+          </el-tooltip>
+          <el-tag v-else-if="!row.enabled" type="info" size="small">停用</el-tag>
+          <el-tag v-else type="success" size="small">正常</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="创建时间" width="180">
         <template #default="{ row }">{{ fmt(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" min-width="200">
+      <el-table-column label="操作" min-width="270">
         <template #default="{ row }">
           <el-button size="small" @click="edit(row)">编辑</el-button>
+          <el-button
+            v-if="row.locked"
+            size="small"
+            type="warning"
+            plain
+            :loading="unlocking === row.id"
+            @click="unlock(row)"
+          >解锁</el-button>
           <el-button size="small" @click="resetPwd(row)">重置密码</el-button>
         </template>
       </el-table-column>
@@ -152,6 +164,8 @@ const saving = ref(false)
 const push = reactive({ enabled: false, missing: '', states: {}, problems: [] })
 const problemVisible = ref(false)
 const retrying = ref(null)
+/** 正在解锁哪个账号。按行记，免得点了 A 却让 B 的按钮转圈 */
+const unlocking = ref(null)
 
 const form = reactive({
   id: null,
@@ -185,6 +199,15 @@ const attentionDetail = computed(() => {
 
 function fmt(t) {
   return t ? String(t).replace('T', ' ').slice(0, 19) : '—'
+}
+
+/**
+ * 锁定标签的说明。管理员点开这一页通常是在接一个电话：「我登不上」。
+ * 他要判断的是「他自己记错了，还是有人在试这个号」——所以最近一次错误时间必须露出来。
+ */
+function lockTip(row) {
+  const since = row.lastFailedAt ? `最近一次密码错误：${fmt(row.lastFailedAt)}` : '最近一次密码错误：—'
+  return `${since}。连续 5 次输错会锁 15 分钟，到点自动解开，不需要人操作`
 }
 
 async function load() {
@@ -296,7 +319,23 @@ async function resetPwd(row) {
     return
   }
   await http.post(`/auth/users/${row.id}/reset-password`, { newPassword: pwd })
-  ElMessage.success('密码已重置，请通知本人尽快修改')
+  // 重设密码会顺带解锁，列表得重新拉一次，否则「已锁定」的标签还挂在那里
+  await load()
+  ElMessage.success('密码已重置并解锁，请通知本人尽快修改')
+}
+
+/**
+ * 解锁。十五分钟并不长，但人站在产线旁等着开工时，十五分钟很长。
+ */
+async function unlock(row) {
+  unlocking.value = row.id
+  try {
+    await http.post(`/auth/users/${row.id}/unlock`)
+    await load()
+    ElMessage.success(`已解锁 ${row.username}，可以立刻登录`)
+  } finally {
+    unlocking.value = null
+  }
 }
 
 onMounted(() => {

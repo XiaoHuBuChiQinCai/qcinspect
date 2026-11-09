@@ -268,6 +268,41 @@ docker run --rm -v qcinspect_qc-files:/data -v ~:/out alpine \
   tar czf /out/files-$(date +%F).tar.gz -C /data .
 ```
 
+### 有人登不上：先分清是锁了还是密码错
+
+连续 5 次密码错误会把这个账号锁 15 分钟（自动解开，不需要人动手）。判断方法：
+
+```bash
+docker exec -i qc-db psql -U qc -d qcinspect \
+  -c "select username, failed_attempts, locked_until, last_failed_at, enabled from sys_user order by id"
+```
+
+`locked_until` 在未来就是锁着。三种处理：
+
+1. **等**：最多 15 分钟，到点自己解开
+2. **让另一个管理员解锁**：PC「账号与角色」→ 那一行右侧「解锁」，或者
+   `POST /api/auth/users/{id}/unlock`
+3. **只有一台机器、唯一的 admin 自己被锁了**（等不了也找不到人）——直接改库：
+
+```bash
+docker exec -i qc-db psql -U qc -d qcinspect \
+  -c "UPDATE sys_user SET failed_attempts = 0, locked_until = NULL WHERE username = 'admin'"
+```
+
+改完立刻能登，不用重启服务（每次登录都从库里读，没有内存缓存）。
+
+顺带一提，`last_failed_at` 密集出现而本人说没登过，那是有人在试——先改密码，别只解锁。
+
+**已经在用的人不受影响，这一点要知道清楚。** 锁只挡「新的登录」；已经签发的 token
+（默认 8 小时）在过期前照样能用，停用账号和改密码都**不会**让手里的 token 失效——
+`JwtAuthFilter` 只验签名，不回查账号状态。这是当前已知的短板，真要立刻切断某个人的会话，
+只有两个办法：
+
+- 改 `JWT_SECRET` 后重启 app——所有人生效，全部重登（厂内系统，代价可接受）
+- 等 token 自己过期
+
+（把 `qc.jwt.expire-minutes` 调小会让这个窗口变短，代价是大家更频繁地重登。）
+
 ### 磁盘空间
 
 工作台最下面有「磁盘与容量」一块（只给管理员）。它回答的不是「用了百分之几」，

@@ -26,6 +26,7 @@ spring:
         - classpath:db/V17__gauge_check.sql
         - classpath:db/V18__notice_push.sql
         - classpath:db/V19__system_alert.sql
+        - classpath:db/V20__login_lock.sql
       continue-on-error: false
 
 mybatis-plus:

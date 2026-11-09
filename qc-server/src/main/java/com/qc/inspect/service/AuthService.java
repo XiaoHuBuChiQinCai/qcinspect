@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.qc.inspect.auth.JwtUtil;
+import com.qc.inspect.auth.LoginLock;
 import com.qc.inspect.auth.LoginUser;
 import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.BizException;
@@ -26,6 +27,18 @@ public class AuthService {
     /** 角色白名单，与 db/V5 的 ck_user_role 约束保持一致 */
     private static final List<String> ROLES = List.of("ADMIN", "INSPECTOR", "REVIEWER");
 
+    /**
+     * 账号不存在时用来「空转」一次 BCrypt 的占位哈希（"password" 的 BCrypt）。
+     *
+     * <p>不做这一步，登录接口就会用响应时间回答「这个账号存不存在」：
+     * 账号不存在时直接 return，账号存在时要跑一遍 BCrypt（几十毫秒），
+     * 差一个数量级，拿脚都能测出来。所以查不到人也要照样算一次，把两条路的时间拉平。
+     *
+     * <p>用真实的 BCrypt 串而不是随便一段字符：编码器认不出格式时会直接返回 false，
+     * 一次哈希都不算，那就白做了。
+     */
+    private static final String DUMMY_HASH = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
+
     private final SysUserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
@@ -35,12 +48,36 @@ public class AuthService {
             throw BizException.of("请输入账号和密码");
         }
         SysUser user = findByUsername(username.trim());
+        LocalDateTime now = LocalDateTime.now();
+
+        // 先判锁，再看密码。顺序不能反：先验密码再判锁，等于锁了个寂寞——
+        // 密码一旦被猜对，这里就是它出场的唯一时机。
+        long minutesLeft = user == null ? 0 : LoginLock.minutesLeft(user.getLockedUntil(), now);
+        if (minutesLeft > 0) {
+            throw BizException.of(LoginLock.lockedMessage(minutesLeft));
+        }
+
         // 账号不存在与密码错误返回同一句，避免被用来枚举账号
-        if (user == null || !passwordEncoder.matches(password, user.getPassword())) {
-            throw BizException.of("账号或密码错误");
+        boolean matched = user != null
+                ? passwordEncoder.matches(password, user.getPassword())
+                : burned(password);
+        if (!matched) {
+            if (user == null) {
+                throw BizException.of("账号或密码错误");
+            }
+            int before = user.getFailedAttempts() == null ? 0 : user.getFailedAttempts();
+            userMapper.countFailure(user.getId(), now,
+                    now.plusMinutes(LoginLock.LOCK_MINUTES), LoginLock.MAX_FAILURES);
+            // 正好这一次锁上的话必须说清楚，否则人会以为「密码还是错」，接着再试再撞墙
+            throw BizException.of(LoginLock.willLock(before)
+                    ? LoginLock.justLockedMessage() : "账号或密码错误");
         }
         if (Boolean.FALSE.equals(user.getEnabled())) {
             throw BizException.of("账号已停用，请联系管理员");
+        }
+        // 成功即清零：连续错误是「连续」的事，中间成功过一次就重新计数
+        if (user.getFailedAttempts() != null && user.getFailedAttempts() > 0) {
+            userMapper.clearFailure(user.getId());
         }
 
         LoginUser loginUser = new LoginUser(user.getId(), user.getUsername(), user.getRealName(), user.getRole());
@@ -49,6 +86,12 @@ public class AuthService {
         result.put("user", loginUser);
         result.put("expireMinutes", jwtUtil.expireMinutes());
         return result;
+    }
+
+    /** 查不到人时也照样跑一次哈希，只为把两条分支的耗时拉平 */
+    private boolean burned(String password) {
+        passwordEncoder.matches(password, DUMMY_HASH);
+        return false;
     }
 
     public LoginUser me() {
@@ -88,7 +131,16 @@ public class AuthService {
         requireAdmin();
         List<SysUser> users = userMapper.selectList(Wrappers.<SysUser>lambdaQuery()
                 .orderByAsc(SysUser::getId));
-        users.forEach(u -> u.setPassword(null));
+        LocalDateTime now = LocalDateTime.now();
+        users.forEach(u -> {
+            u.setPassword(null);
+            // 锁没锁、还剩几分钟，一律由服务端算好再下发。
+            // 让浏览器自己拿 lockedUntil 和本地时间比，时钟差几分钟就会出现
+            // 「页面显示已锁定、人其实能登」这种谁也说不清的状态
+            long left = LoginLock.minutesLeft(u.getLockedUntil(), now);
+            u.setLocked(left > 0);
+            u.setLockMinutes(left > 0 ? left : null);
+        });
         return users;
     }
 
@@ -125,9 +177,13 @@ public class AuthService {
             }
             assertNotLastAdmin(req);
             // 未传密码表示不改密码
-            req.setPassword(rawPassword == null || rawPassword.isBlank()
-                    ? null : passwordEncoder.encode(rawPassword));
+            boolean newPassword = rawPassword != null && !rawPassword.isBlank();
+            req.setPassword(newPassword ? passwordEncoder.encode(rawPassword) : null);
             userMapper.updateById(req);
+            // 换了密码就顺带解锁：否则出现「密码已重置但人还是登不进去」
+            if (newPassword) {
+                clearFailureQuietly(req.getId());
+            }
             if (req.getWecomUserid() == null) {
                 // updateById 默认忽略 null，解绑时不清一次就永远清不掉
                 userMapper.update(null, new LambdaUpdateWrapper<SysUser>()
@@ -208,6 +264,32 @@ public class AuthService {
         update.setPassword(passwordEncoder.encode(newPassword));
         update.setUpdatedAt(LocalDateTime.now());
         userMapper.updateById(update);
+        // 管理员刚把密码换成新的，之前那几次错误就不该再压着这个人：
+        // 不清的话，人拿到新密码却仍然登不进去（提示「账号已锁定」），
+        // 只会再打一次电话问「你不是说重置好了吗」
+        clearFailureQuietly(userId);
+    }
+
+    /**
+     * 管理员手工解锁。
+     *
+     * <p>存在的理由是「十五分钟也很长」：产线停在那里等人上班，而重置密码本来就要管理员动手，
+     * 顺手能解就没人会去改数据库。
+     */
+    @Transactional
+    public void unlock(Long userId) {
+        requireAdmin();
+        SysUser user = userMapper.selectById(userId);
+        if (user == null) {
+            throw BizException.of("账号不存在");
+        }
+        clearFailureQuietly(userId);
+    }
+
+    private void clearFailureQuietly(Long userId) {
+        if (userId != null) {
+            userMapper.clearFailure(userId);
+        }
     }
 
     private void requireAdmin() {
