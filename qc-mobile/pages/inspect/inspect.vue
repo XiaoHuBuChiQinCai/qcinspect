@@ -134,12 +134,13 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { computed, ref, watch } from 'vue'
+import { onHide, onLoad, onUnload } from '@dcloudio/uni-app'
 import { absUrl, api, getUser, uploadImage } from '../../common/api'
 import { judgeGauge } from '../../common/gauge'
 import { todayLocal } from '../../common/dict'
 import { lineState, valueState, STATE, STATE_TEXT } from '../../common/specHint'
+import { DRAFT_TTL_MS, draftKey, pruneIndex, shouldRestore } from '../../common/draft'
 
 const info = ref({})
 const pieces = ref([])
@@ -236,7 +237,194 @@ async function load() {
   })
 
   await loadImages()
+  armed = true
+  await maybeRestoreCopy()
 }
+
+// ==================== 本机抄本 ====================
+
+/**
+ * 服务端「暂存」救不了的场景：车间 wifi 断了，暂存同样发不出去。
+ * 而这张单全表几十个测点，填了半小时，手机切个后台被系统回收、
+ * 手滑返回、H5 刷一下，内容就全没了——这比少个功能更让人放弃手机端。
+ *
+ * 所以本地再存一份。它不是第二个权威，只是**等着被提交的抄本**：
+ * 提交或暂存成功即删，服务端始终是唯一可信来源。
+ */
+const COPY_INDEX = 'qc_draft_index'
+
+/** 抄本 key 带了人：公用平板上换个人登录，不能把前一个人填的单当自己的恢复出来 */
+const copyKey = computed(() => draftKey(me.value, inspectionId.value))
+
+/** 加载回填期间、只读状态下都不该往本机写 */
+let armed = false
+let copyTimer = null
+
+function readCopy(key) {
+  if (!key) return null
+  try {
+    const raw = uni.getStorageSync(key)
+    if (!raw) return null
+    const obj = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return obj && Array.isArray(obj.lines) ? obj : null
+  } catch (e) {
+    return null
+  }
+}
+
+function readIndex() {
+  try {
+    const raw = uni.getStorageSync(COPY_INDEX)
+    const arr = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return Array.isArray(arr) ? arr : []
+  } catch (e) {
+    return []
+  }
+}
+
+/**
+ * 落一份抄本。顺手清掉过期与超量的旧抄本——
+ * localStorage 不会自己回收，攒一年就是几百张单的明文测量值躺在手机上。
+ */
+function writeCopy() {
+  const key = copyKey.value
+  if (!key) return
+  const now = Date.now()
+  try {
+    uni.setStorageSync(key, JSON.stringify({ lines: collectLines(), savedAt: now }))
+    const idx = readIndex()
+    const dead = pruneIndex(idx, key, now, DRAFT_TTL_MS)
+    dead.forEach(k => uni.removeStorageSync(k))
+    const deadSet = new Set(dead)
+    const next = [{ key, savedAt: now }].concat(
+      idx
+        .filter(e => e && e.key && e.key !== key && !deadSet.has(e.key))
+        .sort((a, b) => Number(b.savedAt) - Number(a.savedAt))
+    )
+    uni.setStorageSync(COPY_INDEX, JSON.stringify(next))
+  } catch (e) {
+    // 隐私模式或配额满：存不下就算了，不能因为抄本写失败把录入页搞崩
+  }
+}
+
+function clearCopy() {
+  const key = copyKey.value
+  if (!key) return
+  try {
+    uni.removeStorageSync(key)
+    uni.setStorageSync(
+      COPY_INDEX,
+      JSON.stringify(readIndex().filter(e => e && e.key !== key))
+    )
+  } catch (e) {
+    /* 同上 */
+  }
+}
+
+/** 每次改动后 800ms 落盘。逐字符写会把 localStorage 打成筛子 */
+function touchCopy() {
+  if (!armed || locked.value) return
+  if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = setTimeout(writeCopy, 800)
+}
+
+/**
+ * 立刻落盘，不等那 800ms。
+ *
+ * <p>切后台被系统回收、手滑按返回，正好卡在防抖窗口里的话，
+ * 最后改的那几项就白填了——而这恰恰是最常见的丢数据时刻。
+ */
+function flushCopy() {
+  if (copyTimer) {
+    clearTimeout(copyTimer)
+    copyTimer = null
+  }
+  if (!armed || locked.value) return
+  writeCopy()
+}
+
+/**
+ * 把抄本贴回页面。按 lineId 对，不按位置对——标准改过版会插行、删行，
+ * 按位置贴会把「第 5 项的值」贴到「第 5 项现在是另一个测点」上。
+ *
+ * @returns 贴回去的行数，0 表示一条都对不上（标准改得面目全非了）
+ */
+function applyCopy(lines) {
+  const map = {}
+  ;(lines || []).forEach(l => {
+    if (l && l.lineId !== null && l.lineId !== undefined) map[String(l.lineId)] = l
+  })
+  let hit = 0
+  pieces.value.forEach(p => {
+    Object.values(p.groups).flat().forEach(line => {
+      const saved = map[String(line.id)]
+      if (!saved) return
+      hit += 1
+      const values = Array.isArray(saved.values) ? saved.values : []
+      line._inputs = Array.from({ length: line.pointCount || 1 }, (_, i) =>
+        values[i] === undefined ? '' : values[i]
+      )
+      if (line.valueType === 'BOOL') {
+        line._input = values.length ? values[0] === 'true' : null
+      } else if (line.valueType !== 'TEXT') {
+        line._input = values.length ? values[0] : ''
+      }
+      if (line.valueType === 'TEXT') line._text = saved.textValue || ''
+      if (saved.gaugeId) line._gaugeId = saved.gaugeId
+    })
+  })
+  return hit
+}
+
+function stampText(ms) {
+  const d = new Date(Number(ms))
+  if (Number.isNaN(d.getTime())) return '上次'
+  const p = n => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+async function maybeRestoreCopy() {
+  const key = copyKey.value
+  if (!key) return
+  const copy = readCopy(key)
+  if (!copy) return
+
+  // 单子已经提交/归档/作废，本机这份就是垃圾
+  const st = info.value.status
+  if (locked.value || st === 'SUBMITTED' || st === 'CLOSED' || st === 'VOID') {
+    clearCopy()
+    return
+  }
+
+  if (!shouldRestore({ draft: copy, currentLines: collectLines(), now: Date.now() })) {
+    // 与服务端一致（人已经暂存过）或者已经过期：留着只会误导
+    clearCopy()
+    return
+  }
+
+  uni.showModal({
+    title: '发现没提交的填写',
+    content: `${stampText(copy.savedAt)} 在这台手机上填过这张单，还没提交上来。要接着填吗？`,
+    confirmText: '接着填',
+    cancelText: '丢弃',
+    success: res => {
+      if (res.confirm) {
+        const hit = applyCopy(copy.lines)
+        uni.showToast({ title: `已恢复 ${hit} 项`, icon: 'none' })
+        writeCopy()
+      } else {
+        clearCopy()
+      }
+    }
+  })
+}
+
+/** 改一处就记一处；deep watch 比在每个 input 上挂事件少漏 20 个绑定 */
+watch(pieces, () => touchCopy(), { deep: true })
+
+// 切后台、离开页面都立刻落盘，别等防抖那 800ms
+onHide(() => flushCopy())
+onUnload(() => flushCopy())
 
 /** 量具台账只在首次进页面拉一次，切件不重复请求 */
 async function loadGauges() {
@@ -458,8 +646,18 @@ function goReport() {
 
 async function saveDraft() {
   if (locked.value) return
-  await api.saveDraft(inspectionId.value, collectLines())
-  uni.showToast({ title: '已暂存', icon: 'none' })
+  try {
+    await api.saveDraft(inspectionId.value, collectLines())
+    // 内容已经在服务端了，本机抄本没必要再留着
+    clearCopy()
+    uni.showToast({ title: '已暂存', icon: 'none' })
+  } catch (e) {
+    // 暂存同样要过网络，网络差的时候它也会失败——这时候本地那份才是唯一的
+    if (e && e.errMsg) {
+      writeCopy()
+      uni.showToast({ title: '没连上服务器，内容已存在本机', icon: 'none' })
+    }
+  }
 }
 
 async function submit() {
@@ -493,9 +691,21 @@ async function submit() {
   submitting.value = true
   try {
     await api.submit(inspectionId.value, collectLines())
+    clearCopy()
     await load()
     uni.showToast({ title: judge.value && judge.value.pass ? '已提交：批合格' : '已提交：批不合格', icon: 'none' })
     uni.pageScrollTo({ scrollTop: 0, duration: 200 })
+  } catch (e) {
+    // 业务驳回（量具停用之类）上面已经弹过原因了，不必再来一个框。
+    // 真正要单独说的是网络断掉这种：数据一个字都没到服务器，人得知道东西还在。
+    if (e && e.errMsg) {
+      writeCopy()
+      uni.showModal({
+        title: '没连上服务器',
+        content: '这张单还没提交上去。填的内容已经存在这台手机上，网络好了重新进来接着填就行。',
+        showCancel: false
+      })
+    }
   } finally {
     submitting.value = false
   }
