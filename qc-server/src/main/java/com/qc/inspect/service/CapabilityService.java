@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.mapper.QcInspectionLineMapper;
+import com.qc.inspect.spc.ControlRules;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -232,11 +233,40 @@ public class CapabilityService {
         }
         result.put("verdict", verdict);
         result.put("verdictText", verdictText);
-        result.put("notes", notes(n, lsl, usl, specPairs.size() > 1, mrFallback, outOfSpec, verdict));
 
         // ---- 6. 直方图与 I-MR 控制图 ----
         result.put("histogram", histogram(all, minV, maxV, lsl, usl, mean));
-        result.put("controlChart", controlChart(all, moves, mean, meanMr, mrFallback));
+
+        Map<String, Object> chart = controlChart(all, moves, mean, meanMr, mrFallback);
+        /*
+         * 判异。控制图只画不判等于没画：一条连续 9 点偏在中心线上侧的曲线，
+         * 看上去和正常曲线一样，只有真超出控制限才有人注意到——那时候批量不良已经做出来了。
+         * σ̂ 与画控制限用的是同一个（meanMr/D2），否则会出现「点在限外却说无异常」。
+         */
+        ControlRules.Report rules = ControlRules.check(all, mean, sigmaWithin);
+        List<Map<String, Object>> alarms = new ArrayList<>();
+        for (ControlRules.Alarm a : rules.alarms()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("code", a.code());
+            m.put("level", a.level());
+            m.put("title", a.title());
+            m.put("text", a.text());
+            m.put("fromSeq", a.fromSeq());
+            m.put("toSeq", a.toSeq());
+            m.put("hits", a.hits());
+            alarms.add(m);
+        }
+        chart.put("alarms", alarms);
+        chart.put("verdict", rules.verdict());
+        chart.put("verdictText", rules.verdictText());
+        result.put("controlChart", chart);
+
+        List<String> noteList = notes(n, lsl, usl, specPairs.size() > 1, mrFallback, outOfSpec, verdict);
+        if (!alarms.isEmpty()) {
+            noteList.add("控制图判出 " + alarms.size() + " 类异常排列。这些点不一定超规格，"
+                    + "但过程已经不在统计掌控内：先按标红的位置回去查那几张单，再决定要不要停线");
+        }
+        result.put("notes", noteList);
 
         return result;
     }

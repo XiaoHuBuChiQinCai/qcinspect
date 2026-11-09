@@ -80,6 +80,31 @@
         </ul>
       </el-card>
 
+      <!-- 控制图判读：只画线不判读的话，一条整体偏移的曲线看起来和正常曲线一样 -->
+      <el-card v-if="result.controlChart && result.controlChart.verdict" shadow="never" class="mt">
+        <template #header>
+          <span>控制图判读</span>
+          <span class="sub">按 GB/T 4091 八准则，点没超规格也可能已经失控</span>
+        </template>
+        <el-alert
+          :title="result.controlChart.verdictText"
+          :type="controlType"
+          :closable="false"
+          show-icon
+        />
+        <div v-if="(alarms || []).length" class="alarms">
+          <div v-for="(a, i) in alarms" :key="i" class="alarm">
+            <el-tag :type="a.level === 'CRITICAL' ? 'danger' : 'warning'" size="small" effect="dark">
+              {{ a.title }}
+            </el-tag>
+            <span class="alarm-text">{{ a.text }}</span>
+          </div>
+        </div>
+        <div v-else class="alarm-none">
+          没有触发任何判异准则。控制图上的点来自同一套随机波动，此时 Cpk 才有讨论的意义。
+        </div>
+      </el-card>
+
       <el-row :gutter="16" class="mt">
         <el-col :span="12">
           <el-card shadow="never">
@@ -210,6 +235,30 @@ const verdictBasis = computed(() => {
   return '没有规格限，算不出能力指数'
 })
 
+const alarms = computed(() => result.value?.controlChart?.alarms || [])
+
+const controlType = computed(() => {
+  switch (result.value?.controlChart?.verdict) {
+    case 'STABLE':
+      return 'success'
+    case 'WARNING':
+      return 'warning'
+    case 'OUT_OF_CONTROL':
+      return 'error'
+    default:
+      return 'info'
+  }
+})
+
+/** 判异标红的点：每条准则最近一次触发的窗口，叠起来就是「这几段别看走眼」 */
+const alarmSeqs = computed(() => {
+  const set = new Set()
+  for (const a of alarms.value) {
+    for (let s = a.fromSeq; s <= a.toSeq; s++) set.add(s)
+  }
+  return set
+})
+
 const kpis = computed(() => {
   const r = result.value
   if (!r) return []
@@ -313,7 +362,7 @@ function drawHist() {
   charts.push(chart)
 }
 
-function drawControl(el, chartData, color) {
+function drawControl(el, chartData, color, highlight) {
   if (!el || !chartData) return
   const points = chartData.points || []
   const marks = [
@@ -322,6 +371,13 @@ function drawControl(el, chartData, color) {
     { name: 'LCL ' + fmt(chartData.lcl), yAxis: chartData.lcl }
   ]
   const chart = echarts.init(el)
+  // 判异命中的点画红、放大一圈：图上不标出来的话，判读结论就只是页面上的一段文字
+  const seqs = highlight || new Set()
+  const data = points.map((p) =>
+    seqs.has(p.seq)
+      ? { value: p.value, symbolSize: 9, itemStyle: { color: '#f56c6c', borderColor: '#fff', borderWidth: 1 } }
+      : p.value
+  )
   chart.setOption({
     grid: { left: 8, right: 40, top: 20, bottom: 8, containLabel: true },
     tooltip: { trigger: 'axis' },
@@ -335,7 +391,7 @@ function drawControl(el, chartData, color) {
     series: [
       {
         type: 'line',
-        data: points.map((p) => p.value),
+        data,
         symbolSize: 4,
         lineStyle: { width: 1, color },
         itemStyle: { color },
@@ -357,7 +413,7 @@ async function render() {
   dispose()
   if (!result.value) return
   drawHist()
-  drawControl(iEl.value, result.value.controlChart.individual, '#409eff')
+  drawControl(iEl.value, result.value.controlChart.individual, '#409eff', alarmSeqs.value)
   drawControl(mrEl.value, result.value.controlChart.movingRange, '#e6a23c')
 }
 
@@ -417,6 +473,15 @@ onBeforeUnmount(() => {
   font-weight: normal;
 }
 .alert-body { font-size: 13px; line-height: 1.7; }
+.alarms { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.alarm { display: flex; align-items: flex-start; gap: 10px; }
+.alarm .el-tag { flex: none; }
+.alarm-text { font-size: 13px; line-height: 1.7; color: var(--el-text-color-regular); }
+.alarm-none {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
 .chart { height: 320px; }
 .chart-sm { height: 220px; }
 .kpi { text-align: center; }
