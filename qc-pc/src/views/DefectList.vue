@@ -55,6 +55,30 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="返修票" width="150">
+          <template #default="{ row }">
+            <!-- 有票就显示票号和状态：不良列表上看不出「这件送去修了没有」，
+                 是车间最常见的一句追问 -->
+            <template v-if="row.reworkNo">
+              <el-link type="primary" @click="goRework(row.reworkNo)">{{ row.reworkNo }}</el-link>
+              <div class="sub">
+                <el-tag size="small" :type="reworkTagType(row.reworkStatus)">
+                  {{ reworkText(row.reworkStatus) }}
+                </el-tag>
+              </div>
+            </template>
+            <el-button
+              v-else-if="row.disposition === 'REWORK' && isOpen(row)"
+              size="small"
+              text
+              type="primary"
+              @click="openReworkTicket(row)"
+            >
+              开票
+            </el-button>
+            <span v-else class="empty-inline">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="复检单" width="160">
           <template #default="{ row }">
             <template v-if="row.recheckInspectionNo">
@@ -144,14 +168,55 @@
         <el-button type="primary" @click="doConcession">确认让步</el-button>
       </template>
     </el-dialog>
+
+    <!-- 开返修票：这张票跟的是「件」，不是结论 -->
+    <el-dialog v-model="rwVisible" title="开返修票" width="500px">
+      <el-alert
+        type="info"
+        :closable="false"
+        class="mb"
+        title="返修票记的是件：送修几件、谁在修、说好什么时候回来"
+        description="返修完成时报「返好 / 返废」，返好几件就自动开几件的复检单。票上的数量必须是真的送去修的数量。"
+      />
+      <el-form label-width="90px">
+        <el-form-item label="不良">
+          <span>{{ rwTarget?.defectName }}</span>
+          <span class="sub" style="margin-left: 8px">判出 {{ rwTarget?.defectQty }} 件</span>
+        </el-form-item>
+        <el-form-item label="送修数量">
+          <el-input-number v-model="rwForm.qty" :min="1" :max="500" style="width: 160px" />
+          <span class="sub" style="margin-left: 10px">实际送去返修的件数，可能少于判出的件数</span>
+        </el-form-item>
+        <el-form-item label="返修人">
+          <el-input v-model="rwForm.assignee" maxlength="64" placeholder="人名或工位，如「三号返修台 老李」" />
+        </el-form-item>
+        <el-form-item label="要求完成">
+          <el-date-picker v-model="rwForm.dueDate" type="date" value-format="YYYY-MM-DD" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="返修要求">
+          <el-input
+            v-model="rwForm.requirement"
+            type="textarea"
+            :rows="2"
+            maxlength="200"
+            placeholder="怎么修、修到什么程度。空着的话返修工只能凭经验猜"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="rwVisible = false">取消</el-button>
+        <el-button type="primary" :loading="rwSaving" @click="doCreateRework">开票</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '../api/http'
+import { checkQty } from '../utils/rework'
 
 const router = useRouter()
 const route = useRoute()
@@ -245,6 +310,68 @@ async function finishRework(row) {
 
 function isOpen(row) {
   return row.dispositionStatus === 'PENDING' || row.dispositionStatus === 'PROCESSING'
+}
+
+/* ---------------- 返修票 ---------------- */
+
+const rwVisible = ref(false)
+const rwSaving = ref(false)
+const rwTarget = ref(null)
+const rwForm = reactive({ qty: 1, assignee: '', dueDate: '', requirement: '' })
+
+function reworkText(s) {
+  return { OPEN: '待返修', DOING: '返修中', DONE: '已完工', CANCELLED: '已取消' }[s] || s
+}
+
+function reworkTagType(s) {
+  return { OPEN: 'warning', DOING: 'primary', DONE: 'success', CANCELLED: 'info' }[s] || 'info'
+}
+
+function goRework(no) {
+  router.push({ path: '/rework', query: { keyword: no } })
+}
+
+/** 三天后，按本地时区算（toISOString 是 UTC，早上八点前会差一天） */
+function defaultDue() {
+  const d = new Date()
+  d.setDate(d.getDate() + 3)
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+function openReworkTicket(row) {
+  rwTarget.value = row
+  Object.assign(rwForm, {
+    // 默认按判出的件数送修：多数情况是全部送修，改少比改多更容易被漏掉
+    qty: row.defectQty && row.defectQty > 0 ? row.defectQty : 1,
+    assignee: '',
+    dueDate: defaultDue(),
+    requirement: ''
+  })
+  rwVisible.value = true
+}
+
+async function doCreateRework() {
+  const err = checkQty(rwForm.qty)
+  if (err) {
+    ElMessage.warning(err)
+    return
+  }
+  rwSaving.value = true
+  try {
+    const r = await http.post('/rework', {
+      defectId: rwTarget.value.id,
+      qty: rwForm.qty,
+      assignee: rwForm.assignee.trim() || undefined,
+      dueDate: rwForm.dueDate || undefined,
+      requirement: rwForm.requirement.trim() || undefined
+    })
+    rwVisible.value = false
+    ElMessage.success(`已开返修票 ${r.reworkNo}，共 ${r.qty} 件`)
+    await load()
+  } finally {
+    rwSaving.value = false
+  }
 }
 
 function openConcession(row) {

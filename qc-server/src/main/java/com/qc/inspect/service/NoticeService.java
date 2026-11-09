@@ -48,6 +48,9 @@ public class NoticeService {
     public static final String TYPE_REVIEW_REJECT = "REVIEW_REJECT";
     public static final String TYPE_CONCESSION = "CONCESSION";
 
+    /** 返修票完工、复检单已生成，下一步是检验员去填实测值 */
+    public static final String TYPE_REWORK_DONE = "REWORK_DONE";
+
     private final QcNoticeMapper noticeMapper;
     private final NoticePushService noticePushService;
 

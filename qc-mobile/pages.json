@@ -71,6 +71,12 @@
       "style": {
         "navigationBarTitleText": "通知"
       }
+    },
+    {
+      "path": "pages/rework/rework",
+      "style": {
+        "navigationBarTitleText": "返修工单"
+      }
     }
   ],
   "globalStyle": {

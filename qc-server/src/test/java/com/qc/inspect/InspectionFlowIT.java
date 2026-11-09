@@ -7,12 +7,14 @@ import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcBackupLog;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcProduct;
+import com.qc.inspect.entity.QcReworkOrder;
 import com.qc.inspect.entity.QcStandard;
 import com.qc.inspect.entity.QcStandardItem;
 import com.qc.inspect.mapper.QcBatchMapper;
 import com.qc.inspect.mapper.QcBackupLogMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcProductMapper;
+import com.qc.inspect.mapper.QcReworkOrderMapper;
 import com.qc.inspect.mapper.QcStandardItemMapper;
 import com.qc.inspect.mapper.QcStandardMapper;
 import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
@@ -112,6 +114,9 @@ class InspectionFlowIT {
     /* 备份记录平时是外部脚本写的，测试里直接插一行，模拟脚本落库的那一刻 */
     @Autowired
     private QcBackupLogMapper backupLogMapper;
+    /* 「要求完成日早于今天」开票时就被拒，超期场景只能改库造——现场确实会有 */
+    @Autowired
+    private QcReworkOrderMapper reworkMapper;
 
     private static String token;
     private static Long batchId;
@@ -666,9 +671,10 @@ class InspectionFlowIT {
         // actionable 只由「要人动手」的几项相加，量具超期不算单据，混进来会让人以为有几十张单没处理。
         // 待检批次算：料躺在厂里没人检，是明确等人去开单的一件事，看不见就等于不存在
         assertThat(num(sum.get("actionable")))
-                .as("角标总数口径")
+                .as("角标总数口径：要人动手的几项相加。超期返修票算——说好回来没回来是事故")
                 .isEqualTo(num(sum.get("pendingReview")) + num(sum.get("pendingDefect"))
-                        + num(sum.get("myRejected")) + num(sum.get("pendingBatch")));
+                        + num(sum.get("myRejected")) + num(sum.get("pendingBatch"))
+                        + num(sum.get("openComplaint")) + num(sum.get("reworkOverdue")));
 
         List<Map<String, Object>> reviews = asList(get("/api/todo/reviews").get("data"));
         assertThat(reviews).extracting(r -> num(r.get("id"))).contains(passIns);
@@ -2127,6 +2133,128 @@ class InspectionFlowIT {
                 "standardValue", 10, "measuredValue", 10, "tolerance", 0.01));
         assertThat(num(blockedExpired.get("code"))).as("超期量具不许点检").isNotEqualTo(0);
         assertThat(String.valueOf(blockedExpired.get("msg"))).contains("到期");
+    }
+
+    @Test
+    @Order(36)
+    @DisplayName("返修票：报数必须和送修数量对上，返好几件才开几件的复检单")
+    void reworkTicket() {
+        Long batch = rkBatch("IT-RW-T1");
+        Long id = num(data(post("/api/inspections", Map.of("batchId", batch))).get("inspectionId"));
+        data(post("/api/inspections/" + id + "/submit", Map.of("lines", fillViolating(detail(id)))));
+        Long defectId = num(asList(get("/api/defects?inspectionId=" + id).get("data")).get(0).get("id"));
+
+        // 开票：判出 3 件，实际送修 5 件（多送了两件同型号的备件）
+        Map<String, Object> ticket = data(post("/api/rework", Map.of(
+                "defectId", defectId, "qty", 5, "assignee", "三号返修台 老李",
+                "dueDate", LocalDate.now().plusDays(2).toString(),
+                "requirement", "修螺纹，通止规过")));
+        Long rid = num(ticket.get("id"));
+        assertThat(String.valueOf(ticket.get("reworkNo"))).as("单号走 RW 前缀").startsWith("RW");
+        assertThat(num(ticket.get("qty"))).isEqualTo(5L);
+        assertThat(ticket.get("status")).isEqualTo("OPEN");
+        assertThat(ticket.get("reworkNo")).as("开票即返工开始，不良要有票号").isNotNull();
+
+        // 开票即视为返工开始：实物已经送去返修区了，系统里不能还停在「待处理」
+        Map<String, Object> d1 = asList(get("/api/defects?inspectionId=" + id).get("data")).get(0);
+        assertThat(d1.get("dispositionStatus")).isEqualTo("PROCESSING");
+        assertThat(d1.get("reworkNo")).as("不良列表要能直接看出这件送修了").isEqualTo(ticket.get("reworkNo"));
+        assertThat(d1.get("reworkStatus")).isEqualTo("OPEN");
+
+        // 一条不良只许一张有效票：两张票意味着两拨人各修一半，报数加起来比实际多
+        assertThat(num(post("/api/rework", Map.of("defectId", defectId, "qty", 5)).get("code")))
+                .as("重复开票必须拒").isNotEqualTo(0);
+
+        // 有票在途时改判报废：返修区还在按票修，系统里却已经报废了
+        assertThat(num(post("/api/defects/" + defectId + "/dispose",
+                Map.of("disposition", "SCRAP", "status", "DONE")).get("code")))
+                .as("有未完工的返修票时不许改处置").isNotEqualTo(0);
+
+        // 报数对不上：少报和多报都要拒，账必须齐
+        assertThat(num(post("/api/rework/" + rid + "/finish",
+                Map.of("reworkedQty", 3, "scrappedQty", 1)).get("code")))
+                .as("3 + 1 ≠ 5，少的那件去哪了要说清").isNotEqualTo(0);
+        assertThat(num(post("/api/rework/" + rid + "/finish",
+                Map.of("reworkedQty", 5, "scrappedQty", 1)).get("code")))
+                .as("5 + 1 > 5，多出来的件是记错票").isNotEqualTo(0);
+        // 有返废件却不写原因：返废件不会进任何报表，只剩这句话能留下它
+        assertThat(num(post("/api/rework/" + rid + "/finish",
+                Map.of("reworkedQty", 4, "scrappedQty", 1)).get("code")))
+                .as("返废必须写原因").isNotEqualTo(0);
+
+        // 正常完工：返好 4、返废 1
+        Map<String, Object> fin = data(post("/api/rework/" + rid + "/finish",
+                Map.of("reworkedQty", 4, "scrappedQty", 1, "finishNote", "一件螺纹烂牙，无法修复")));
+        Long recheckId = num(fin.get("recheckInspectionId"));
+        assertThat(recheckId).as("返好 4 件要自动开复检单").isPositive();
+
+        // 关键：复检件数是返好件数 4，不是送修件数 5。
+        // 按 5 开会让第 5 个件号永远没有实测值，那张单永远提交不了
+        Map<String, Object> rdetail = detail(recheckId);
+        assertThat(asList(rdetail.get("pieces"))).as("返好 4 件就检 4 件").hasSize(4);
+        assertThat(num(asMap(rdetail.get("inspection")).get("sampleQty"))).isEqualTo(4L);
+        assertThat(num(asMap(rdetail.get("inspection")).get("acceptQty"))).as("复检 Ac 恒为 0").isZero();
+
+        // 完工后票不能再来一遍
+        assertThat(num(post("/api/rework/" + rid + "/start", Map.of()).get("code")))
+                .as("已完工的票不能开工").isNotEqualTo(0);
+        assertThat(num(post("/api/rework/" + rid + "/finish",
+                Map.of("reworkedQty", 4, "scrappedQty", 1, "finishNote", "重复提交")).get("code")))
+                .as("已完工的票不能重复报数").isNotEqualTo(0);
+
+        Map<String, Object> doneTicket = data(get("/api/rework/" + rid));
+        assertThat(doneTicket.get("status")).isEqualTo("DONE");
+        assertThat(num(doneTicket.get("reworkedQty"))).isEqualTo(4L);
+        assertThat(num(doneTicket.get("scrappedQty"))).isEqualTo(1L);
+        assertThat(doneTicket.get("recheckInspectionNo")).isNotNull();
+
+        // 全部返废：这条不良必须能关掉，否则「返工完成必须有 PASS 复检单」
+        // 会让它永远停在处理中——这是原来那个模型的死锁
+        Long batch2 = rkBatch("IT-RW-T2");
+        Long id2 = num(data(post("/api/inspections", Map.of("batchId", batch2))).get("inspectionId"));
+        data(post("/api/inspections/" + id2 + "/submit", Map.of("lines", fillViolating(detail(id2)))));
+        Long defect2 = num(asList(get("/api/defects?inspectionId=" + id2).get("data")).get(0).get("id"));
+        Long rid2 = num(data(post("/api/rework", Map.of("defectId", defect2, "qty", 2))).get("id"));
+
+        Map<String, Object> allScrap = data(post("/api/rework/" + rid2 + "/finish",
+                Map.of("reworkedQty", 0, "scrappedQty", 2, "finishNote", "锈蚀太深，修不了")));
+        assertThat(allScrap.get("recheckInspectionId")).as("没有可检的东西就不开复检单").isNull();
+
+        Map<String, Object> d2 = asList(get("/api/defects?inspectionId=" + id2).get("data")).get(0);
+        assertThat(d2.get("disposition")).as("全废的件处置改成报废").isEqualTo("SCRAP");
+        assertThat(d2.get("dispositionStatus")).as("不良必须能闭环，不能卡死").isEqualTo("DONE");
+        assertThat(d2.get("recheckInspectionId")).isNull();
+
+        // 超期：说好回来没回来，得在待办里点名
+        Long batch3 = rkBatch("IT-RW-T3");
+        Long id3 = num(data(post("/api/inspections", Map.of("batchId", batch3))).get("inspectionId"));
+        data(post("/api/inspections/" + id3 + "/submit", Map.of("lines", fillViolating(detail(id3)))));
+        Long defect3 = num(asList(get("/api/defects?inspectionId=" + id3).get("data")).get(0).get("id"));
+        Long rid3 = num(data(post("/api/rework", Map.of("defectId", defect3, "qty", 1))).get("id"));
+        // 开票接口不许限期在过去，只能改库造一张过期的票（现场确实会有：开票时定的三天，
+        // 后来料一直没修）
+        reworkMapper.update(null, new LambdaUpdateWrapper<QcReworkOrder>()
+                .eq(QcReworkOrder::getId, rid3)
+                .set(QcReworkOrder::getDueDate, LocalDate.now().minusDays(2)));
+
+        Map<String, Object> sum = data(get("/api/todo/summary"));
+        assertThat(num(sum.get("reworkOverdue"))).as("超期返修票要进待办").isPositive();
+        List<Map<String, Object>> pend = asList(get("/api/rework/pending").get("data"));
+        Map<String, Object> late = pend.stream()
+                .filter(r -> rid3.equals(num(r.get("id")))).findFirst().orElseThrow();
+        assertThat(late.get("overdue")).as("超期由服务端算好下发").isEqualTo(true);
+        assertThat(num(late.get("overdueDays"))).isEqualTo(2L);
+        assertThat(pend.get(0).get("overdue")).as("超期的排最前面").isEqualTo(true);
+
+        // 取消：理由必填，票取消后不良退回待处理，能重新处置
+        assertThat(num(post("/api/rework/" + rid3 + "/cancel", Map.of()).get("code")))
+                .as("取消必须写理由").isNotEqualTo(0);
+        data(post("/api/rework/" + rid3 + "/cancel", Map.of("reason", "客户同意让步接收")));
+        Map<String, Object> d3 = asList(get("/api/defects?inspectionId=" + id3).get("data")).get(0);
+        assertThat(d3.get("dispositionStatus")).as("票取消了，不良要回到待处理").isEqualTo("PENDING");
+        // 取消的票不占唯一槽位：这条不良还能重新开票
+        Long rid3b = num(data(post("/api/rework", Map.of("defectId", defect3, "qty", 1))).get("id"));
+        assertThat(rid3b).as("取消后可以重新开票").isPositive();
     }
 
     /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */

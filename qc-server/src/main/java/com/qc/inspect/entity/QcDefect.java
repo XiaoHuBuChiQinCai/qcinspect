@@ -61,4 +61,12 @@ public class QcDefect {
 
     @TableField(exist = false)
     private String recheckResult;
+
+    /** 返修票号（V21）。不良列表上要能直接看出这件送修了没有、票在哪 */
+    @TableField(exist = false)
+    private String reworkNo;
+
+    /** 返修票状态 OPEN / DOING / DONE / CANCELLED，没有票时为空 */
+    @TableField(exist = false)
+    private String reworkStatus;
 }

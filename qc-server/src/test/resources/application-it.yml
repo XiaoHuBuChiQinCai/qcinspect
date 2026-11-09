@@ -27,6 +27,7 @@ spring:
         - classpath:db/V18__notice_push.sql
         - classpath:db/V19__system_alert.sql
         - classpath:db/V20__login_lock.sql
+        - classpath:db/V21__rework.sql
       continue-on-error: false
 
 mybatis-plus:

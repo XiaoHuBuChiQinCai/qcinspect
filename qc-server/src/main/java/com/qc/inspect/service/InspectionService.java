@@ -214,6 +214,19 @@ public class InspectionService {
      */
     @Transactional
     public Map<String, Object> createRecheck(Long defectId, String operator) {
+        return createRecheck(defectId, null, operator);
+    }
+
+    /**
+     * 开复检单，并指定复检件数。
+     *
+     * <p>{@code qtyOverride} 为空时按缺陷记录的不良件数开单（老路），
+     * 不为空时按调用方给的件数开。返修票完工走的是后者：
+     * 送去 5 件、修好 4 件、修废 1 件，复检单只能是 4 件。
+     * 按 defectQty 开 5 件会让第 5 个件号永远填不上数据，
+     * 最后被人随手抄一份数据填进去——那是最坏的结果。
+     */
+    public Map<String, Object> createRecheck(Long defectId, Integer qtyOverride, String operator) {
         QcDefect defect = defectMapper.selectById(defectId);
         if (defect == null) {
             throw BizException.of("不良记录不存在：" + defectId);
@@ -249,7 +262,12 @@ public class InspectionService {
                     + "），结论随时会变，现在开复检没有意义");
         }
 
-        int qty = defect.getDefectQty() == null || defect.getDefectQty() <= 0 ? 1 : defect.getDefectQty();
+        // 送修 5 件、返好 4 件、返废 1 件时，复检只能按 4 件开。
+        // 按 defectQty 开 5 件会让第 5 个件号永远没有实测值，
+        // 而判定的口径是「每件每项都要有值」——这张单永远提交不了
+        int qty = qtyOverride != null && qtyOverride > 0
+                ? qtyOverride
+                : (defect.getDefectQty() == null || defect.getDefectQty() <= 0 ? 1 : defect.getDefectQty());
         if (qty > MAX_SAMPLE_QTY) {
             throw BizException.of("这一条不良涉及 " + qty + " 件，超过单次上限 " + MAX_SAMPLE_QTY
                     + " 件。请按工位或班次拆成多张复检单，一次验完记不清哪件是哪件");

@@ -4,8 +4,10 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcInspection;
+import com.qc.inspect.entity.QcReworkOrder;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
+import com.qc.inspect.mapper.QcReworkOrderMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +37,7 @@ public class DefectService {
     private final QcDefectMapper defectMapper;
     private final QcInspectionMapper inspectionMapper;
     private final NoticeService noticeService;
+    private final QcReworkOrderMapper reworkOrderMapper;
 
     public List<QcDefect> list(Long inspectionId, String status) {
         List<QcDefect> list = defectMapper.selectList(new LambdaQueryWrapper<QcDefect>()
@@ -42,7 +45,40 @@ public class DefectService {
                 .eq(status != null && !status.isBlank(), QcDefect::getDispositionStatus, status)
                 .orderByDesc(QcDefect::getId));
         fillRecheck(list);
+        fillRework(list);
         return list;
+    }
+
+    /**
+     * 把返修票贴在不良记录上。
+     *
+     * <p>不良列表最常被问的第二个问题（第一个是「修好了没有」）是「这件送去修了没有」。
+     * 没有票的时候只有一句「返工中」，看不出来是还在等修，还是压根没人管。
+     *
+     * <p>用 mapper 而不是 ReworkService：ReworkService 要反过来用本类的
+     * {@link #dispose}（全返废时改判报废），互相注入会成环。
+     */
+    private void fillRework(List<QcDefect> list) {
+        if (list.isEmpty()) {
+            return;
+        }
+        Set<Long> ids = list.stream().map(QcDefect::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return;
+        }
+        Map<Long, QcReworkOrder> byDefect = reworkOrderMapper.selectList(
+                        new LambdaQueryWrapper<QcReworkOrder>()
+                                .in(QcReworkOrder::getDefectId, ids)
+                                .ne(QcReworkOrder::getStatus, QcReworkOrder.STATUS_CANCELLED))
+                .stream()
+                .collect(Collectors.toMap(QcReworkOrder::getDefectId, o -> o, (a, b) -> a));
+        for (QcDefect d : list) {
+            QcReworkOrder o = byDefect.get(d.getId());
+            if (o != null) {
+                d.setReworkNo(o.getReworkNo());
+                d.setReworkStatus(o.getStatus());
+            }
+        }
     }
 
     /**
@@ -91,6 +127,20 @@ public class DefectService {
         if (disposition != null) {
             if (!DISPOSITIONS.contains(disposition)) {
                 throw BizException.of("未知的处置方式：" + disposition);
+            }
+            // 改判成报废/退货/让步之前，必须先收掉返修票。
+            // 否则返修区还在按票修这 5 件，系统里却已经判了报废——票成了孤儿，
+            // 报数时报回来的是一个「已经报废」的件，账永远对不上
+            if (!"REWORK".equals(disposition)) {
+                QcReworkOrder ticket = reworkOrderMapper.selectOne(new LambdaQueryWrapper<QcReworkOrder>()
+                        .eq(QcReworkOrder::getDefectId, defectId)
+                        .in(QcReworkOrder::getStatus, QcReworkOrder.STATUS_OPEN, QcReworkOrder.STATUS_DOING)
+                        .last("LIMIT 1"));
+                if (ticket != null) {
+                    throw BizException.of("这条不良还挂着返修票 " + ticket.getReworkNo()
+                            + "（" + ("OPEN".equals(ticket.getStatus()) ? "待返修" : "返修中")
+                            + "）。请先把那张票完工或取消，再来改处置方式");
+                }
             }
             d.setDisposition(disposition);
         }

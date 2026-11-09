@@ -14,6 +14,9 @@ const routes = [
   { path: '/standards/:id', component: () => import('../views/StandardEdit.vue') },
   { path: '/gauges', component: () => import('../views/GaugeList.vue') },
   { path: '/defects', component: () => import('../views/DefectList.vue') },
+  // 返修工单：不良处置为返工之后的实物跟踪票。跟件、跟钱、跟时间，
+  // 与复检单（跟结论）是两件事
+  { path: '/rework', component: () => import('../views/ReworkList.vue') },
   // 主数据维护只对管理员开放：这些表一改，所有产品的判定口径都跟着变
   { path: '/master-data', component: () => import('../views/MasterData.vue'), meta: { roles: ['ADMIN'] } },
   { path: '/defect-codes', component: () => import('../views/DefectCodeList.vue'), meta: { roles: ['ADMIN'] } },

@@ -10,6 +10,7 @@
         <el-menu-item index="/inspections">检验单</el-menu-item>
         <el-menu-item index="/standards">检验标准</el-menu-item>
         <el-menu-item index="/defects">不良处置</el-menu-item>
+        <el-menu-item index="/rework">返修工单</el-menu-item>
         <el-menu-item index="/gauges">量具台账</el-menu-item>
         <el-menu-item index="/trace">批次追溯</el-menu-item>
         <el-menu-item index="/shipments">出货记录</el-menu-item>

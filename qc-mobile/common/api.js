@@ -177,6 +177,20 @@ export const api = {
     data: { reason }
   }),
 
+  // ---------- 返修 ----------
+  /**
+   * 未完工的返修票（待返修 + 返修中），超期的排在前面。
+   * 服务端已经算好 overdue / overdueDays，别在手机上拿本地时间再判一次
+   */
+  reworkPending: (limit = 100) => request(`/rework/pending?limit=${limit}`),
+  /** 开工：待返修 → 返修中。重复点无副作用 */
+  startRework: id => request(`/rework/${id}/start`, { method: 'POST' }),
+  /**
+   * 完工报数。返好 + 返废 必须等于送修数量（后端和库层 CHECK 都会拦）。
+   * 返好 > 0 时后端自动开复检单，件数就是返好件数；全部返废则不良改判报废
+   */
+  finishRework: (id, body) => request(`/rework/${id}/finish`, { method: 'POST', data: body }),
+
   // ---------- 客诉 ----------
   /** 登记客诉。批次必填、客户与问题描述必填，日期不能晚于今天 */
   createComplaint: body => request('/complaints', { method: 'POST', data: body }),

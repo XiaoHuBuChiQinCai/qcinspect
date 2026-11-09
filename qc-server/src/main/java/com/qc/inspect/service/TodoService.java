@@ -6,11 +6,13 @@ import com.qc.inspect.entity.QcComplaint;
 import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcGauge;
 import com.qc.inspect.entity.QcInspection;
+import com.qc.inspect.entity.QcReworkOrder;
 import com.qc.inspect.mapper.QcBatchMapper;
 import com.qc.inspect.mapper.QcComplaintMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcGaugeMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
+import com.qc.inspect.mapper.QcReworkOrderMapper;
 import com.qc.inspect.report.PendingBatchInsight;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -50,6 +52,7 @@ public class TodoService {
     private final QcGaugeMapper gaugeMapper;
     private final QcBatchMapper batchMapper;
     private final QcComplaintMapper complaintMapper;
+    private final QcReworkOrderMapper reworkMapper;
     private final InspectionViewService viewService;
 
     /** 首页角标 */
@@ -76,6 +79,12 @@ public class TodoService {
                 PendingBatchInsight.MAX_ROWS).stream()
                 .filter(r -> Boolean.TRUE.equals(r.get("urgent")))
                 .count();
+        // 返修票：还在返修区的总数，以及已经超过要求完成日的
+        long openRework = reworkMapper.selectCount(new LambdaQueryWrapper<QcReworkOrder>()
+                .in(QcReworkOrder::getStatus, QcReworkOrder.STATUS_OPEN, QcReworkOrder.STATUS_DOING));
+        long overdueRework = reworkMapper.selectCount(new LambdaQueryWrapper<QcReworkOrder>()
+                .in(QcReworkOrder::getStatus, QcReworkOrder.STATUS_OPEN, QcReworkOrder.STATUS_DOING)
+                .lt(QcReworkOrder::getDueDate, today));
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("pendingReview", pendingReview);
@@ -85,8 +94,14 @@ public class TodoService {
         m.put("myRejected", myRejected);
         m.put("openComplaint", openComplaint);
         m.put("pendingBatch", pendingBatch);
+        // 返修票：在修的不算「等你做的事」（那是返修工的活，进度看他），
+        // 但超期的是——说好三天回来、现在第五天了还没回来，得有人去问一句。
+        // 这与「量具超期不进行动角标」不同：量具超期是状态，返修超期是事故
+        m.put("reworkOpen", openRework);
+        m.put("reworkOverdue", overdueRework);
         // 角标总数不含量具超期：它不是「单据」，混在一起会让人以为有几十张单没处理
-        m.put("actionable", pendingReview + pendingDefect + myRejected + openComplaint + pendingBatch);
+        m.put("actionable", pendingReview + pendingDefect + myRejected + openComplaint + pendingBatch
+                + overdueRework);
         return m;
     }
 

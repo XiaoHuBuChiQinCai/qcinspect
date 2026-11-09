@@ -29,6 +29,10 @@
         <text class="cell-title">客诉处理</text>
         <text :class="['cell-sub', openComplaintCount ? 'warn' : '']">{{ complaintSub }}</text>
       </view>
+      <view class="cell" @click="openRework">
+        <text class="cell-title">返修工单</text>
+        <text :class="['cell-sub', reworkOverdue ? 'warn' : '']">{{ reworkSub }}</text>
+      </view>
       <view class="cell" @click="openGauge">
         <text class="cell-title">量具状态</text>
         <text :class="['cell-sub', summary.overdueGauge ? 'warn' : '']">{{ gaugeSub }}</text>
@@ -107,6 +111,18 @@ const complaintSub = computed(() => {
   return n ? n + ' 条未关闭，还压着出货' : '没有未关闭的客诉'
 })
 
+/**
+ * 返修那格：超期的最要紧——说好三天回来、第五天还没回来，
+ * 车间里那几件坏件就一直是「说不清在哪」的状态。
+ */
+const reworkOverdue = computed(() => Number(summary.value?.reworkOverdue) || 0)
+const reworkOpen = computed(() => Number(summary.value?.reworkOpen) || 0)
+const reworkSub = computed(() => {
+  if (reworkOverdue.value) return reworkOverdue.value + ' 张超期未回'
+  if (reworkOpen.value) return reworkOpen.value + ' 张在返修区'
+  return '没有在修的件'
+})
+
 async function load() {
   if (!getToken()) {
     uni.reLaunch({ url: '/pages/login/login' })
@@ -135,6 +151,10 @@ async function load() {
 
 function openTodo() {
   uni.navigateTo({ url: '/pages/todo/todo' })
+}
+
+function openRework() {
+  uni.navigateTo({ url: '/pages/rework/rework' })
 }
 
 function openTrace() {
