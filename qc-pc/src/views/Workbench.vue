@@ -412,13 +412,9 @@
         :status="storageBarStatus"
         :stroke-width="14"
       />
-      <div class="more mt8">
-        已用 {{ storage.usedText }}（{{ storage.usedPercent }}%）
-        <template v-if="storage.daysLeft !== null && storage.daysLeft !== undefined">
-          <span class="sep">·</span>
-          按最近 {{ storage.recentDays }} 天速度还能撑 <b>{{ storage.daysLeft }}</b> 天
-        </template>
-      </div>
+      <!-- 天数只在下方的 flags 里说：那里带着「该干什么」，
+           这里再说一遍就成了同一个数字念两次 -->
+      <div class="more mt8">已用 {{ storage.usedText }}（{{ storage.usedPercent }}%）</div>
 
       <!-- flags 第一条就是上面那行「可用 X / 共 Y」，这里从第二条开始，不重复念 -->
       <div v-for="f in storage.flags.slice(1)" :key="f" class="flag">· {{ f }}</div>

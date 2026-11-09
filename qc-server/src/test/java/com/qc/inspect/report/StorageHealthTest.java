@@ -173,6 +173,21 @@ class StorageHealthTest {
     }
 
     @Test
+    @DisplayName("照片总量比整盘已用还多时，说清是口径不一致，不要算出「占 1548%」")
+    void imageShareOverHundred() {
+        // 20 GB 的盘只剩 2 GB，照片记录却写了 30 GB —— 线上实测时真撞到过这个形状
+        StorageHealth.Verdict v = StorageHealth.judge(new StorageHealth.Facts(
+                20 * GIGA, 2 * GIGA, 500 * MEGA, 20000, 30 * GIGA, 0, 30));
+
+        assertThat(v.level()).isEqualTo(StorageHealth.LEVEL_WARN);
+        assertThat(v.flags()).anySatisfy(f -> assertThat(f).contains("比这台盘已用的还多"));
+        assertThat(v.flags()).anySatisfy(f -> assertThat(f).contains("先核对口径"));
+        // 这时候「先删照片」是错的建议：盘上根本没那么多照片
+        assertThat(v.flags()).noneSatisfy(f -> assertThat(f).contains("先从这里下手"));
+        assertThat(v.flags()).noneSatisfy(f -> assertThat(f).contains("是已用空间的"));
+    }
+
+    @Test
     @DisplayName("可用比总量还大这种脏数据，按满盘理解而不是算出负数已用")
     void clampWeirdNumbers() {
         StorageHealth.Verdict v = judge(10 * GIGA, 20 * GIGA);

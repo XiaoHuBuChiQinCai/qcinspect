@@ -187,12 +187,23 @@ public final class StorageHealth {
      *
      * <p>只说「空间不够」人还是不知道先删什么。指出「照片占已用的 78%」，
      * 处理动作就唯一了——而这个系统里能安全删的，也确实只有旧照片和旧备份。
+     *
+     * <p>占比超过 100% 时不报百分比。那说明照片总量比整块盘的已用量还大，
+     * 只可能是照片在别的盘 / 对象存储上，或者有已删除的文件没清掉记录。
+     * 这时候「先删照片」是错的建议（盘上的照片可能根本没那么多），
+     * 得先把口径对齐——所以单独说一句，而不是算出一个「占 1548%」。
      */
     private static void addImageShare(List<String> flags, Facts f, long used) {
         if (used <= 0 || f.imageBytes() <= 0) {
             return;
         }
         long share = Math.round(f.imageBytes() * 100.0 / used);
+        if (share > 100) {
+            flags.add("照片记了 " + f.imageCount() + " 张共 " + HumanSize.of(f.imageBytes())
+                    + "，比这台盘已用的还多——照片可能在别的盘或对象存储上，"
+                    + "也可能有已删除的文件没清掉记录，先核对口径再动手");
+            return;
+        }
         if (share < 50) {
             return;
         }
