@@ -42,4 +42,20 @@ public class QcNotice {
     private LocalDateTime readAt;
 
     private LocalDateTime createdAt;
+
+    /**
+     * 企业微信推送状态：NONE 未启用 / PENDING 待发 / SENT 已发 / FAILED 失败 / SKIPPED 接收人未绑定。
+     *
+     * <p>四个字段都留在通知行上，而不是另建推送表：管理员要回答的问题
+     * 永远是「这条通知送到手机没有」，一对一的东西不该拆成两张表去对。
+     */
+    private String pushState;
+
+    /** 实际发给了哪个企业微信 UserID。排障时第一个要看的就是它 */
+    private String pushTarget;
+
+    private LocalDateTime pushAt;
+
+    /** 失败原因原文，企业微信的 errcode 与 errmsg 都留着 */
+    private String pushError;
 }

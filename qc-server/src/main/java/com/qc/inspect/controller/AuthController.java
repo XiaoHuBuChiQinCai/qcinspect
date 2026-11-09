@@ -49,6 +49,7 @@ public class AuthController {
         user.setRealName(req.realName());
         user.setRole(req.role());
         user.setEnabled(req.enabled());
+        user.setWecomUserid(req.wecomUserid());
         return R.ok(authService.saveUser(user, req.password()));
     }
 
@@ -66,7 +67,7 @@ public class AuthController {
     }
 
     public record UserReq(Long id, String username, String realName, String role,
-                          Boolean enabled, String password) {
+                          Boolean enabled, String password, String wecomUserid) {
     }
 
     public record ResetReq(String newPassword) {

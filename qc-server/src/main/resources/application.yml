@@ -45,6 +45,18 @@ qc:
   default-admin:
     username: ${ADMIN_USER:admin}
     password: ${ADMIN_PASSWORD:admin123}
+  # 企业微信应用消息：站内通知的第二投递通道（手机不在系统里也收得到）
+  #
+  # 默认关闭。三样凭证齐了才会真的发；缺任何一样都只是「通道未启用」，
+  # 站内通知不受影响——推送是增强，不能成为主链路的启动前提。
+  # 注意 WECOM_AGENT_ID 是数字类型，给空串会绑成 null，等价于没配。
+  wecom:
+    enabled: ${WECOM_ENABLED:false}
+    corp-id: ${WECOM_CORP_ID:}
+    agent-id: ${WECOM_AGENT_ID:0}
+    secret: ${WECOM_SECRET:}
+    # 手机端入口。配了才会出现在消息末尾；没配就不给人一个点不开的地址
+    app-url: ${APP_PUBLIC_URL:}
   minio:
     endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
     access-key: ${MINIO_ACCESS_KEY:minioadmin}

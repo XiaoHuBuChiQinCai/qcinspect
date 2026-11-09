@@ -67,6 +67,14 @@ services:
       JWT_SECRET: ${JWT_SECRET:-qcinspect-prod-secret-change-me-please-0123456789}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      # 企业微信推送（可选）。不配则只发站内通知，系统照常工作。
+      # WECOM_ENABLED 留 false 可以先配好凭证再挑时间开
+      WECOM_ENABLED: ${WECOM_ENABLED:-false}
+      WECOM_CORP_ID: ${WECOM_CORP_ID:-}
+      WECOM_AGENT_ID: ${WECOM_AGENT_ID:-0}
+      WECOM_SECRET: ${WECOM_SECRET:-}
+      # 消息里的手机端入口，例如 http://154.8.209.29/h5/
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
       # 照片落本地卷：2G 机器不跑 MinIO，也省掉一次对象存储的运维
       STORAGE_TYPE: local
       STORAGE_DIR: /app/data/files

@@ -6,6 +6,7 @@ import com.qc.inspect.auth.UserContext;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.entity.QcNotice;
 import com.qc.inspect.mapper.QcNoticeMapper;
+import com.qc.inspect.notify.NoticePushService;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +34,10 @@ import java.util.Map;
  *
  * <p>写通知不吞异常：宁可让退回失败，也不要出现「单子退回去了但没人收到通知」——
  * 后者在体系上等于异常未通报，比操作失败更难发现。通知表是随主事务一起提交的。
+ *
+ * <p>企业微信是这条通知的「第二投递通道」：站内通知照旧先落库（权威记录），
+ * 落库之后才在事务提交后异步往手机推一份。推送失败只改 {@code push_state}，
+ * 绝不影响退回本身——详见 {@link com.qc.inspect.notify.NoticePushService}。
  */
 @Service
 @RequiredArgsConstructor
@@ -44,6 +49,7 @@ public class NoticeService {
     public static final String TYPE_CONCESSION = "CONCESSION";
 
     private final QcNoticeMapper noticeMapper;
+    private final NoticePushService noticePushService;
 
     /**
      * 写一条通知。
@@ -70,7 +76,11 @@ public class NoticeService {
         n.setBizNo(bizNo);
         n.setReadFlag(0);
         n.setCreatedAt(LocalDateTime.now());
+        // 先定性再插入：推送状态随 INSERT 一次写进去，不留「插入时 NONE、随后改 PENDING」的中间态
+        noticePushService.plan(n);
         noticeMapper.insert(n);
+        // 事务提交之后才真的调企业微信，回滚则一个字都不发
+        noticePushService.enqueue(n);
     }
 
     /** 我的通知，未读优先、新的在前 */

@@ -1,6 +1,7 @@
 package com.qc.inspect.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.qc.inspect.auth.JwtUtil;
 import com.qc.inspect.auth.LoginUser;
@@ -109,6 +110,7 @@ public class AuthService {
         }
         req.setUsername(req.getUsername().trim());
         req.setUpdatedAt(LocalDateTime.now());
+        normalizeWecom(req);
 
         if (req.getId() == null) {
             if (rawPassword == null || rawPassword.length() < 6) {
@@ -126,9 +128,50 @@ public class AuthService {
             req.setPassword(rawPassword == null || rawPassword.isBlank()
                     ? null : passwordEncoder.encode(rawPassword));
             userMapper.updateById(req);
+            if (req.getWecomUserid() == null) {
+                // updateById 默认忽略 null，解绑时不清一次就永远清不掉
+                userMapper.update(null, new LambdaUpdateWrapper<SysUser>()
+                        .eq(SysUser::getId, req.getId())
+                        .set(SysUser::getWecomUserid, null));
+            }
         }
         req.setPassword(null);
         return req;
+    }
+
+    /**
+     * 整理并校验企业微信账号。
+     *
+     * <p>三条都是「在界面上填错、在运行时才炸」的典型：
+     * <ul>
+     *   <li>前后带空格 —— 企业微信不认，报「账号不存在」，而人眼看不出区别</li>
+     *   <li>填成手机号或姓名 —— 这里拦一句，比等到推送失败再查便宜得多</li>
+     *   <li>一个账号绑两个人 —— 同一条退回会发两遍，且两个人都会以为自己该处理</li>
+     * </ul>
+     */
+    private void normalizeWecom(SysUser req) {
+        String wx = req.getWecomUserid();
+        if (wx != null) {
+            wx = wx.trim();
+            if (wx.isEmpty()) {
+                wx = null;
+            }
+        }
+        if (wx != null) {
+            if (wx.length() > 64) {
+                throw BizException.of("企业微信账号过长（最多 64 个字符）");
+            }
+            if (wx.chars().anyMatch(Character::isWhitespace)) {
+                throw BizException.of("企业微信账号里不能有空格");
+            }
+            long busy = userMapper.selectCount(Wrappers.<SysUser>lambdaQuery()
+                    .eq(SysUser::getWecomUserid, wx)
+                    .ne(req.getId() != null, SysUser::getId, req.getId()));
+            if (busy > 0) {
+                throw BizException.of("该企业微信账号已绑定其他账号：" + wx);
+            }
+        }
+        req.setWecomUserid(wx);
     }
 
     /**

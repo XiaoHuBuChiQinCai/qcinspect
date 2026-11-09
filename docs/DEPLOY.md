@@ -222,6 +222,37 @@ const BASE = 'http://localhost:8080/api'   // 小程序/APP 只能绝对地址
 
 ---
 
+### 企业微信推送（可选）
+
+**不配也能用**，配了之后审核退回、让步接收会顺带发到手机。
+
+1. 企业微信后台 →「我的企业」拿 **企业 ID**；「应用管理 → 自建」建一个应用，拿 **AgentId** 和 **Secret**
+2. 应用详情页 →「企业可信 IP」把服务器出口 IP（`154.8.209.29`）加进去，
+   不加会一直报 `errcode=60020`
+3. 服务器 `.env` 里填上，然后重启 app：
+
+```bash
+WECOM_ENABLED=true
+WECOM_CORP_ID=ww开头的企业ID
+WECOM_AGENT_ID=1000002
+WECOM_SECRET=应用Secret
+APP_PUBLIC_URL=http://154.8.209.29/h5/   # 可留空，留空则消息里不带链接
+```
+
+```bash
+cd /root/qc/qcinspect && docker compose -f docker-compose.prod.yml up -d app
+```
+
+4. 去 PC 的「账号与角色」给每个人填 **企业微信 UserID**（通讯录里的账号，不是手机号也不是姓名）。
+   没填的人只收站内通知，推送状态记成 `SKIPPED`。
+
+排障看「账号与角色」页顶部的黄条：它列出没送到的通知、原因，并支持补完账号后一键重发。
+`SKIPPED` 是没绑账号，`FAILED` 才是凭证 / 白名单 / 网络问题。
+
+> Secret 只走环境变量。一旦提交进 git 历史，删掉那次提交也没用，只能去后台重置。
+
+---
+
 ## 六、日常运维
 
 ```bash
