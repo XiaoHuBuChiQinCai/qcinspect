@@ -63,9 +63,10 @@ test('两端对照文案一致', () => {
   }
 })
 
-test('两端上限都是 500', () => {
+test('两端上限都是 200，且与检验单单次上限一致', () => {
   assert.equal(mobile.MAX_QTY, pc.MAX_QTY)
-  assert.equal(pc.MAX_QTY, 500)
+  // 锁死具体值：返修票上限比检验单大，就会开出一张「完工了但复检单开不出来」的死票
+  assert.equal(pc.MAX_QTY, 200)
 })
 
 /**

@@ -184,7 +184,7 @@
           <span class="sub" style="margin-left: 8px">判出 {{ rwTarget?.defectQty }} 件</span>
         </el-form-item>
         <el-form-item label="送修数量">
-          <el-input-number v-model="rwForm.qty" :min="1" :max="500" style="width: 160px" />
+          <el-input-number v-model="rwForm.qty" :min="1" :max="200" style="width: 160px" />
           <span class="sub" style="margin-left: 10px">实际送去返修的件数，可能少于判出的件数</span>
         </el-form-item>
         <el-form-item label="返修人">

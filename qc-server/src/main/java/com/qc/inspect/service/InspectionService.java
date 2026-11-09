@@ -60,6 +60,13 @@ import java.util.stream.Collectors;
 public class InspectionService {
 
     /** 单次建单允许的最大件数，防止误填 9999 把明细表写爆 */
+    /**
+     * 单次检验的件数上限。
+     *
+     * <p>与 {@code ReworkBalance.MAX_QTY} 同值：返修完工要按返好件数开复检单，
+     * 返修票的上限一旦比这里大，就会开出一张「票已完工、复检单开不出来」的死票。
+     * 改这个数字要同时改那边。
+     */
     private static final int MAX_SAMPLE_QTY = 200;
 
     private final QcBatchMapper batchMapper;

@@ -12,7 +12,8 @@
  * 人得重新点开票、重新填一遍。当场看见「少了 1 件」比事后报错有用得多。
  */
 
-export const MAX_QTY = 500
+// 与后端 ReworkBalance.MAX_QTY（200）一致：再大就会卡在「开复检单」那一步
+export const MAX_QTY = 200
 
 function toInt(v) {
   if (v === null || v === undefined) return null

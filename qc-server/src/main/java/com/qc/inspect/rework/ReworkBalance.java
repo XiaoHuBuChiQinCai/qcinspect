@@ -16,8 +16,16 @@ import java.time.temporal.ChronoUnit;
  */
 public final class ReworkBalance {
 
-    /** 单张返修票的上限，与检验单的 {@code MAX_SAMPLE_QTY} 对齐，不让人一次送修一整托 */
-    public static final int MAX_QTY = 500;
+    /**
+     * 单张返修票的上限。
+     *
+     * <p>**必须与 {@code InspectionService.MAX_SAMPLE_QTY}（200）一致。**
+     * 这里放 500 会开出一个洞：票能开 300 件、完工报返好 300 件，
+     * 到自动开复检单那一步被「超过单次上限 200」打回来——票已经完工，
+     * 复检单开不出来，这条不良就卡死了。两个数字改一处就要改两处，
+     * 测试里锁了具体值，改漏一边会红。
+     */
+    public static final int MAX_QTY = 200;
 
     private ReworkBalance() {
     }

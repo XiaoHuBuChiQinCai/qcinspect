@@ -19,7 +19,7 @@ test('送修数量：小数要拒，件没有半件', () => {
   assert.equal(checkQty(2.5), '送修数量要填整数')
 })
 
-test('送修数量：上限 500，与后端一致', () => {
+test('送修数量：上限 200，与检验单单次上限一致', () => {
   assert.equal(checkQty(MAX_QTY), null)
   assert.match(checkQty(MAX_QTY + 1), /拆成多张/)
 })
