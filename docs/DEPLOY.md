@@ -284,12 +284,13 @@ docker run --rm -v qcinspect_qc-files:/data -v ~:/out alpine \
 就在手机上也能收到）。同一个等级一天只推一次，靠 `qc_system_alert` 的
 `(alert_key, alert_date)` 唯一索引去重——重启几次不会刷屏，问题还在第二天照推。
 
-**看见了先做哪一步。** 这个系统里占空间的是三样东西，处理方式完全不同：
+**看见了先做哪一步。** 这个系统里占空间的是四样东西，处理方式完全不同：
 
 ```bash
-# 1. 先看谁在占（页面上就有，这里是命令行版）
-du -sh /root/qc/backups/* 2>/dev/null | tail -5
+# 1. 先看谁在占（照片和数据库页面上就有，这里是命令行版）
 docker system df                       # 镜像和构建缓存，2G 机器上很容易攒到几个 G
+du -sh /root/qc/backups/* 2>/dev/null | tail -5
+du -sh /var/lib/docker/containers/*/*-json.log | sort -h | tail -3
 
 # 2. 旧备份可以直接删（保留最近 7 天，脚本本来也会自动清）
 find /root/qc/backups -name '*.sql.gz' -mtime +7 -delete
@@ -297,6 +298,14 @@ find /root/qc/backups -name '*.sql.gz' -mtime +7 -delete
 # 3. 构建缓存，删除后不影响运行中的容器
 docker builder prune -af
 ```
+
+**容器日志已经限了，别再手动清。** `docker-compose.prod.yml` 里三个容器都挂了
+`max-size: 50m / max-file: 3`（走 YAML 锚点，三处一致）。Docker 默认的 `json-file`
+驱动**没有上限**，而生产开着 debug 级别 + MyBatis 的 SQL 日志，一天能写几十 MB——
+不限制的话，最先被吃满的不是照片也不是备份，是日志，而且它长得跟正常的服务日志
+一模一样，没人会想到去删。150 MB 上限够回看最近一两天的排查记录。
+改了这个配置必须 `up -d` 重建容器才生效（`docker inspect qc-app` 能看到
+`LogConfig.Config.max-size`）。
 
 **照片不要 rm。** 检验照片是质量记录的一部分，`qc_image` 表和磁盘上的文件是一对；
 直接删文件，详情页会变成一堆破图，而且这批证据就没了。真要降占用，只有两条路：
