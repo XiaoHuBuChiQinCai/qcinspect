@@ -18,6 +18,7 @@
         <el-menu-item index="/stat">质量看板</el-menu-item>
         <el-menu-item index="/monthly">质量月报</el-menu-item>
         <el-menu-item index="/capability">过程能力</el-menu-item>
+        <el-menu-item index="/msa">测量系统</el-menu-item>
         <el-menu-item v-if="canReview" index="/inspectors">检验员分析</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/master-data">主数据</el-menu-item>
         <el-menu-item v-if="isAdmin" index="/defect-codes">不良代码</el-menu-item>

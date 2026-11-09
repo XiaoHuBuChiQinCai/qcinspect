@@ -34,6 +34,10 @@ const routes = [
   { path: '/monthly', component: () => import('../views/MonthlyReport.vue') },
   // 过程能力分析：判定层只管收不收，这一页回答「这道工序稳不稳」
   { path: '/capability', component: () => import('../views/Capability.vue') },
+  // 量具测量系统分析：过程能力回答「工序稳不稳」，这一页回答「量出来的数能不能信」。
+  // 顺序不能反——GRR 不合格时，控制图和 Cpk 算得再漂亮也是噪声分析
+  { path: '/msa', component: () => import('../views/MsaList.vue') },
+  { path: '/msa/new', component: () => import('../views/MsaCreate.vue') },
   // 检验员分析：看的是「记录站不站得住」，不是绩效排名，所以只给管理员与审核员
   { path: '/inspectors', component: () => import('../views/InspectorStat.vue'), meta: { roles: ['ADMIN', 'REVIEWER'] } }
 ]

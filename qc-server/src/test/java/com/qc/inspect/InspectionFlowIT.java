@@ -2257,6 +2257,117 @@ class InspectionFlowIT {
         assertThat(rid3b).as("取消后可以重新开票").isPositive();
     }
 
+    @Test
+    @Order(37)
+    @DisplayName("GR&R 研究：读数落进 jsonb 再算出来，和纯逻辑是同一组数")
+    void msaStudy() {
+        Long gauge = num(data(post("/api/gauges", Map.of(
+                "gaugeCode", "IT-G-GRR", "gaugeName", "IT 外径千分尺", "gaugeType", "千分尺",
+                "calibrateDate", LocalDate.now().minusDays(30).toString(),
+                "calibrateCycleDays", 365))).get("id"));
+
+        // 3 人 × 3 件 × 2 次：每人整体偏 0.2、每格极差 0.2。
+        // 与 GrrStudyTest 的 threeByThree 同一组数据，两边必须算出同一个 %GRR——
+        // 页面上的预览是同一套算法在前端复算的，差一位数人就会以为「保存一下能改数」
+        double[] partBase = {10.0, 10.5, 11.0};
+        List<List<List<Double>>> readings = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            List<List<Double>> parts = new ArrayList<>();
+            for (int j = 0; j < 3; j++) {
+                double c = partBase[j] + 0.2 * i;
+                parts.add(List.of(r4(c), r4(c + 0.2)));
+            }
+            readings.add(parts);
+        }
+
+        Map<String, Object> created = data(post("/api/msa", Map.of(
+                "gaugeId", gauge, "characteristic", "外径", "unit", "mm",
+                "lsl", 9.0, "usl", 13.6,
+                "appraisers", List.of("张三", "李四", "王五"),
+                "readings", readings)));
+        Long sid = num(created.get("id"));
+        assertThat(String.valueOf(created.get("studyNo"))).as("单号走 MSA 前缀").startsWith("MSA");
+        assertThat(num(created.get("appraiserCount"))).isEqualTo(3L);
+        assertThat(num(created.get("partCount"))).isEqualTo(3L);
+        assertThat(num(created.get("trialCount"))).as("结构从读数推，不听前端报").isEqualTo(2L);
+
+        Map<String, Object> result = asMap(created.get("result"));
+        assertThat(String.valueOf(result.get("verdict"))).as("45% 判不可接受").isEqualTo("BAD");
+        assertThat(dec(result.get("pctGrr")).doubleValue()).isBetween(45.0, 45.3);
+        assertThat(num(result.get("ndc"))).as("3 件零件只能分出 2 级").isEqualTo(2L);
+        assertThat(asList(result.get("notes"))).as("结论之外还要说清从哪下手").isNotEmpty();
+
+        // 明细带读数、列表不带：一页 10 条 × 90 个读数，列表一个也用不上
+        assertThat(asList(data(get("/api/msa/" + sid)).get("readings"))).hasSize(3);
+
+        Map<String, Object> pageData = data(get("/api/msa/page"));
+        List<Map<String, Object>> records = asList(pageData.get("records"));
+        assertThat(records).isNotEmpty();
+        assertThat(records.get(0).get("readings")).as("列表不带原始读数").isNull();
+        assertThat(records.get(0).get("result")).as("但结论要带上").isNotNull();
+
+        // 结论是算出来的，SQL 里没有这一列：带 verdict 筛的时候总数也要对得上
+        Map<String, Object> onlyBad = data(get("/api/msa/page?verdict=BAD"));
+        assertThat(asList(onlyBad.get("records"))).isNotEmpty();
+        assertThat(num(onlyBad.get("total"))).as("筛完的总数也要对").isPositive();
+        Map<String, Object> onlyGood = data(get("/api/msa/page?verdict=GOOD"));
+        assertThat(asList(onlyGood.get("records"))).as("这组数据不可能判成可接受").isEmpty();
+
+        // ---- 该拒的都要拒 ----
+
+        // 报了 3 位评价人，读数只给了 2 组
+        assertThat(num(post("/api/msa", Map.of(
+                "gaugeId", gauge, "characteristic", "外径",
+                "appraisers", List.of("张三", "李四", "王五"),
+                "readings", List.of(List.of(List.of(10.0, 10.1)), List.of(List.of(10.0, 10.1))))).get("code")))
+                .as("评价人数与读数组数对不上").isNotEqualTo(0);
+
+        // 漏填一格
+        List<List<List<Double>>> holed = new ArrayList<>();
+        holed.add(List.of(List.of(10.0, 10.1), List.of(10.5, 10.7)));
+        holed.add(List.of(java.util.Arrays.asList(10.0, null), List.of(10.5, 10.7)));
+        holed.add(List.of(List.of(10.0, 10.1), List.of(10.5, 10.7)));
+        Map<String, Object> missing = post("/api/msa", Map.of(
+                "gaugeId", gauge, "characteristic", "外径",
+                "appraisers", List.of("张三", "李四", "王五"), "readings", holed));
+        assertThat(num(missing.get("code"))).as("漏填一格不许存").isNotEqualTo(0);
+        assertThat(String.valueOf(missing.get("msg"))).contains("没填");
+
+        // 重名：出了再现性问题，第一个要问的就是「谁跟谁对不上」，重名就问不出来
+        assertThat(num(post("/api/msa", Map.of(
+                "gaugeId", gauge, "characteristic", "外径",
+                "appraisers", List.of("张三", "张三", "王五"), "readings", readings)).get("code")))
+                .as("评价人重名要拒").isNotEqualTo(0);
+
+        // 超期量具：拿一把过期的尺做研究，算出来的结论没人敢用
+        Long expired = num(data(post("/api/gauges", Map.of(
+                "gaugeCode", "IT-G-GRR-EXP", "gaugeName", "IT 过期千分尺", "gaugeType", "千分尺",
+                "calibrateDate", LocalDate.now().minusDays(400).toString(),
+                "calibrateCycleDays", 365))).get("id"));
+        assertThat(num(post("/api/msa", Map.of(
+                "gaugeId", expired, "characteristic", "外径",
+                "appraisers", List.of("张三", "李四", "王五"), "readings", readings)).get("code")))
+                .as("超期量具不许做 GR&R").isNotEqualTo(0);
+
+        // 上下限填反
+        assertThat(num(post("/api/msa", Map.of(
+                "gaugeId", gauge, "characteristic", "外径", "lsl", 13.6, "usl", 9.0,
+                "appraisers", List.of("张三", "李四", "王五"), "readings", readings)).get("code")))
+                .as("上下限填反要拒").isNotEqualTo(0);
+
+        // 作废：理由必填，作废后从列表消失（读数本身留在库里）
+        assertThat(num(post("/api/msa/" + sid + "/cancel", Map.of("reason", "错")).get("code")))
+                .as("理由太短要拒").isNotEqualTo(0);
+        data(post("/api/msa/" + sid + "/cancel", Map.of("reason", "读数录错了一列，重做")));
+        Map<String, Object> afterCancel = data(get("/api/msa/page?keyword=" + created.get("studyNo")));
+        assertThat(asList(afterCancel.get("records"))).as("作废的不再出现在列表").isEmpty();
+    }
+
+    /** 浮点尾巴会让两边的期望值对不上，读数先定标到 4 位 */
+    private static double r4(double v) {
+        return Math.round(v * 10000.0) / 10000.0;
+    }
+
     /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */
     private static final byte[] PNG_1PX = java.util.Base64.getDecoder().decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
