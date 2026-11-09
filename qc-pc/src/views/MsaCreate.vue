@@ -97,6 +97,10 @@
         <template v-if="filled.filled === filled.total && filled.total">，全部填完</template>
       </span>
       <span class="sub paste-hint">可以从 Excel 整块粘贴：点住某人的第一格按 Ctrl+V，行列自动铺开</span>
+      <!-- 预览放在标题行：录的时候人在表格里，眼睛不会往下滚到底部那条操作栏 -->
+      <span v-if="preview" class="live" :class="tone">
+        %GRR {{ preview.pctGrr }}% · {{ gradeLabel(preview.verdict) }} · ndc {{ preview.ndc }}
+      </span>
     </div>
 
     <el-tabs v-model="activeTab">
@@ -341,6 +345,11 @@ async function save() {
 }
 .paste-hint {
   margin-left: 12px;
+}
+.live {
+  margin-left: 14px;
+  font-size: 13px;
+  font-weight: 600;
 }
 .names {
   display: flex;
