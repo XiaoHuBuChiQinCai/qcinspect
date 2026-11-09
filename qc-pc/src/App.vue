@@ -124,21 +124,6 @@ watch(
   }
 )
 
-/*
- * 登录成功后必须重读一次用户。
- *
- * App 是根组件，登录页到首页是 SPA 内跳转，App 不会重新挂载——user 会一直是
- * 打开登录页那一刻的值（空对象）。后果不是显示难看，是真的少东西：
- * 右上角写着「未知角色」，侧栏的管理员菜单整块不出现，审核按钮也不出现，
- * 必须手动刷新一次页面才对。以前没人报，是因为大家习惯登录后刷一下。
- */
-watch(
-  () => route.path,
-  () => {
-    user.value = getStoredUser() || {}
-  }
-)
-
 const isAdmin = computed(() => user.value.role === 'ADMIN')
 // 审核员也要能看：他的活就是判断该抽查哪张单
 const canReview = computed(() => ['ADMIN', 'REVIEWER'].includes(user.value.role))

@@ -1,19 +1,13 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
-
-const TOKEN_KEY = 'qc_token'
-const USER_KEY = 'qc_user'
+import { TOKEN_KEY, USER_KEY, parseStoredUser } from '../utils/session'
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || ''
 }
 
 export function getStoredUser() {
-  try {
-    return JSON.parse(localStorage.getItem(USER_KEY) || 'null')
-  } catch {
-    return null
-  }
+  return parseStoredUser(localStorage.getItem(USER_KEY))
 }
 
 export function saveSession(token, user) {

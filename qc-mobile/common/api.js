@@ -20,8 +20,17 @@ export function absUrl(url) {
   return BASE.replace(/\/api$/, '') + (url.startsWith('/') ? url : '/' + url)
 }
 
-const TOKEN_KEY = 'qc_token'
-const USER_KEY = 'qc_user'
+/*
+ * 这两个键必须带 h5_ 前缀，不能和 PC 端（src/utils/session.js）共用。
+ *
+ * 线上 H5 挂在 /h5/、PC 挂在 /，是同一个域，也就共用同一份 localStorage。
+ * 而 uni 的 `uni.setStorageSync` 对非字符串值会包一层 { type:'object', data:... }，
+ * PC 直接 JSON.parse 拿到的是外壳，role 取不到——现象是「接口能调、右上角写着未知角色、
+ * 管理员菜单整块不见」。反过来 PC 写进去的裸 JSON，移动端的 parseValue 也认不出来。
+ * 谁后登录谁把对方顶掉，两个前端互相毁。
+ */
+const TOKEN_KEY = 'qc_h5_token'
+const USER_KEY = 'qc_h5_user'
 
 export function getToken() {
   return uni.getStorageSync(TOKEN_KEY) || ''
