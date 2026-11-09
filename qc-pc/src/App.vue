@@ -101,7 +101,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import http, { clearSession, getStoredUser, getToken } from './api/http'
+import http, { clearSession, getStoredUser, getToken, saveSession } from './api/http'
 
 const route = useRoute()
 const router = useRouter()
@@ -110,19 +110,37 @@ const user = ref(getStoredUser() || {})
 const isLogin = computed(() => route.path === '/login')
 
 /*
- * 登录成功后必须重读一次用户。
+ * 右上角那个角色标签、侧栏那几项管理员菜单，全都只看本地缓存里的 this user。
+ * 于是只要本地缓存丢了或者读歪了，界面就悄悄降级：写着「未知角色」，管理员菜单
+ * 整块不见，谁也没报错——用户只会觉得「这系统权限怎么没了」。
  *
- * App 是根组件，登录页到首页是 SPA 内跳转，App 不会重新挂载——user 会一直是
- * 打开登录页那一刻的值（空对象）。后果不是显示难看，是真的少东西：
- * 右上角写着「未知角色」，侧栏的管理员菜单整块不出现，审核按钮也不出现，
- * 必须手动刷新一次页面才对。以前没人报，是因为大家习惯登录后刷一下。
+ * 缓存丢的情况真实存在：
+ * 1. 登录页到首页是 SPA 内跳转，App 是根组件不重挂，user 会一直停在空对象；
+ * 2. PC 在 /、H5 在 /h5/，同域共用 localStorage，对方写进来的格式还读不了；
+ * 3. 有人手动清过站点数据，或者标签页之间互相顶。
+ *
+ * 所以缓存不可信就当它没有，直接问后端要一次——token 还在就一定能拿到。
  */
-watch(
-  () => route.path,
-  () => {
-    user.value = getStoredUser() || {}
+let fetchingUser = false
+
+async function ensureUser() {
+  user.value = getStoredUser() || {}
+  if (user.value.role || !getToken() || fetchingUser) return
+  fetchingUser = true
+  try {
+    const me = await http.get('/auth/me', { silent: true })
+    if (me) {
+      saveSession(getToken(), me)
+      user.value = me
+    }
+  } catch {
+    // token 失效就走 401 拦截器那条路（清会话、跳登录页），这里不再重复提示
+  } finally {
+    fetchingUser = false
   }
-)
+}
+
+watch(() => route.path, ensureUser)
 
 const isAdmin = computed(() => user.value.role === 'ADMIN')
 // 审核员也要能看：他的活就是判断该抽查哪张单
@@ -183,6 +201,7 @@ async function readAll() {
 }
 
 onMounted(() => {
+  ensureUser()
   loadNoticeSummary()
   // 质检现场没有推送通道，用轮询兜底：一分钟一次足够，退回来的单不会等半小时才被看见
   noticeTimer = setInterval(loadNoticeSummary, 60000)

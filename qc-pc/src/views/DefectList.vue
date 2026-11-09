@@ -39,23 +39,25 @@
       </template>
 
       <el-table :data="rows" v-loading="loading" :row-class-name="rowClass">
-        <el-table-column label="检验单" width="160">
+        <el-table-column label="检验单" width="130">
           <template #default="{ row }">#{{ row.inspectionId }} / 第 {{ row.pieceNo }} 件</template>
         </el-table-column>
-        <el-table-column prop="defectName" label="不良" min-width="120" />
-        <el-table-column prop="defectCode" label="代码" width="110" />
-        <el-table-column prop="defectQty" label="数量" width="80" />
-        <el-table-column label="处置" width="110">
-          <template #default="{ row }">{{ dispositionText(row.disposition) }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="110">
+        <el-table-column prop="defectName" label="不良" min-width="110" />
+        <el-table-column prop="defectCode" label="代码" width="100" />
+        <el-table-column prop="defectQty" label="数量" width="70" />
+        <!-- 处置和状态本来各占一列，加起来 220px。加了返修票列之后整张表挤到
+             把「复检单」推到右侧固定的操作列底下，这页是车间天天点的，宁可合起来 -->
+        <el-table-column label="处置 / 状态" width="120">
           <template #default="{ row }">
-            <el-tag size="small" :type="statusType(row.dispositionStatus)">
-              {{ statusText(row.dispositionStatus) }}
-            </el-tag>
+            <div>{{ dispositionText(row.disposition) }}</div>
+            <div class="sub">
+              <el-tag size="small" :type="statusType(row.dispositionStatus)">
+                {{ statusText(row.dispositionStatus) }}
+              </el-tag>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="返修票" width="150">
+        <el-table-column label="返修票" width="140">
           <template #default="{ row }">
             <!-- 有票就显示票号和状态：不良列表上看不出「这件送去修了没有」，
                  是车间最常见的一句追问 -->
@@ -79,7 +81,7 @@
             <span v-else class="empty-inline">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="复检单" width="160">
+        <el-table-column label="复检单" width="145">
           <template #default="{ row }">
             <template v-if="row.recheckInspectionNo">
               <el-link type="primary" @click="goInspection(row.recheckInspectionId)">
@@ -96,13 +98,13 @@
             <span v-else class="empty-inline">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="处置人 / 理由" min-width="180">
+        <el-table-column label="处置人 / 理由" min-width="150">
           <template #default="{ row }">
             <div>{{ row.dispositionBy || '—' }}</div>
             <div class="sub">{{ row.concessionReason || row.dispositionNote || '' }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="340" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <!-- 还没定处置方式 -->
             <template v-if="!row.disposition">
