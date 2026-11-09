@@ -101,7 +101,10 @@
         <el-table-column label="处置人 / 理由" min-width="150">
           <template #default="{ row }">
             <div>{{ row.dispositionBy || '—' }}</div>
-            <div class="sub">{{ row.concessionReason || row.dispositionNote || '' }}</div>
+            <div
+              class="sub reason"
+              :title="row.concessionReason || row.dispositionNote || ''"
+            >{{ row.concessionReason || row.dispositionNote || '' }}</div>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="320" fixed="right">
@@ -423,6 +426,12 @@ onMounted(async () => {
 .empty { color: var(--el-text-color-secondary); font-size: 13px; }
 .empty-inline { color: var(--el-text-color-secondary); }
 .sub { font-size: 12px; color: var(--el-text-color-secondary); }
+/* 处置理由有时是一整句话（报废原因、返废说明）。不裁的话一行能撑到五行高，
+   整张表变成「一行数据一格字」，其他行反而不好扫。原文留在 tooltip 里 */
+.reason {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .pareto { display: flex; flex-direction: column; gap: 6px; }
 .row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .idx { width: 18px; color: var(--el-text-color-secondary); }
