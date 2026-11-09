@@ -52,20 +52,20 @@
     />
 
     <el-table :data="rows" v-loading="loading" :row-class-name="rowClass">
-      <el-table-column prop="reworkNo" label="票号" width="150" />
-      <el-table-column label="产品 / 批次" min-width="150">
+      <el-table-column prop="reworkNo" label="票号" width="145" />
+      <el-table-column label="产品 / 批次" width="140">
         <template #default="{ row }">
           <div>{{ row.productName || '—' }}</div>
           <div class="sub">{{ row.batchNo || '—' }}</div>
         </template>
       </el-table-column>
-      <el-table-column label="不良" min-width="150">
+      <el-table-column label="不良" width="145">
         <template #default="{ row }">
           <div>{{ row.defectName }}</div>
           <div class="sub">{{ row.defectCode || '—' }}<template v-if="row.inspectionNo"> · {{ row.inspectionNo }}</template></div>
         </template>
       </el-table-column>
-      <el-table-column label="送修 / 返好 / 返废" width="150" align="center">
+      <el-table-column label="送修 / 返好 / 返废" width="140" align="center">
         <template #default="{ row }">
           <template v-if="row.status === 'DONE'">
             {{ row.qty }} / <b class="ok">{{ row.reworkedQty }}</b> / <b :class="{ danger: row.scrappedQty > 0 }">{{ row.scrappedQty }}</b>
@@ -75,28 +75,26 @@
           </template>
         </template>
       </el-table-column>
-      <el-table-column label="返修人" width="110">
+      <el-table-column label="返修人" width="100">
         <template #default="{ row }">{{ row.assignee || '未指派' }}</template>
       </el-table-column>
-      <el-table-column label="要求完成" width="120">
+      <el-table-column label="要求完成" width="110">
         <template #default="{ row }">
           <div :class="{ danger: row.overdue }">{{ row.dueDate || '—' }}</div>
           <div v-if="row.overdue" class="sub danger">超期 {{ row.overdueDays }} 天</div>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态" width="95">
         <template #default="{ row }">
-          <el-tooltip
-            v-if="row.status === 'CANCELLED'"
-            :content="`${row.cancelReason || '未填理由'}`"
-            placement="top"
-          >
-            <el-tag size="small" type="info">已取消</el-tag>
+          <!-- 返废原因、取消理由都挂在状态上 hover 看：列表不加备注列，
+               但「修废的那件为什么废」不能就此丢了 -->
+          <el-tooltip :content="row.finishNote || row.cancelReason || statusText(row.status)"
+                      placement="top" :disabled="!row.finishNote && !row.cancelReason">
+            <el-tag size="small" :type="tagType(row.status)">{{ statusText(row.status) }}</el-tag>
           </el-tooltip>
-          <el-tag v-else size="small" :type="tagType(row.status)">{{ statusText(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="复检单" width="160">
+      <el-table-column label="复检单" width="150">
         <template #default="{ row }">
           <template v-if="row.recheckInspectionNo">
             <el-link type="primary" @click="goInspection(row.recheckInspectionId)">
@@ -108,23 +106,13 @@
           <span v-else class="sub">完工后自动生成</span>
         </template>
       </el-table-column>
-      <el-table-column label="备注" min-width="150">
-        <template #default="{ row }">
-          <div class="sub">{{ row.finishNote || row.requirement || row.remark || '—' }}</div>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="250" fixed="right">
+      <el-table-column label="操作" width="235" fixed="right">
         <template #default="{ row }">
           <template v-if="row.status === 'OPEN' || row.status === 'DOING'">
             <el-button v-if="row.status === 'OPEN'" size="small" @click="start(row)">开工</el-button>
             <el-button size="small" @click="openAssign(row)">改派</el-button>
             <el-button size="small" type="primary" @click="openFinish(row)">完工</el-button>
             <el-button v-if="canReview" size="small" type="danger" plain @click="cancel(row)">取消</el-button>
-          </template>
-          <template v-else-if="row.status === 'DONE' && row.recheckInspectionId">
-            <el-button size="small" type="primary" plain @click="goInspection(row.recheckInspectionId)">
-              去复检
-            </el-button>
           </template>
           <span v-else class="sub">—</span>
         </template>
