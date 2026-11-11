@@ -200,6 +200,34 @@ export const api = {
    */
   finishRework: (id, body) => request(`/rework/${id}/finish`, { method: 'POST', data: body }),
 
+  // ---------- 纠正措施（CAPA）----------
+  /**
+   * 措施分页。owner 传自己的展示名就是「我负责的」。
+   * 超期、还开着几天都是服务端算好的，手机上别拿本地时间再判一次（iOS 的
+   * new Date('2026-11-09 10:00:00') 会得到 Invalid Date）
+   */
+  capaPage: (params = {}) => {
+    const q = Object.keys(params)
+      .filter(k => params[k] !== undefined && params[k] !== null && params[k] !== '')
+      .map(k => `${k}=${encodeURIComponent(params[k])}`)
+      .join('&')
+    return request('/capa/page' + (q ? '?' + q : ''))
+  },
+  /** 开始处理：待分析 → 措施执行中。重复点无副作用 */
+  startCapa: id => request(`/capa/${id}/start`, { method: 'POST' }),
+  /**
+   * 存根因与措施。只有「待分析 / 措施执行中」能改，
+   * 进了待验证就冻结——要改得让验证人判无效退回来
+   */
+  saveCapaAnalysis: (id, body) => request(`/capa/${id}/analysis`, { method: 'POST', data: body }),
+  /** 提交验证。没写根因或措施后端会拒，并直接返回人话原因 */
+  submitCapaVerify: id => request(`/capa/${id}/submit-verify`, { method: 'POST' }),
+  /**
+   * 验证。effective=true 关闭，false 退回「措施执行中」。
+   * 只有审核员/管理员能调，责任人验自己会被服务层拦
+   */
+  verifyCapa: (id, body) => request(`/capa/${id}/verify`, { method: 'POST', data: body }),
+
   // ---------- 客诉 ----------
   /** 登记客诉。批次必填、客户与问题描述必填，日期不能晚于今天 */
   createComplaint: body => request('/complaints', { method: 'POST', data: body }),

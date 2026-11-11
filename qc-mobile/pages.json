@@ -77,6 +77,12 @@
       "style": {
         "navigationBarTitleText": "返修工单"
       }
+    },
+    {
+      "path": "pages/capa/capa",
+      "style": {
+        "navigationBarTitleText": "纠正措施"
+      }
     }
   ],
   "globalStyle": {

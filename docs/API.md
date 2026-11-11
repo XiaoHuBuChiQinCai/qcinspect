@@ -2552,3 +2552,19 @@ GET /api/capa/recurrence?productId=1&defectKey=OD-001
 - **客诉**：`sourceType = COMPLAINT`。客户投诉往往就是「同一个毛病第 N 次出现」，
   客诉模块的闭环解决的是「给客户答复」，CAPA 解决的是「不让它再发生」
 - **不需要新增数据库脚本之外的东西**：数据全在 `qc_capa` 一张表上，没有冗余统计表
+
+### 10. 移动端入口（`qc-mobile/pages/capa/capa.vue`）
+
+责任人在车间，改措施不该要求他回电脑。手机上的界面对应「我负责的」与「待验证」两页签：
+
+- 「我负责的」= `GET /api/capa/page?owner=<displayName>`，三个动作按钮按状态出现：
+  待分析 → 开始处理；待分析/措施执行中 → 填原因；措施执行中 → 提交验证
+- 「待验证」= `GET /api/capa/page?status=VERIFYING`，只对 `ADMIN` / `REVIEWER` 显示；
+  自己负责的那条从这一页里排除（它已经在「我负责的」里），免得同一件事看到两遍
+- **手机上不写判定文案**：`common/capa.js` 只有 `canStart/canEdit/canSubmit/missingForSubmit/dueLabel`
+  这类布尔与字段名，为什么被拒、下一步做什么仍然只有服务端 `CapaRules` 一处。
+  两端各写一套话，早晚变成「手机上说得通、服务端说不行」，而这恰恰是给人看的部分
+- 「超期」一律用服务端算好的 `overdue / overdueDays`（它判的是「还开着的才算超期」）；
+  手机只算「还剩几天」，且自己拆 `YYYY-MM-DD` 再走 `Date.UTC`——
+  iOS Safari 上 `new Date('2026-11-09 10:00:00')` 是 `Invalid Date`
+- 撤销不在手机上做：那是质量条线的判断，且必须写理由

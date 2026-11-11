@@ -33,6 +33,10 @@
         <text class="cell-title">返修工单</text>
         <text :class="['cell-sub', reworkOverdue ? 'warn' : '']">{{ reworkSub }}</text>
       </view>
+      <view class="cell" @click="openCapa">
+        <text class="cell-title">纠正措施</text>
+        <text :class="['cell-sub', capaOverdue ? 'warn' : '']">{{ capaSub }}</text>
+      </view>
       <view class="cell" @click="openGauge">
         <text class="cell-title">量具状态</text>
         <text :class="['cell-sub', summary.overdueGauge ? 'warn' : '']">{{ gaugeSub }}</text>
@@ -123,6 +127,23 @@ const reworkSub = computed(() => {
   return '没有在修的件'
 })
 
+/**
+ * 措施那格：超期最要紧。
+ *
+ * <p>返修拖的是「这批坏件在哪」，措施拖的是「下个月还会不会照原样再犯」——
+ * 说好两周改完，第四周还没动，那根帕累托柱子就会以同样的高度再出现一次。
+ * 三个数都是全厂口径（和返修那格一样），不是「我负责的」；手机上点进去才是自己那份。
+ */
+const capaOverdue = computed(() => Number(summary.value?.capaOverdue) || 0)
+const capaOpen = computed(() => Number(summary.value?.capaOpen) || 0)
+const capaVerifying = computed(() => Number(summary.value?.capaVerifying) || 0)
+const capaSub = computed(() => {
+  if (capaOverdue.value) return capaOverdue.value + ' 条超期没改'
+  if (capaVerifying.value) return capaVerifying.value + ' 条待验证'
+  if (capaOpen.value) return capaOpen.value + ' 条在改'
+  return '没有在改的措施'
+})
+
 async function load() {
   if (!getToken()) {
     uni.reLaunch({ url: '/pages/login/login' })
@@ -155,6 +176,10 @@ function openTodo() {
 
 function openRework() {
   uni.navigateTo({ url: '/pages/rework/rework' })
+}
+
+function openCapa() {
+  uni.navigateTo({ url: '/pages/capa/capa' })
 }
 
 function openTrace() {
