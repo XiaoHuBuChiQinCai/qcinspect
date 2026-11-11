@@ -20,9 +20,6 @@ const routes = [
   // 纠正预防措施：返修票回答「这批坏件怎么办」，这一页回答「怎么让它不再坏」。
   // 帕累托上那根柱子指了三个月，没人去改，就是缺这一页
   { path: '/capa', component: () => import('../views/CapaList.vue') },
-  // 纠正预防措施：返修票回答「这批坏件怎么办」，这一页回答「怎么让它不再坏」。
-  // 帕累托上那根柱子指了三个月，没人去改，就是缺这一页
-  { path: '/capa', component: () => import('../views/CapaList.vue') },
   // 主数据维护只对管理员开放：这些表一改，所有产品的判定口径都跟着变
   { path: '/master-data', component: () => import('../views/MasterData.vue'), meta: { roles: ['ADMIN'] } },
   { path: '/defect-codes', component: () => import('../views/DefectCodeList.vue'), meta: { roles: ['ADMIN'] } },

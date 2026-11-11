@@ -46,7 +46,7 @@
     />
 
     <el-table :data="rows" v-loading="loading" :row-class-name="rowClass">
-      <el-table-column prop="capaNo" label="措施号" width="145">
+      <el-table-column prop="capaNo" label="措施号" width="155">
         <template #default="{ row }">
           <el-link type="primary" @click="openDetail(row)">{{ row.capaNo }}</el-link>
         </template>
@@ -99,6 +99,8 @@
             </el-tooltip>
             <el-button v-else-if="canReview" size="small" type="primary" @click="openVerify(row)">验证</el-button>
             <span v-else class="sub">等审核员验证</span>
+            <!-- 提交后才发现搞错了（问题本身不成立）也得能撤，不能只等验证人判「无效」 -->
+            <el-button v-if="canReview" size="small" type="danger" plain @click="cancel(row)">撤销</el-button>
           </template>
           <span v-else class="sub">—</span>
         </template>
