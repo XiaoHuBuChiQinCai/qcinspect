@@ -29,6 +29,7 @@ spring:
         - classpath:db/V20__login_lock.sql
         - classpath:db/V21__rework.sql
         - classpath:db/V22__msa.sql
+        - classpath:db/V23__capa.sql
       continue-on-error: false
 
 mybatis-plus:

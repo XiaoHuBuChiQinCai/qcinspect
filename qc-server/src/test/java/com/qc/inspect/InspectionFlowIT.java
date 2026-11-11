@@ -671,10 +671,12 @@ class InspectionFlowIT {
         // actionable 只由「要人动手」的几项相加，量具超期不算单据，混进来会让人以为有几十张单没处理。
         // 待检批次算：料躺在厂里没人检，是明确等人去开单的一件事，看不见就等于不存在
         assertThat(num(sum.get("actionable")))
-                .as("角标总数口径：要人动手的几项相加。超期返修票算——说好回来没回来是事故")
+                .as("角标总数口径：要人动手的几项相加。超期返修票与超期措施都算——"
+                        + "说好什么时候做完却没做完，是事故不是状态")
                 .isEqualTo(num(sum.get("pendingReview")) + num(sum.get("pendingDefect"))
                         + num(sum.get("myRejected")) + num(sum.get("pendingBatch"))
-                        + num(sum.get("openComplaint")) + num(sum.get("reworkOverdue")));
+                        + num(sum.get("openComplaint")) + num(sum.get("reworkOverdue"))
+                        + num(sum.get("capaOverdue")));
 
         List<Map<String, Object>> reviews = asList(get("/api/todo/reviews").get("data"));
         assertThat(reviews).extracting(r -> num(r.get("id"))).contains(passIns);
@@ -2366,6 +2368,124 @@ class InspectionFlowIT {
     /** 浮点尾巴会让两边的期望值对不上，读数先定标到 4 位 */
     private static double r4(double v) {
         return Math.round(v * 10000.0) / 10000.0;
+    }
+
+    @Test
+    @Order(38)
+    @DisplayName("纠正措施：没写根因不许提交验证，责任人不能验自己")
+    void capaFlow() {
+        Map<String, Object> me = asMap(data(get("/api/auth/me")));
+        String myName = String.valueOf(me.get("realName"));
+        if (myName == null || myName.isBlank() || "null".equals(myName)) {
+            myName = String.valueOf(me.get("username"));
+        }
+
+        // ---- 建单：只要求说得清问题、有人负责，根因这时候本来就没有 ----
+        Map<String, Object> created = data(post("/api/capa", Map.of(
+                "title", "外径连续 3 批超上限",
+                "problem", "B1/B2/B3 三批各 1 件超上限 0.03",
+                "productId", 1,
+                "defectCode", "OD-001",
+                "owner", "张三",
+                "dueDate", LocalDate.now().plusDays(7).toString())));
+        Long capaId = num(created.get("id"));
+        assertThat(String.valueOf(created.get("capaNo"))).as("单号走 CAPA 前缀").startsWith("CAPA");
+        assertThat(created.get("status")).as("建单不逼人当场编一个根因").isEqualTo("OPEN");
+        assertThat(created.get("statusText")).as("状态文案由服务端下发").isEqualTo("待分析");
+
+        // 标题 / 问题 / 责任人 三样缺一不可
+        assertThat(num(post("/api/capa", Map.of("title", "x", "problem", "y")).get("code")))
+                .as("没责任人要拒").isNotEqualTo(0);
+        assertThat(num(post("/api/capa", Map.of("title", "  ", "problem", "y", "owner", "张三")).get("code")))
+                .as("标题空要拒").isNotEqualTo(0);
+
+        // ---- 待分析直接提交验证 → 拒 ----
+        assertThat(num(post("/api/capa/" + capaId + "/submit-verify", Map.of()).get("code")))
+                .as("还没开始就想提交验证").isNotEqualTo(0);
+
+        // ---- 开始 → 只填根因、不填措施 → 仍然不许提交 ----
+        assertThat(String.valueOf(data(post("/api/capa/" + capaId + "/start", Map.of())).get("status")))
+                .isEqualTo("DOING");
+        data(post("/api/capa/" + capaId + "/analysis", Map.of("rootCause", "夹具定位面磨损")));
+        Map<String, Object> noPlan = post("/api/capa/" + capaId + "/submit-verify", Map.of());
+        assertThat(num(noPlan.get("code"))).as("有根因没措施也不许提交").isNotEqualTo(0);
+        assertThat(String.valueOf(noPlan.get("msg"))).contains("纠正措施");
+
+        // ---- 补齐措施 → 提交验证 ----
+        data(post("/api/capa/" + capaId + "/analysis", Map.of(
+                "rootCause", "夹具定位面磨损，径向跳动 0.06",
+                "actionPlan", "更换夹具定位块，首件复测 3 件",
+                "preventPlan", "其余三台同型号一并检查")));
+        assertThat(String.valueOf(data(post("/api/capa/" + capaId + "/submit-verify", Map.of())).get("status")))
+                .as("根因与措施齐全才进验证").isEqualTo("VERIFYING");
+
+        // ---- 验证必须给有效性，也必须给结论 ----
+        assertThat(num(post("/api/capa/" + capaId + "/verify", Map.of("note", "已改善")).get("code")))
+                .as("不判有效/无效要拒").isNotEqualTo(0);
+        assertThat(num(post("/api/capa/" + capaId + "/verify",
+                Map.of("effective", true, "note", "  ")).get("code")))
+                .as("验证结论不能空").isNotEqualTo(0);
+
+        // ---- 别人来验 → 关闭 ----
+        Map<String, Object> closed = data(post("/api/capa/" + capaId + "/verify",
+                Map.of("effective", true, "note", "连续 5 批未再出现，Cpk 从 0.9 回到 1.4")));
+        assertThat(closed.get("status")).isEqualTo("CLOSED");
+        assertThat(Boolean.TRUE.equals(closed.get("closeEffective"))).isTrue();
+
+        // ---- 关闭是终态：不能重新开始、不能撤销 ----
+        assertThat(num(post("/api/capa/" + capaId + "/start", Map.of()).get("code")))
+                .as("关掉的措施不能重新打开——那会抹掉它上一次「验证有效」的结论").isNotEqualTo(0);
+        assertThat(num(post("/api/capa/" + capaId + "/cancel", Map.of("reason", "不想做了")).get("code")))
+                .as("已关闭不能撤销").isNotEqualTo(0);
+
+        // ---- 责任人就是自己 → 验不了 ----
+        Long selfId = num(data(post("/api/capa", Map.of(
+                "title", "自己跟的一条", "problem", "测试自验拦截", "owner", myName))).get("id"));
+        data(post("/api/capa/" + selfId + "/analysis", Map.of("rootCause", "r", "actionPlan", "a")));
+        data(post("/api/capa/" + selfId + "/submit-verify", Map.of()));
+        Map<String, Object> self = post("/api/capa/" + selfId + "/verify",
+                Map.of("effective", true, "note", "我自己觉得挺有效"));
+        assertThat(num(self.get("code"))).as("自己验自己要拦").isNotEqualTo(0);
+        assertThat(String.valueOf(self.get("msg"))).contains("自己验自己");
+
+        // ---- 判无效：退回措施执行中，closeEffective 留 FALSE ----
+        Long rejId = num(data(post("/api/capa", Map.of(
+                "title", "改了还是犯", "problem", "验证不通过路径", "owner", "李四"))).get("id"));
+        data(post("/api/capa/" + rejId + "/analysis", Map.of("rootCause", "r", "actionPlan", "a")));
+        data(post("/api/capa/" + rejId + "/submit-verify", Map.of()));
+        Map<String, Object> back = data(post("/api/capa/" + rejId + "/verify",
+                Map.of("effective", false, "note", "第 3 批又出现 1 件")));
+        assertThat(back.get("status")).as("判无效要退回继续改，不是关闭").isEqualTo("DOING");
+        assertThat(Boolean.FALSE.equals(back.get("closeEffective"))).isTrue();
+
+        // ---- 再犯检测：同一产品同一不良，关过又来了 ----
+        Map<String, Object> rec = data(get("/api/capa/recurrence?productId=1&defectKey=OD-001"));
+        assertThat(asList(rec.get("closedCapas"))).hasSize(1);
+        assertThat(String.valueOf(rec.get("advice"))).as("关过又犯，要指向「上次打偏了根因」")
+                .contains("打偏了根因");
+
+        // ---- 超期：只算还开着的 ----
+        Long overdueId = num(data(post("/api/capa", Map.of(
+                "title", "早就该改完的", "problem", "超期测试", "owner", "王五",
+                "dueDate", LocalDate.now().minusDays(5).toString()))).get("id"));
+        Map<String, Object> overduePage = data(get("/api/capa/page?overdue=true&size=50"));
+        assertThat(asList(overduePage.get("records")).stream()
+                .anyMatch(r -> overdueId.equals(num(r.get("id"))))).as("超期的要能筛出来").isTrue();
+        assertThat(num(data(get("/api/todo/summary")).get("capaOverdue")))
+                .as("超期措施要进角标").isPositive();
+
+        // ---- 撤销要理由，撤销后不再出现在待验证里 ----
+        assertThat(num(post("/api/capa/" + overdueId + "/cancel", Map.of("reason", " ")).get("code")))
+                .as("撤销理由不能空").isNotEqualTo(0);
+        data(post("/api/capa/" + overdueId + "/cancel", Map.of("reason", "并入 CAPA20261111001，同一次模具问题")));
+        assertThat(String.valueOf(data(get("/api/capa/" + overdueId)).get("status"))).isEqualTo("CANCELLED");
+
+        // ---- 列表带状态文案，明细带再犯提示 ----
+        Map<String, Object> pageData = data(get("/api/capa/page?size=50"));
+        assertThat(asList(pageData.get("records"))).isNotEmpty();
+        assertThat(asList(pageData.get("records")).get(0).get("statusText")).isNotNull();
+        assertThat(data(get("/api/capa/" + capaId)).get("recurrenceNote"))
+                .as("关过的措施详情要能看到同类不良的历史").isNotNull();
     }
 
     /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */

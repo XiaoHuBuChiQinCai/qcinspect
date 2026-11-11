@@ -19,6 +19,9 @@
           <span class="qty">{{ p.qty }}</span>
           <span class="pct">{{ p.percent }}%</span>
           <span class="cum">累计 {{ p.cumulative_percent }}%</span>
+          <!-- 看到柱子的那一刻就该能立措施：帕累托指出问题、这里转成动作，
+               两个页面之间少一次「回头再想想」，那些想法通常就不会再有了 -->
+          <el-link class="act" type="primary" :underline="false" @click="toCapa(p, i)">立措施</el-link>
         </div>
       </div>
     </el-card>
@@ -224,6 +227,24 @@ import http from '../api/http'
 import { checkQty } from '../utils/rework'
 
 const router = useRouter()
+
+/**
+ * 从帕累托直接建措施。
+ *
+ * <p>带上不良标识（没有代码的用名称，和服务端口径一致）和一段问题描述，
+ * 到那边只需要补责任人和期限——把「要记的事」在这边就写完，
+ * 不然人切过去看到一张空表单，八成会关掉。
+ */
+function toCapa(p, index) {
+  router.push({
+    path: '/capa',
+    query: {
+      defectCode: p.code || p.name,
+      title: p.name,
+      problem: `近 90 天累计 ${p.qty} 件，占全部不良的 ${p.percent}%，帕累托第 ${index + 1} 位`
+    }
+  })
+}
 const route = useRoute()
 const rows = ref([])
 const pareto = ref([])
@@ -441,5 +462,6 @@ onMounted(async () => {
 .qty { width: 50px; text-align: right; }
 .pct { width: 60px; text-align: right; font-weight: 600; }
 .cum { width: 100px; color: var(--el-text-color-secondary); }
+.act { width: 56px; text-align: right; }
 :deep(.focus-row) { background: var(--el-color-warning-light-9); }
 </style>

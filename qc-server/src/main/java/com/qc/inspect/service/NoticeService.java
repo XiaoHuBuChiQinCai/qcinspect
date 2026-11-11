@@ -51,6 +51,9 @@ public class NoticeService {
     /** 返修票完工、复检单已生成，下一步是检验员去填实测值 */
     public static final String TYPE_REWORK_DONE = "REWORK_DONE";
 
+    /** 纠正措施：指派给责任人、验证结论（关闭或被打回） */
+    public static final String TYPE_CAPA = "CAPA";
+
     private final QcNoticeMapper noticeMapper;
     private final NoticePushService noticePushService;
 

@@ -7,7 +7,9 @@ import com.qc.inspect.entity.QcDefect;
 import com.qc.inspect.entity.QcGauge;
 import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcReworkOrder;
+import com.qc.inspect.entity.QcCapa;
 import com.qc.inspect.mapper.QcBatchMapper;
+import com.qc.inspect.mapper.QcCapaMapper;
 import com.qc.inspect.mapper.QcComplaintMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcGaugeMapper;
@@ -53,6 +55,7 @@ public class TodoService {
     private final QcBatchMapper batchMapper;
     private final QcComplaintMapper complaintMapper;
     private final QcReworkOrderMapper reworkMapper;
+    private final QcCapaMapper capaMapper;
     private final InspectionViewService viewService;
 
     /** 首页角标 */
@@ -85,6 +88,14 @@ public class TodoService {
         long overdueRework = reworkMapper.selectCount(new LambdaQueryWrapper<QcReworkOrder>()
                 .in(QcReworkOrder::getStatus, QcReworkOrder.STATUS_OPEN, QcReworkOrder.STATUS_DOING)
                 .lt(QcReworkOrder::getDueDate, today));
+        // 纠正措施：还开着的总数、超期的、以及等着人判有没有用的
+        long openCapa = capaMapper.selectCount(new LambdaQueryWrapper<QcCapa>()
+                .in(QcCapa::getStatus, QcCapa.STATUS_OPEN, QcCapa.STATUS_DOING, QcCapa.STATUS_VERIFYING));
+        long overdueCapa = capaMapper.selectCount(new LambdaQueryWrapper<QcCapa>()
+                .in(QcCapa::getStatus, QcCapa.STATUS_OPEN, QcCapa.STATUS_DOING, QcCapa.STATUS_VERIFYING)
+                .lt(QcCapa::getDueDate, today));
+        long capaVerifying = capaMapper.selectCount(new LambdaQueryWrapper<QcCapa>()
+                .eq(QcCapa::getStatus, QcCapa.STATUS_VERIFYING));
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("pendingReview", pendingReview);
@@ -99,9 +110,15 @@ public class TodoService {
         // 这与「量具超期不进行动角标」不同：量具超期是状态，返修超期是事故
         m.put("reworkOpen", openRework);
         m.put("reworkOverdue", overdueRework);
+        // 纠正措施同理：在改的不算（那是责任人的活），超期的是——
+        // 说好两周改完、现在一个月了还没动，等于这件事被忘了。
+        // capaVerifying 单列出来：那是等审核员判有没有用的，不是责任人在拖
+        m.put("capaOpen", openCapa);
+        m.put("capaOverdue", overdueCapa);
+        m.put("capaVerifying", capaVerifying);
         // 角标总数不含量具超期：它不是「单据」，混在一起会让人以为有几十张单没处理
         m.put("actionable", pendingReview + pendingDefect + myRejected + openComplaint + pendingBatch
-                + overdueRework);
+                + overdueRework + overdueCapa);
         return m;
     }
 
