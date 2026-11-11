@@ -2392,6 +2392,9 @@ class InspectionFlowIT {
         assertThat(String.valueOf(created.get("capaNo"))).as("单号走 CAPA 前缀").startsWith("CAPA");
         assertThat(created.get("status")).as("建单不逼人当场编一个根因").isEqualTo("OPEN");
         assertThat(created.get("statusText")).as("状态文案由服务端下发").isEqualTo("待分析");
+        assertThat(String.valueOf(created.get("dueDate")))
+                .as("填了期限就用填的")
+                .isEqualTo(LocalDate.now().plusDays(7).toString());
 
         // 标题 / 问题 / 责任人 三样缺一不可
         assertThat(num(post("/api/capa", Map.of("title", "x", "problem", "y")).get("code")))
@@ -2441,6 +2444,9 @@ class InspectionFlowIT {
         // ---- 责任人就是自己 → 验不了 ----
         Long selfId = num(data(post("/api/capa", Map.of(
                 "title", "自己跟的一条", "problem", "测试自验拦截", "owner", myName))).get("id"));
+        assertThat(String.valueOf(data(get("/api/capa/" + selfId)).get("dueDate")))
+                .as("没填期限要补两周——没期限的措施永远不会超期，等于没人管")
+                .isEqualTo(LocalDate.now().plusDays(14).toString());
         data(post("/api/capa/" + selfId + "/analysis", Map.of("rootCause", "r", "actionPlan", "a")));
         data(post("/api/capa/" + selfId + "/submit-verify", Map.of()));
         Map<String, Object> self = post("/api/capa/" + selfId + "/verify",
@@ -2461,8 +2467,8 @@ class InspectionFlowIT {
         // ---- 再犯检测：同一产品同一不良，关过又来了 ----
         Map<String, Object> rec = data(get("/api/capa/recurrence?productId=1&defectKey=OD-001"));
         assertThat(asList(rec.get("closedCapas"))).hasSize(1);
-        assertThat(String.valueOf(rec.get("advice"))).as("关过又犯，要指向「上次打偏了根因」")
-                .contains("打偏了根因");
+        assertThat(String.valueOf(rec.get("advice"))).as("关过的要能顺着看到，别让人再猜一遍")
+                .contains("关过措施");
 
         // ---- 超期：只算还开着的 ----
         Long overdueId = num(data(post("/api/capa", Map.of(

@@ -127,6 +127,12 @@ public class CapaService {
         req.setPreventPlan(blankToNull(req.getPreventPlan()));
         req.setRemark(blankToNull(req.getRemark()));
 
+        // 没填期限就给两周。留空的后果不是「宽松」而是「永远不会超期」——
+        // 而超期进待办是这块功能能起作用的关键：没有期限的措施，等于没人管
+        if (req.getDueDate() == null) {
+            req.setDueDate(CapaRules.defaultDueDate(LocalDate.now()));
+        }
+
         // 已经写了根因和措施，就不再要求他再去点一次「开始处理」——那只是形式
         boolean started = req.getRootCause() != null && req.getActionPlan() != null;
         req.setStatus(started ? QcCapa.STATUS_DOING : QcCapa.STATUS_OPEN);
@@ -329,9 +335,16 @@ public class CapaService {
         out.put("closedCapas", closedList);
 
         String advice;
-        if (anyEffective) {
-            advice = "这条不良以前关过措施、还判过「验证有效」，现在又出现——说明当时打偏了根因。"
-                    + "这次别再照着上一套做一遍，先看看它到底在什么条件下才发生";
+        if (anyEffective && occ > 0) {
+            advice = "这条不良以前关过措施、还判过「验证有效」，最近 " + HISTORY_DAYS + " 天又出现了 "
+                    + occ + " 次——说明当时打偏了根因。这次别再照着上一套做一遍，"
+                    + "先看看它到底在什么条件下才发生";
+        } else if (anyEffective) {
+            // 关过措施、但窗口内确实没再出现。这时候说「又来了」是冤枉它——
+            // 数据要说的和话要说的必须一致，否则人会开始不信这些提示
+            advice = "这条不良以前关过措施（" + closed.get(0).getCapaNo() + "），最近 " + HISTORY_DAYS
+                    + " 天没再出现。如果这次要另开一条，先看看上次那条为什么不够——"
+                    + "是根因偏了，还是当时的措施只改了那一台设备";
         } else if (occ >= 3 && batches >= 2) {
             advice = "最近 " + HISTORY_DAYS + " 天出现 " + occ + " 次、涉及 " + batches
                     + " 个批次。跨批次反复，说明不是某一批的偶发问题，值得查根因";
