@@ -121,8 +121,10 @@
   </el-card>
 
   <!-- ---------------- 新建 ---------------- -->
-  <el-dialog v-model="createDlg.visible" title="新建纠正预防措施" width="560px">
-    <el-form label-width="100px">
+  <el-dialog v-model="createDlg.visible" title="新建纠正预防措施" width="560px" top="6vh">
+    <!-- 内容比一屏高的时候，滚的必须是表单区而不是整个弹窗——
+         否则「建立」按钮被推到视口外面，1280×700 的笔记本上根本够不着 -->
+    <el-form label-width="100px" class="dlg-form">
       <el-form-item label="标题" required>
         <el-input v-model="createDlg.title" maxlength="200" show-word-limit
                   placeholder="一句话说清是什么毛病，如「法兰外径连续 3 批超上限」" />
@@ -172,8 +174,8 @@
   </el-dialog>
 
   <!-- ---------------- 填根因与措施 ---------------- -->
-  <el-dialog v-model="analysisDlg.visible" title="根因与措施" width="620px">
-    <el-form label-width="96px">
+  <el-dialog v-model="analysisDlg.visible" title="根因与措施" width="620px" top="8vh">
+    <el-form label-width="96px" class="dlg-form">
       <el-form-item label="措施号">
         <span>{{ analysisDlg.row?.capaNo }}</span>
         <span class="sub ml">{{ analysisDlg.row?.title }}</span>
@@ -198,8 +200,8 @@
   </el-dialog>
 
   <!-- ---------------- 验证 ---------------- -->
-  <el-dialog v-model="verifyDlg.visible" title="验证措施有没有用" width="560px">
-    <el-form label-width="96px">
+  <el-dialog v-model="verifyDlg.visible" title="验证措施有没有用" width="560px" top="8vh">
+    <el-form label-width="96px" class="dlg-form">
       <el-form-item label="措施号">
         <span>{{ verifyDlg.row?.capaNo }}</span>
         <span class="sub ml">{{ verifyDlg.row?.title }}</span>
@@ -646,6 +648,7 @@ onMounted(async () => {
 .count { font-size: 13px; color: var(--el-text-color-secondary); }
 .spacer { flex: 1; }
 .pager { display: flex; justify-content: flex-end; margin-top: 16px; }
+.dlg-form { max-height: 62vh; overflow-y: auto; padding-right: 8px; }
 .sub { font-size: 12px; color: var(--el-text-color-secondary); margin-top: 2px; }
 .ml { margin-left: 10px; }
 .danger { color: var(--el-color-danger); }
