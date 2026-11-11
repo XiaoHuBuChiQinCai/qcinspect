@@ -23,14 +23,14 @@
     <view v-if="canReview" class="tabs">
       <view :class="['tab', seg === 'mine' ? 'on' : '']" @click="switchSeg('mine')">我负责的</view>
       <view :class="['tab', seg === 'wait' ? 'on' : '']" @click="switchSeg('wait')">
-        待验证<text v-if="counts.verifying"> · {{ counts.verifying }}</text>
+        待验证<text v-if="counts.forMe"> · {{ counts.forMe }}</text>
       </view>
     </view>
 
     <view v-if="!rows.length && !loading" class="empty">
-      {{ seg === 'mine'
-        ? '手上没有开着的措施。措施在电脑上立，立完这里就能看到。'
-        : '没有等着验证的措施。' }}
+      {{ seg === 'wait'
+        ? '没有等你验证的措施。自己负责的那些在「我负责的」里，要由别人来验。'
+        : '手上没有开着的措施。措施在电脑上立，立完这里就能看到。' }}
     </view>
 
     <view v-for="r in rows" :key="r.id" :class="['card', r.overdue ? 'late' : '']">
@@ -40,7 +40,9 @@
       </view>
 
       <view class="name">{{ r.title }}</view>
-      <view class="sub">{{ r.productName || '—' }}<text v-if="r.defectCode"> · {{ r.defectCode }}</text></view>
+      <view v-if="r.productName || r.defectCode" class="sub">
+        {{ r.productName || '—' }}<text v-if="r.defectCode"> · {{ r.defectCode }}</text>
+      </view>
 
       <view v-if="r.problem" class="problem">{{ r.problem }}</view>
 
@@ -55,6 +57,9 @@
       </view>
       <view v-if="r.actionPlan" class="quote">
         <text class="quote-lab">措施</text>{{ r.actionPlan }}
+      </view>
+      <view v-if="r.preventPlan" class="quote keep">
+        <text class="quote-lab">预防</text>{{ r.preventPlan }}
       </view>
       <view v-if="r.verifyNote" :class="['quote', r.closeEffective ? 'ok' : 'back']">
         <text class="quote-lab">{{ r.closeEffective ? '验证' : '退回' }}</text>{{ r.verifyNote }}
@@ -164,9 +169,11 @@ const rows = computed(() => (seg.value === 'mine' ? mine.value : waiting.value))
 const counts = computed(() => ({
   mine: mine.value.filter(r => isOpen(r.status)).length,
   overdue: mine.value.filter(r => r.overdue).length,
-  // 自己提交的也算「待验证」：对责任人来说它确实还悬着，只是判的人不是他。
-  // waiting 里已经排掉了自己的，所以两边不会重复计
-  verifying: waiting.value.length + mine.value.filter(r => r.status === 'VERIFYING').length
+  // 摘要里的「待验证」是全部待验证（含自己提交的）：对责任人来说它确实还悬着。
+  // 页签上的数字是「等我验证」——两者口径不同，所以分开算，否则页签写着 2、
+  // 点进去却是空的，看着像坏了
+  verifying: waiting.value.length + mine.value.filter(r => r.status === 'VERIFYING').length,
+  forMe: waiting.value.length
 }))
 
 const dlg = reactive({ show: false, row: null, rootCause: '', actionPlan: '', preventPlan: '', saving: false })
@@ -322,6 +329,8 @@ onShow(load)
 }
 .quote.ok { background: #eef8f0; color: #2e7d32; }
 .quote.back { background: #fdf0ec; color: #c45656; }
+/* 预防措施是改制度/文件那一类，和「这批件怎么处理」不是一回事，颜色分开 */
+.quote.keep { background: #eef4fb; color: #2b5c8a; }
 .quote-lab { font-weight: 600; margin-right: 10rpx; }
 
 .tag { font-size: 22rpx; padding: 4rpx 14rpx; border-radius: 20rpx; background: #f2f6fa; color: #5a6b7b; }
