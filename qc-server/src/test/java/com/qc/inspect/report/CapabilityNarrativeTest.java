@@ -175,6 +175,29 @@ class CapabilityNarrativeTest {
     }
 
     @Test
+    @DisplayName("够样本却算不出 Cpk：指向量具分辨力，而不是含糊说「样本不足」")
+    void flatReadingsPointAtGauge() {
+        String text = join(CapabilityNarrative.build(
+                List.of(item("a · 硬度", 30, null), item("a · 外径", 40, 1.60)), 0));
+
+        assertThat(text).contains("实测值没有波动").contains("分辨力");
+        assertThat(text).as("样本已经够了，再说是样本不足就把人指向了错的地方")
+                .doesNotContain("本月样本不足");
+        assertThat(text).as("样本不足那句也不该出现 30 这个数").doesNotContain("不到 25 个");
+    }
+
+    @Test
+    @DisplayName("样本不足与没有波动同时在，两句都要说，且都不进判档分母")
+    void fewAndFlatCoexist() {
+        String text = join(CapabilityNarrative.build(
+                List.of(item("a · 硬度", 30, null), item("a · 壁厚", 6, 1.10), item("a · 外径", 40, 1.20)), 0));
+
+        assertThat(text).contains("本月 1 个特性够样本可判过程能力").as("只有够样本且算得出 Cpk 的才进分母")
+                .contains("另有 1 项本月样本不足")
+                .contains("有 1 项够样本却算不出 Cpk");
+    }
+
+    @Test
     @DisplayName("不足项超过三项时收口成「等 N 项」，一句话塞八个名字没人读")
     void longListIsTruncated() {
         List<CapabilityNarrative.Item> items = List.of(

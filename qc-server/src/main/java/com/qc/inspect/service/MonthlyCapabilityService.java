@@ -106,10 +106,10 @@ public class MonthlyCapabilityService {
             row.put("enoughSamples", enough);
             rows.add(row);
 
-            if (now.cpk() != null) {
-                forNarrative.add(new CapabilityNarrative.Item(label, now.n(), round(now.cpk()),
-                        prevCpk, before == null ? 0 : before.n()));
-            }
+            // cpk 可能为 null（实测值没有波动），也要进结论：那是一个要人去查量具的信号，
+            // 不是「这项没事」
+            forNarrative.add(new CapabilityNarrative.Item(label, now.n(), round(now.cpk()),
+                    prevCpk, before == null ? 0 : before.n()));
         }
 
         // 最差的排最前：月报是给人挑毛病用的，不按字母序
@@ -118,7 +118,7 @@ public class MonthlyCapabilityService {
                 .thenComparing(r -> r.get("cpk") == null ? 0.0 : (Double) r.get("cpk")));
 
         List<CapabilityNarrative.Item> usable = forNarrative.stream()
-                .filter(i -> i.n() >= CapabilityMath.MIN_SAMPLE).toList();
+                .filter(i -> i.n() >= CapabilityMath.MIN_SAMPLE && i.cpk() != null).toList();
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("rows", rows);
@@ -127,7 +127,9 @@ public class MonthlyCapabilityService {
         data.put("insufficient", usable.stream().filter(i -> i.cpk() < 1.00).count());
         data.put("marginal", usable.stream().filter(i -> i.cpk() >= 1.00 && i.cpk() < 1.33).count());
         data.put("slipping", usable.stream().filter(CapabilityNarrative::isSlipping).count());
-        data.put("fewSamples", forNarrative.size() - usable.size());
+        // 判不了的项数：样本不足 + 够样本却没有波动。两个原因不同，但都是「这项没有结论」，
+        // 摘要里合成一个数，具体原因结论句里分开讲
+        data.put("fewSamples", rows.size() - usable.size());
         data.put("specChanged", specChanged);
         data.put("minSample", CapabilityMath.MIN_SAMPLE);
         data.put("slipThreshold", CapabilityNarrative.SLIP);

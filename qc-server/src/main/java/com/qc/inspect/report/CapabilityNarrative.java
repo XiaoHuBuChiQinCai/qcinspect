@@ -48,23 +48,28 @@ public final class CapabilityNarrative {
         }
 
         List<Item> usable = new ArrayList<>();
-        List<Item> few = new ArrayList<>();
+        List<Item> few = new ArrayList<>();     // 样本不够，算出来的数只能当个大概
+        List<Item> flat = new ArrayList<>();    // 样本够了，但实测值没有波动，σ̂ = 0
         for (Item it : items) {
-            if (it.cpk() == null) {
-                // 连单边规格都没有的项算不出 Cpk，按「判不了」处理，别混进分母
+            if (it.n() < CapabilityMath.MIN_SAMPLE) {
                 few.add(it);
-            } else if (it.n() < CapabilityMath.MIN_SAMPLE) {
-                few.add(it);
+            } else if (it.cpk() == null) {
+                flat.add(it);
             } else {
                 usable.add(it);
             }
         }
 
         if (usable.isEmpty()) {
-            int most = items.stream().mapToInt(Item::n).max().orElse(0);
-            out.add("本月 " + items.size() + " 项特性都设了规格限，但样本最多的也只有 " + most
-                    + " 个，不到 " + CapabilityMath.MIN_SAMPLE + " 个。本月不判过程能力——"
-                    + "样本少的时候标准差自己就在抖，算出来的 Cpk 是噪声不是结论。");
+            if (!few.isEmpty()) {
+                int most = items.stream().mapToInt(Item::n).max().orElse(0);
+                out.add("本月 " + items.size() + " 项特性都设了规格限，但样本最多的也只有 " + most
+                        + " 个，不到 " + CapabilityMath.MIN_SAMPLE + " 个。本月不判过程能力——"
+                        + "样本少的时候标准差自己就在抖，算出来的 Cpk 是噪声不是结论。");
+            }
+            if (!flat.isEmpty()) {
+                out.add(flatSentence(flat.size()));
+            }
             return out;
         }
 
@@ -123,12 +128,29 @@ public final class CapabilityNarrative {
                     + " 个，本月不判能力。样本太少时 Cpk 的抖动比你要看的变化还大，"
                     + "拿它下结论只会误伤——要评就多抽几件再说。");
         }
+        if (!flat.isEmpty()) {
+            out.add(flatSentence(flat.size()));
+        }
         if (specChanged > 0) {
             out.add("有 " + specChanged + " 项的规格限在这两个月之间变过，环比不比："
                     + "两边的分母不是同一道公差，比出来的差值说明不了任何事。");
         }
 
         return out;
+    }
+
+    /**
+     * 够样本却算不出 Cpk：实测值一模一样，σ̂ = 0。
+     *
+     * <p>这一条不能并进「样本不足」里——样本已经够了，问题在读数本身。而且
+     * 「每次读出来都一样」和「过程稳得住」在数据上长得一模一样，含义却相反：
+     * 前者更可能是量具分辨力不够（分度值 0.05 的卡尺读 6.02 / 6.03 / 6.04 永远只给两个数），
+     * 或者读数根本没测、直接抄了上一个。
+     */
+    private static String flatSentence(int count) {
+        return "有 " + count + " 项够样本却算不出 Cpk：实测值没有波动，标准差为 0。"
+                + "先确认量具的分辨力够不够（分度值 0.05 的卡尺测不出 0.01 的差异）、"
+                + "读数是不是抄的前一个——「读出来都一样」和「过程很稳」在数据上长得一样，含义正好相反。";
     }
 
     /** 环比是否算「明显下滑」。任一期样本不足就是不可比，不能拿噪声当趋势 */

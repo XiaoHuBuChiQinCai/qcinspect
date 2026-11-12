@@ -170,8 +170,8 @@
           本月可判 <b>{{ cap.judged }}</b> 项特性：能力不足
           <b :class="{ bad: cap.insufficient > 0 }">{{ cap.insufficient }}</b> 项、
           比上月明显下滑 <b :class="{ warn2: cap.slipping > 0 }">{{ cap.slipping }}</b> 项
-          （掉 {{ slipThreshold }} 以上才计）、样本不足暂不判
-          <b>{{ cap.fewSamples }}</b> 项。
+          （掉 {{ slipThreshold }} 以上才计）；另有
+          <b>{{ cap.fewSamples }}</b> 项本月判不了（样本不足，或读数没有波动）。
         </div>
         <el-table :data="capRows" size="small" border>
           <el-table-column prop="label" label="产品 · 检验项" min-width="190" />
@@ -185,7 +185,8 @@
           </el-table-column>
           <el-table-column label="本月 Cpk" width="95" align="right">
             <template #default="{ row }">
-              <span :class="cpkClass(row)">{{ cpkText(row.cpk) }}</span>
+              <!-- 样本不足的数置灰：4 个样本算出来的 2.07 看着像好消息，其实什么都不是 -->
+              <span :class="row.enoughSamples ? cpkClass(row) : 'muted'">{{ cpkText(row.cpk) }}</span>
             </template>
           </el-table-column>
           <el-table-column label="上月 Cpk" width="95" align="right">
