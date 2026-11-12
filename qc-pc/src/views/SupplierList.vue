@@ -153,6 +153,14 @@
           </el-table>
           <el-empty v-else description="这段时间没有不良记录" :image-size="52" />
 
+          <!-- 这条不写的话，「受检 5 件、不良 14 件」看着就像算错了 -->
+          <div v-if="prof.defectQty > prof.totals.pieceTotal" class="prof-note">
+            不良件数（{{ prof.defectQty }}）大于受检件数（{{ prof.totals.pieceTotal }}）不是算错：
+            不良按「不良项」累计，同一件工件同时有外径和硬度两个问题会各记一次。
+            这里的占比就是按这个口径分的——它回答的是「问题都出在哪一类」，
+            不是「坏了多少件」。
+          </div>
+
           <div class="prof-foot">
             只统计已提交 / 已关闭的检验单。批次建立时没挂 supplier_id 的不会进这张画像——
             数据缺口的常见原因就是这个，而不是这家厂真的没问题。
@@ -428,6 +436,16 @@ onMounted(load)
 .pairs div:last-child { border-bottom: none; }
 .pairs span { color: #606266; }
 .sec { margin: 20px 0 8px; font-size: 13px; font-weight: 600; color: #303133; }
+.prof-note {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fdf6ec;
+  border-left: 3px solid #e6a23c;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #8a6d3b;
+  line-height: 1.7;
+}
 .prof-foot {
   margin-top: 20px;
   padding-top: 10px;
