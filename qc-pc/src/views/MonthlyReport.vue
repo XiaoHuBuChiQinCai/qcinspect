@@ -166,12 +166,19 @@
            这一段是月报里唯一能提前一个月的信号——Cpk 在往下走，不良还没来 -->
       <h2>七、过程能力（月度 Cpk）</h2>
       <template v-if="cap.hasData">
+        <!-- 一项都判不了时只报「判不了」，别写成「能力不足 0 项、下滑 0 项」——
+             一串 0 会让人以为看过了、没问题 -->
         <div class="sub-title">
-          本月可判 <b>{{ cap.judged }}</b> 项特性：能力不足
-          <b :class="{ bad: cap.insufficient > 0 }">{{ cap.insufficient }}</b> 项、
-          比上月明显下滑 <b :class="{ warn2: cap.slipping > 0 }">{{ cap.slipping }}</b> 项
-          （掉 {{ slipThreshold }} 以上才计）；另有
-          <b>{{ cap.fewSamples }}</b> 项本月判不了（样本不足，或读数没有波动）。
+          <template v-if="cap.judged > 0">
+            本月可判 <b>{{ cap.judged }}</b> 项特性：能力不足
+            <b :class="{ bad: cap.insufficient > 0 }">{{ cap.insufficient }}</b> 项、
+            比上月明显下滑 <b :class="{ warn2: cap.slipping > 0 }">{{ cap.slipping }}</b> 项（掉 {{ slipThreshold }} 以上才计）；
+            另有 <b>{{ cap.fewSamples }}</b> 项本月判不了。
+          </template>
+          <template v-else>
+            本月 <b>{{ capRows.length }}</b> 项特性都判不了（样本不足，或读数没有波动）。
+            这一节只把待补的项摆出来，不下结论。
+          </template>
         </div>
         <el-table :data="capRows" size="small" border>
           <el-table-column prop="label" label="产品 · 检验项" min-width="190" />
