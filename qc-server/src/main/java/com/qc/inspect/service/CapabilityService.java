@@ -4,18 +4,20 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.mapper.QcInspectionLineMapper;
+import com.qc.inspect.spc.CapabilityMath;
 import com.qc.inspect.spc.ControlRules;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -25,29 +27,17 @@ import java.util.Set;
  * 数据贴着规格限边缘走和稳稳压在中线，后续批次的翻车概率差一个数量级——
  * 而这正是 Cp/Cpk 要量化的东西。
  *
- * <h3>为什么 Cp/Cpk 和 Pp/Ppk 分开算</h3>
- * <p>Cp/Cpk 用的是<strong>组内变异</strong> σ̂（由移动极差 MR̄ ÷ d2 = MR̄ ÷ 1.128 估计），
- * 只看同一张检验单内部相邻测量的抖动，把「批与批之间的漂移」排除在外；
- * Pp/Ppk 用<strong>整体标准差</strong> s，把全部变异都算进去。
- * 所以人机料法都没变、只是批次之间有漂移时，会出现 Cp 好看而 Pp 难看的组合——
- * 那不是算错，那是在提示「工序能力够，但没控住」。
- *
- * <h3>为什么不剔除超规值</h3>
- * <p>把超规点剔掉再算 Cpk，等于自己给自己发合格证。过程能力分析的全部意义就是
- * 把「过程在往外飘」这件事摆到台面上，所以超规值一律计入，并单独报个数。
+ * <p>统计与判档本身在 {@link CapabilityMath}——月报的月度能力用的是同一份，
+ * 否则同一个特性在 SPC 页和月报上会算出两个 Cpk，然后没人解释得清差在哪。
+ * 这里只管取数、拼直方图与控制图、以及给人看的提示。
  */
 @Service
 @RequiredArgsConstructor
 public class CapabilityService {
 
-    /** 移动极差法的 d2 常数：子组容量 n=2 时 d2 = 1.128 */
-    private static final double D2 = 1.128;
-    /** 单值控制图上下限系数 E2 = 3 / d2 ≈ 2.66 */
-    private static final double E2 = 3.0 / D2;
-    /** 移动极差图上限系数 D4（n=2） = 3.267 */
-    private static final double D4 = 3.267;
-    /** 样本量下限。低于这个数算出来的 Cpk 是噪声，不是结论 */
-    private static final int MIN_SAMPLE = 25;
+    /** 业务时区固定 +08:00：容器默认 UTC，「今天」在早 8 点前会取到昨天 */
+    private static final ZoneOffset BIZ_OFFSET = ZoneOffset.ofHours(8);
+    private static final ZoneId BIZ_ZONE = ZoneId.of("+08:00");
 
     private final QcInspectionLineMapper lineMapper;
     private final ObjectMapper objectMapper;
@@ -75,175 +65,79 @@ public class CapabilityService {
         if (productId == null || itemId == null) {
             throw BizException.of("请选择要分析的产品和检验项");
         }
-        LocalDate end = to == null ? LocalDate.now() : to;
+        LocalDate end = to == null ? LocalDate.now(BIZ_ZONE) : to;
         LocalDate begin = from == null ? end.minusDays(90) : from;
         if (begin.isAfter(end)) {
             throw BizException.of("开始日期不能晚于结束日期");
         }
 
-        List<Map<String, Object>> rows = lineMapper.capabilitySamples(
-                productId, itemId, begin.atStartOfDay(), end.plusDays(1).atStartOfDay());
-        if (rows.isEmpty()) {
+        Sample sp = prepare(productId, itemId, begin, end);
+        if (sp.inspectionCount() == 0) {
             throw BizException.of("该区间内没有可分析的实测值。过程能力只统计已提交/已归档的单据，"
                     + "草稿和作废单不计入");
         }
-
-        // ---- 1. 摊平实测值，同时保留「属于哪张单」用来算组内移动极差 ----
-        List<Double> all = new ArrayList<>();
-        List<Moves> moves = new ArrayList<>();       // 每条移动极差：值 + 起点信息
-        Map<Long, Double> prevInInspection = new LinkedHashMap<>();
-        Set<String> specPairs = new LinkedHashSet<>();
-        BigDecimal lastMin = null;
-        BigDecimal lastMax = null;
-        String itemCode = null;
-        String itemName = null;
-        String unit = null;
-
-        for (Map<String, Object> row : rows) {
-            List<Double> values = parseValues(asString(row.get("measured_values")));
-            if (values.isEmpty()) {
-                continue;
-            }
-            Long insId = asLong(row.get("inspection_id"));
-            Integer pieceNo = asInt(row.get("piece_no"));
-            itemCode = itemCode == null ? asString(row.get("item_code")) : itemCode;
-            itemName = itemName == null ? asString(row.get("item_name")) : itemName;
-            unit = unit == null ? asString(row.get("unit")) : unit;
-
-            BigDecimal mn = asDecimal(row.get("min_value"));
-            BigDecimal mx = asDecimal(row.get("max_value"));
-            // 规格按「最后一次测量时的快照」为准：行是按检验单 id 升序来的，最后一行最新
-            if (mn != null || mx != null) {
-                specPairs.add((mn == null ? "" : mn.toPlainString()) + "|" + (mx == null ? "" : mx.toPlainString()));
-                lastMin = mn;
-                lastMax = mx;
-            }
-
-            for (int i = 0; i < values.size(); i++) {
-                double v = values.get(i);
-                all.add(v);
-                Double prev = prevInInspection.get(insId);
-                if (prev != null) {
-                    moves.add(new Moves(Math.abs(v - prev), insId, pieceNo, i + 1, v));
-                }
-                prevInInspection.put(insId, v);
-            }
-        }
-
-        if (all.size() < 2) {
+        if (sp.values().size() < 2) {
             throw BizException.of("实测值不足 2 个，算不出标准差。至少要有 2 个测量值才能做过程能力分析");
         }
 
-        // ---- 2. 基础统计量 ----
-        int n = all.size();
-        double sum = 0;
-        for (double v : all) {
-            sum += v;
+        List<Double> values = sp.values();
+        CapabilityMath.Result calc = CapabilityMath.compute(
+                values, sp.meanMr(), sp.hasMoves(), sp.lsl(), sp.usl());
+        if (calc == null) {
+            // 上面已经拦过 size<2，走到这里说明 CapabilityMath 的入参契约变了
+            throw BizException.of("实测值不足 2 个，算不出标准差");
         }
-        double mean = sum / n;
 
-        double ss = 0;
-        for (double v : all) {
-            ss += (v - mean) * (v - mean);
-        }
-        double sOverall = Math.sqrt(ss / (n - 1));
-
-        double meanMr = 0;
-        for (Moves m : moves) {
-            meanMr += m.value();
-        }
-        meanMr = moves.isEmpty() ? 0 : meanMr / moves.size();
-        // 一张单只测了一个点时没有移动极差，退回用整体标准差估 σ̂，并在提示里说清楚
-        boolean mrFallback = moves.isEmpty();
-        double sigmaWithin = mrFallback ? sOverall : meanMr / D2;
-
-        Double lsl = lastMin == null ? null : lastMin.doubleValue();
-        Double usl = lastMax == null ? null : lastMax.doubleValue();
-
-        // ---- 3. 能力指数 ----
-        Double cp = (lsl == null || usl == null) ? null : ratio(usl - lsl, 6 * sigmaWithin);
-        Double pp = (lsl == null || usl == null) ? null : ratio(usl - lsl, 6 * sOverall);
-
-        double lo = lsl == null ? Double.NEGATIVE_INFINITY : mean - lsl;
-        double hi = usl == null ? Double.NEGATIVE_INFINITY : usl - mean;
-        double half = Math.min(lo, hi);   // 只有单边规格时，另一边是 -∞，min 自然取到有边的那侧
-        Double cpk = half == Double.NEGATIVE_INFINITY ? null : ratio(half, 3 * sigmaWithin);
-        Double ppk = half == Double.NEGATIVE_INFINITY ? null : ratio(half, 3 * sOverall);
-
-        // ---- 4. 超规与直方图 ----
-        int outOfSpec = 0;
         double minV = Double.MAX_VALUE;
         double maxV = -Double.MAX_VALUE;
-        for (double v : all) {
-            if ((lsl != null && v < lsl) || (usl != null && v > usl)) {
-                outOfSpec++;
-            }
+        for (double v : values) {
             minV = Math.min(minV, v);
             maxV = Math.max(maxV, v);
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("productId", productId);
-        result.put("productName", asString(rows.get(0).get("product_name")));
+        result.put("productName", sp.productName());
         result.put("itemId", itemId);
-        result.put("itemCode", itemCode);
-        result.put("itemName", itemName);
-        result.put("unit", unit);
+        result.put("itemCode", sp.itemCode());
+        result.put("itemName", sp.itemName());
+        result.put("unit", sp.unit());
         result.put("from", begin.toString());
         result.put("to", end.toString());
-        result.put("inspectionCount", prevInInspection.size());
+        result.put("inspectionCount", sp.inspectionCount());
 
-        result.put("n", n);
-        result.put("lsl", lsl);
-        result.put("usl", usl);
-        result.put("mean", r(mean, 4));
-        result.put("stdOverall", r(sOverall, 6));
-        result.put("stdWithin", r(sigmaWithin, 6));
-        result.put("meanMr", r(meanMr, 6));
-        result.put("dataMin", r(minV, 4));
-        result.put("dataMax", r(maxV, 4));
+        result.put("n", calc.n());
+        result.put("lsl", sp.lsl());
+        result.put("usl", sp.usl());
+        result.put("mean", CapabilityMath.round(calc.mean(), 4));
+        result.put("stdOverall", CapabilityMath.round(calc.sigmaOverall(), 6));
+        result.put("stdWithin", CapabilityMath.round(calc.sigmaWithin(), 6));
+        result.put("meanMr", CapabilityMath.round(sp.meanMr(), 6));
+        result.put("dataMin", CapabilityMath.round(minV, 4));
+        result.put("dataMax", CapabilityMath.round(maxV, 4));
 
-        result.put("cp", r(cp));
-        result.put("cpk", r(cpk));
-        result.put("pp", r(pp));
-        result.put("ppk", r(ppk));
+        result.put("cp", r(calc.cp()));
+        result.put("cpk", r(calc.cpk()));
+        result.put("pp", r(calc.pp()));
+        result.put("ppk", r(calc.ppk()));
 
-        result.put("outOfSpec", outOfSpec);
-        result.put("outOfSpecRate", r(outOfSpec * 100.0 / n, 2));
+        result.put("outOfSpec", calc.outOfSpec());
+        result.put("outOfSpecRate", CapabilityMath.round(calc.outOfSpec() * 100.0 / calc.n(), 2));
 
-        // ---- 5. 判定 ----
-        Double judgeOn = cpk != null ? cpk : ppk;
-        String verdict;
-        String verdictText;
-        if (judgeOn == null) {
-            verdict = "UNKNOWN";
-            verdictText = "无法判定";
-        } else if (judgeOn >= 1.67) {
-            verdict = "EXCELLENT";
-            verdictText = "过程能力优秀";
-        } else if (judgeOn >= 1.33) {
-            verdict = "SUFFICIENT";
-            verdictText = "过程能力充足";
-        } else if (judgeOn >= 1.00) {
-            verdict = "MARGINAL";
-            verdictText = "过程能力勉强";
-        } else {
-            verdict = "INSUFFICIENT";
-            verdictText = "过程能力不足";
-        }
-        result.put("verdict", verdict);
-        result.put("verdictText", verdictText);
+        result.put("verdict", calc.verdict());
+        result.put("verdictText", calc.verdictText());
 
-        // ---- 6. 直方图与 I-MR 控制图 ----
-        result.put("histogram", histogram(all, minV, maxV, lsl, usl, mean));
+        // ---- 直方图与 I-MR 控制图 ----
+        result.put("histogram", histogram(values, minV, maxV, sp.lsl(), sp.usl(), calc.mean()));
 
-        Map<String, Object> chart = controlChart(all, moves, mean, meanMr, mrFallback);
+        Map<String, Object> chart = controlChart(values, sp.mrValues(), calc.mean(),
+                sp.meanMr(), !sp.hasMoves());
         /*
          * 判异。控制图只画不判等于没画：一条连续 9 点偏在中心线上侧的曲线，
          * 看上去和正常曲线一样，只有真超出控制限才有人注意到——那时候批量不良已经做出来了。
          * σ̂ 与画控制限用的是同一个（meanMr/D2），否则会出现「点在限外却说无异常」。
          */
-        ControlRules.Report rules = ControlRules.check(all, mean, sigmaWithin);
+        ControlRules.Report rules = ControlRules.check(values, calc.mean(), calc.sigmaWithin());
         List<Map<String, Object>> alarms = new ArrayList<>();
         for (ControlRules.Alarm a : rules.alarms()) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -261,7 +155,8 @@ public class CapabilityService {
         chart.put("verdictText", rules.verdictText());
         result.put("controlChart", chart);
 
-        List<String> noteList = notes(n, lsl, usl, specPairs.size() > 1, mrFallback, outOfSpec, verdict);
+        List<String> noteList = notes(calc.n(), sp.lsl(), sp.usl(), sp.specChanged(),
+                !sp.hasMoves(), calc.outOfSpec(), calc.verdict());
         if (!alarms.isEmpty()) {
             noteList.add("控制图判出 " + alarms.size() + " 类异常排列。这些点不一定超规格，"
                     + "但过程已经不在统计掌控内：先按标红的位置回去查那几张单，再决定要不要停线");
@@ -272,25 +167,107 @@ public class CapabilityService {
     }
 
     /**
+     * 取区间内的样本，并把「同一条检验单内部相邻测量」的移动极差一并算好。
+     *
+     * <p>月报的月度能力也走这里：窗口不同（那边是一个自然月），但「怎么取数、怎么摊平、
+     * 怎么算移动极差、规格按哪一次快照」必须只有一套实现。
+     *
+     * @param from 闭区间起点（含）
+     * @param to   闭区间终点（含）；内部按 +08:00 扩到次日零点
+     */
+    public Sample prepare(Long productId, Long itemId, LocalDate from, LocalDate to) {
+        List<Map<String, Object>> rows = lineMapper.capabilitySamples(
+                productId, itemId,
+                from.atStartOfDay().atOffset(BIZ_OFFSET),
+                to.plusDays(1).atStartOfDay().atOffset(BIZ_OFFSET));
+
+        List<Double> values = new ArrayList<>();
+        List<Double> mrValues = new ArrayList<>();
+        Map<Long, Double> prevInInspection = new LinkedHashMap<>();
+        Set<String> specPairs = new LinkedHashSet<>();
+        BigDecimal lastMin = null;
+        BigDecimal lastMax = null;
+        String productName = null;
+        String itemCode = null;
+        String itemName = null;
+        String unit = null;
+
+        for (Map<String, Object> row : rows) {
+            List<Double> one = parseValues(asString(row.get("measured_values")));
+            if (one.isEmpty()) {
+                continue;
+            }
+            Long insId = asLong(row.get("inspection_id"));
+            productName = productName == null ? asString(row.get("product_name")) : productName;
+            itemCode = itemCode == null ? asString(row.get("item_code")) : itemCode;
+            itemName = itemName == null ? asString(row.get("item_name")) : itemName;
+            unit = unit == null ? asString(row.get("unit")) : unit;
+
+            BigDecimal mn = asDecimal(row.get("min_value"));
+            BigDecimal mx = asDecimal(row.get("max_value"));
+            // 规格按「最后一次测量时的快照」为准：行是按检验单 id 升序来的，最后一行最新
+            if (mn != null || mx != null) {
+                specPairs.add((mn == null ? "" : mn.toPlainString()) + "|" + (mx == null ? "" : mx.toPlainString()));
+                lastMin = mn;
+                lastMax = mx;
+            }
+
+            // 移动极差只在同一张单内部算：跨单相减得到的是「两批之间的漂移」，
+            // 混进 σ̂ 会把组内变异算大、Cpk 算小
+            for (double v : one) {
+                Double prev = prevInInspection.get(insId);
+                if (prev != null) {
+                    mrValues.add(Math.abs(v - prev));
+                }
+                prevInInspection.put(insId, v);
+                values.add(v);
+            }
+        }
+
+        double meanMr = 0;
+        for (double mr : mrValues) {
+            meanMr += mr;
+        }
+        meanMr = mrValues.isEmpty() ? 0 : meanMr / mrValues.size();
+
+        return new Sample(values, mrValues, meanMr, !mrValues.isEmpty(),
+                lastMin == null ? null : lastMin.doubleValue(),
+                lastMax == null ? null : lastMax.doubleValue(),
+                prevInInspection.size(), specPairs.size() > 1,
+                productName, itemCode, itemName, unit);
+    }
+
+    /**
+     * 一次取数的结果。
+     *
+     * <p>{@code mrValues} 与 {@code values} 不是同一个序列（前者按组内相邻算，长度通常是后者的
+     * 一部分），别拿 {@code values} 重算移动极差——那会把跨单跳变也算成一格波动。
+     */
+    public record Sample(List<Double> values, List<Double> mrValues, double meanMr, boolean hasMoves,
+                         Double lsl, Double usl, int inspectionCount, boolean specChanged,
+                         String productName, String itemCode, String itemName, String unit) {
+    }
+
+    /**
      * 提示信息。这些都是「看数的人必须知道、否则会误读」的前提，
      * 放在页面上比写在文档里管用。
      */
     private List<String> notes(int n, Double lsl, Double usl, boolean specChanged,
-                               boolean mrFallback, int outOfSpec, String verdict) {
+                               boolean hasMoves, int outOfSpec, String verdict) {
         List<String> list = new ArrayList<>();
         if (lsl == null && usl == null) {
             list.add("该检验项没有设规格上下限，算不出 Cp/Cpk。要评能力得先有「多少算合格」的边界");
         } else if (lsl == null || usl == null) {
             list.add("只有单边规格，Cp/Pp 无定义，只看 Cpk/Ppk");
         }
-        if (n < MIN_SAMPLE) {
-            list.add("样本量 " + n + "，不足 " + MIN_SAMPLE + " 个。样本太少时标准差本身抖得厉害，"
+        if (n < CapabilityMath.MIN_SAMPLE) {
+            list.add("样本量 " + n + "，不足 " + CapabilityMath.MIN_SAMPLE + " 个。样本太少时标准差本身抖得厉害，"
                     + "这时的 Cpk 只能当个大概，别拿去和客户对账");
         }
         if (specChanged) {
             list.add("统计区间内规格限变过，本次按最后一次的规格计算。要严格对比，请缩短区间到规格未变的时段");
         }
-        if (mrFallback) {
+        if (!hasMoves) {
             list.add("每张检验单只有一个测量值，算不出移动极差，σ̂ 退回用整体标准差估计，"
                     + "此时 Cp 与 Pp 会相等");
         }
@@ -332,7 +309,7 @@ public class CapabilityService {
         h.put("bins", bins);
         h.put("lsl", lsl);
         h.put("usl", usl);
-        h.put("mean", r(mean, 4));
+        h.put("mean", CapabilityMath.round(mean, 4));
         return h;
     }
 
@@ -342,41 +319,39 @@ public class CapabilityService {
      * <p>I 图看「有没有单点失控」，MR 图看「波动有没有突然变大」。两张一起看才靠谱：
      * 只看 I 图，一个均值不变但突然抖起来的工序会显得完全正常。
      */
-    private Map<String, Object> controlChart(List<Double> values, List<Moves> moves,
-                                             double mean, double meanMr, boolean mrFallback) {
+    private Map<String, Object> controlChart(List<Double> values, List<Double> mrValues,
+                                             double mean, double meanMr, boolean noMoves) {
         Map<String, Object> c = new LinkedHashMap<>();
         List<Map<String, Object>> singles = new ArrayList<>();
         for (int i = 0; i < values.size(); i++) {
             Map<String, Object> p = new LinkedHashMap<>();
             p.put("seq", i + 1);
-            p.put("value", r(values.get(i), 4));
+            p.put("value", CapabilityMath.round(values.get(i), 4));
             singles.add(p);
         }
-        double iUcl = mean + E2 * meanMr;
-        double iLcl = mean - E2 * meanMr;
+        double iUcl = mean + CapabilityMath.E2 * meanMr;
+        double iLcl = mean - CapabilityMath.E2 * meanMr;
 
         Map<String, Object> iChart = new LinkedHashMap<>();
         iChart.put("points", singles);
-        iChart.put("center", r(mean, 4));
-        iChart.put("ucl", r(iUcl, 4));
-        iChart.put("lcl", r(iLcl, 4));
+        iChart.put("center", CapabilityMath.round(mean, 4));
+        iChart.put("ucl", CapabilityMath.round(iUcl, 4));
+        iChart.put("lcl", CapabilityMath.round(iLcl, 4));
         iChart.put("note", "单值图：看均值有没有失控");
 
-        // 移动极差点必须来自组内相邻测量，不能拿摊平后的序列重算——
-        // 那样会把「跨单跳变」也算成一格波动，MR 图整张失真
         List<Map<String, Object>> mrs = new ArrayList<>();
-        for (int i = 0; i < moves.size(); i++) {
+        for (int i = 0; i < mrValues.size(); i++) {
             Map<String, Object> p = new LinkedHashMap<>();
             p.put("seq", i + 1);
-            p.put("value", r(moves.get(i).value(), 4));
+            p.put("value", CapabilityMath.round(mrValues.get(i), 4));
             mrs.add(p);
         }
         Map<String, Object> mrChart = new LinkedHashMap<>();
-        mrChart.put("points", mrFallback ? List.of() : mrs);
-        mrChart.put("center", r(meanMr, 4));
-        mrChart.put("ucl", r(D4 * meanMr, 4));
+        mrChart.put("points", noMoves ? List.of() : mrs);
+        mrChart.put("center", CapabilityMath.round(meanMr, 4));
+        mrChart.put("ucl", CapabilityMath.round(CapabilityMath.D4 * meanMr, 4));
         mrChart.put("lcl", 0.0);
-        mrChart.put("note", mrFallback
+        mrChart.put("note", noMoves
                 ? "缺少移动极差数据"
                 : "移动极差图：看波动有没有突然变大");
 
@@ -387,8 +362,8 @@ public class CapabilityService {
 
     private Map<String, Object> bin(double from, double to, int count) {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("from", r(from, 4));
-        m.put("to", r(to, 4));
+        m.put("from", CapabilityMath.round(from, 4));
+        m.put("to", CapabilityMath.round(to, 4));
         m.put("count", count);
         return m;
     }
@@ -421,20 +396,8 @@ public class CapabilityService {
         return list;
     }
 
-    /** 分母为 0 或负（说明数据几乎没有波动）时不给数，别返回 Infinity 让前端画出个 NULL */
-    private Double ratio(double numerator, double denominator) {
-        if (denominator <= 0 || Double.isNaN(denominator) || Double.isInfinite(denominator)) {
-            return null;
-        }
-        return numerator / denominator;
-    }
-
     private Double r(Double v) {
-        return v == null ? null : r(v, 3);
-    }
-
-    private double r(double v, int scale) {
-        return BigDecimal.valueOf(v).setScale(scale, java.math.RoundingMode.HALF_UP).doubleValue();
+        return v == null ? null : CapabilityMath.round(v, 3);
     }
 
     private String asString(Object o) {
@@ -466,13 +429,6 @@ public class CapabilityService {
             return new BigDecimal(String.valueOf(o));
         } catch (NumberFormatException e) {
             return null;
-        }
-    }
-
-    /** 一条移动极差及其上下文，出问题时能说清是哪张单哪一件 */
-    private record Moves(double value, Long inspectionId, Integer pieceNo, int pointNo, double to) {
-        Moves {
-            Objects.requireNonNull(inspectionId);
         }
     }
 }

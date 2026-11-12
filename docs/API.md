@@ -1731,6 +1731,14 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
   "complaints": { "opened": 2, "high": 1, "closed": 1, "openNow": 3, "backlogDelta": 1 },
   "gauges": { "total": 12, "active": 9, "suspended": 1, "scrapped": 2, "overdue": 1,
               "calibrated": { "total": 3, "pass": 2, "fail": 1, "limited": 0 } },
+  "capability": { "judged": 4, "insufficient": 1, "marginal": 2, "slipping": 1,
+                  "fewSamples": 2, "specChanged": 0, "minSample": 25, "slipThreshold": 0.3,
+                  "rows": [{ "label": "壳体 · 外径", "n": 42, "prevN": 40,
+                             "lsl": 14, "usl": 16, "cpk": 1.05, "prevCpk": 1.42,
+                             "change": -0.37, "outOfSpec": 0,
+                             "verdict": "MARGINAL", "verdictText": "过程能力勉强",
+                             "enoughSamples": true }] },
+  "capa": { "opened": 5, "closed": 3, "...": "见下" },
   "narrative": ["2026 年 10 月共完成 42 张检验单...", "..."]
 }
 ```
@@ -1753,8 +1761,41 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 - `complaints.backlogDelta = 本月新开 - 本月关闭`，正数说明积压在恶化，
   比单看「未关闭数」有用
 - `narrative` 是给管理评审直接念的几句话，顺序：总量与环比 → 主要不良 → 客诉 →
-  计量器具 → 返工 → **纠正措施**。措辞规则（空月不假警报、持平不说「上升 0」）由
-  `MonthlyNarrativeTest` 逐条锁定，措施那几句由 `CapaNarrativeTest` 锁
+  计量器具 → 返工 → **过程能力** → **纠正措施**。措辞规则（空月不假警报、持平不说
+  「上升 0」）由 `MonthlyNarrativeTest` 逐条锁定，能力那几句由 `CapabilityNarrativeTest` 锁，
+  措施那几句由 `CapaNarrativeTest` 锁
+
+### 过程能力段（`capability`）
+
+前面六块讲的都是**已经发生的事**：合格率、不良、处置、客诉、量具、返工。合格率是滞后
+指标——它掉下来的时候，不良已经做出来、已经返工、已经算进成本了。这一块讲的是
+**「下个月会不会更差」**：Cpk 在往下走，不良还没来。
+
+取的是本自然月内有规格限的「产品 + 检验项」，逐项算本月与上月的 Cpk（算法与 SPC 页同一处
+`CapabilityMath`），并列成一张对照表。
+
+| 字段 | 口径 | 为什么这么算 |
+|---|---|---|
+| `rows[].n` / `prevN` | 本月 / 上月实测值个数 | 少于 25 个不判档，见 `enoughSamples` |
+| `rows[].lsl` / `usl` | 本月最后一次测量时的规格快照 | 单边规格可能只有其一 |
+| `rows[].cpk` / `prevCpk` | Cpk（组内 σ̂ = MR̄ ÷ 1.128） | `prevCpk` 为 `null` 表示**不可比**，不是上月很差 |
+| `rows[].change` | `cpk - prevCpk`，两位小数 | 只有可比时才有值 |
+| `judged` / `insufficient` / `marginal` / `slipping` / `fewSamples` | 各自项数 | 页面顶部的摘要句 |
+| `slipThreshold` | 0.30 | 下滑门槛由服务端给，前端只拿来上色 |
+
+**不给「全厂平均 Cpk」。** 不同特性的公差宽度差一个数量级，平均出来的数没有物理含义；
+更糟的是它会被公差宽、能力高的那几项拉上去，正好盖住真正在出问题的那一项。
+`CapabilityNarrativeTest` 里有一条测试专门断言结论中不出现「平均」二字。
+
+**「明显下滑」的门槛是 0.30，且两边样本都必须 ≥25。** 0.30 大约相当于 σ 涨了 25%，
+已经不是抽样噪声能解释的；任一期样本不足就一律不可比——拿噪声当趋势会误伤工序。
+
+**规格限变过就不做环比。** 两边分母不是同一道公差，比出来的差值说明不了任何事，
+只在结论里说一句「有几项的规格限变过」，并计入 `specChanged`。
+
+**月报的 Cpk 与 SPC 页的 Cpk 不是同一个数。** 窗口不同（一个月 vs 默认 90 天），样本量不同，
+算法是同一套。要对外报数、要给客户看的数，去 SPC 页按客户要求的区间跑一次——
+月报这个数是用来看趋势的。
 
 ### 纠正措施段（`capa`）
 

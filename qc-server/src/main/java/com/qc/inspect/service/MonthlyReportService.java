@@ -73,6 +73,7 @@ public class MonthlyReportService {
     private final QcGaugeMapper gaugeMapper;
     private final QcGaugeCalibrationMapper calibrationMapper;
     private final QcCapaMapper capaMapper;
+    private final MonthlyCapabilityService capabilityService;
 
     /**
      * @param month yyyy-MM；留空取上月——月报基本都在月头上看，
@@ -246,6 +247,13 @@ public class MonthlyReportService {
         capa.put("slowest", slowest);
         m.put("capa", capa);
 
+        // ---------- 过程能力 ----------
+        // 前面几段都是「这个月发生了什么」（滞后指标），这一段是「下个月会不会更差」。
+        // 合格率掉下来的时候不良已经做出来了，Cpk 掉下来的时候还什么都没发生——
+        // 这是月报里唯一能提前一个月的信号，所以它得排在各段之前、措施的紧前面
+        MonthlyCapabilityService.Section cap = capabilityService.build(first, nextFirst);
+        m.put("capability", cap.data());
+
         // ---------- 结论文本 ----------
         String topText = defects.stream().limit(3)
                 .map(d -> (String) d.get("name"))
@@ -261,6 +269,14 @@ public class MonthlyReportService {
         // 措施那几句接在后面：管理评审问完「这个月质量怎么样」，
         // 下一句必然是「那你怎么改的」。空月没有检验数据时 MonthlyNarrative 会提前返回，
         // 但措施是独立的一条线，照样要说——所以不能写在那边
+        //
+        // 能力那几句排在措施前面：先说「哪几项在往下走」，再说「谁去改」。
+        // 空月跳过——MonthlyNarrative 已经说过「没有任何已提交的检验单」，
+        // 再接一句「没有可评能力的特性」是同一个信息说两遍
+        if (!curTotal.isEmpty()) {
+            narrative.addAll(cap.narrative());
+        }
+
         String slowTitle = slowest.isEmpty() ? null : (String) slowest.get(0).get("title");
         long slowDays = slowest.isEmpty() ? 0 : num(slowest.get(0).get("days"));
         narrative.addAll(CapaNarrative.build(

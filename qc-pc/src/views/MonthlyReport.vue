@@ -161,10 +161,65 @@
         </el-col>
       </el-row>
 
+      <!-- ---------- 过程能力 ---------- -->
+      <!-- 前面六段都是滞后指标：合格率掉下来的时候，不良已经做出来、已经返工了。
+           这一段是月报里唯一能提前一个月的信号——Cpk 在往下走，不良还没来 -->
+      <h2>七、过程能力（月度 Cpk）</h2>
+      <template v-if="cap.hasData">
+        <div class="sub-title">
+          本月可判 <b>{{ cap.judged }}</b> 项特性：能力不足
+          <b :class="{ bad: cap.insufficient > 0 }">{{ cap.insufficient }}</b> 项、
+          比上月明显下滑 <b :class="{ warn2: cap.slipping > 0 }">{{ cap.slipping }}</b> 项
+          （掉 {{ slipThreshold }} 以上才计）、样本不足暂不判
+          <b>{{ cap.fewSamples }}</b> 项。
+        </div>
+        <el-table :data="capRows" size="small" border>
+          <el-table-column prop="label" label="产品 · 检验项" min-width="190" />
+          <el-table-column label="样本" width="70" align="right">
+            <template #default="{ row }">
+              <span :class="{ bad: !row.enoughSamples }">{{ row.n }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="规格" width="120">
+            <template #default="{ row }">{{ specText(row) }}</template>
+          </el-table-column>
+          <el-table-column label="本月 Cpk" width="95" align="right">
+            <template #default="{ row }">
+              <span :class="cpkClass(row)">{{ cpkText(row.cpk) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="上月 Cpk" width="95" align="right">
+            <template #default="{ row }">{{ cpkText(row.prevCpk) }}</template>
+          </el-table-column>
+          <el-table-column label="变化" width="90" align="right">
+            <template #default="{ row }">
+              <span :class="changeClass(row)">{{ changeText(row) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="判定" width="110">
+            <template #default="{ row }">
+              <span v-if="!row.enoughSamples" class="muted">样本不足</span>
+              <span v-else :class="cpkClass(row)">{{ row.verdictText }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="tip">
+          只逐项看，不给平均 Cpk：不同特性的公差宽度差一个数量级，平均出来的数没有物理含义，
+          而且会被公差宽、能力高的那几项拉上去，正好盖住真正在出问题的那一项。<br />
+          月报的 Cpk 只取一个自然月，和 SPC 页（默认 90 天）<b>不是同一个数</b>——窗口不同、样本量不同，
+          算法倒是同一套。要对外报数，去 SPC 页按客户要求的区间跑一次。<br />
+          上月 Cpk 为「-」表示不可比（上月样本不足、没有数据，或这两个月之间规格限改过），不是上月很差。
+        </div>
+      </template>
+      <div v-else class="tip">
+        本月没有可评过程能力的特性。只有「设了规格上下限、并且录了实测数值」的检验项才算得出 Cpk，
+        只判合格/不合格的项没有均值和标准差。
+      </div>
+
       <!-- ---------- 纠正措施 ---------- -->
       <!-- 前面几段讲「这个月做得怎么样」，这一段讲「做错了之后改没改」。
            它是管理评审问的第二句，也是唯一能证明「不良处置」之外还有「问题纠正」的地方 -->
-      <h2>七、纠正措施（CAPA）</h2>
+      <h2>八、纠正措施（CAPA）</h2>
       <el-row :gutter="16">
         <el-col :span="12">
           <div class="box">
@@ -324,6 +379,58 @@ const backlogHint = computed(() => {
 })
 
 /** 措施这一段每个数都可能缺（老数据 / 空月），统一在这里补 0，模板里不再写 ?? */
+// ---------- 过程能力 ----------
+const cap = computed(() => data.value.capability || {})
+const capRows = computed(() => cap.value.rows || [])
+/** 下滑门槛由服务端给（CapabilityNarrative.SLIP），前端只拿来上色，不再自己定一个 */
+const slipThreshold = computed(() => {
+  const v = cap.value.slipThreshold
+  return v === null || v === undefined ? 0.3 : v
+})
+
+/**
+ * Cpk 的颜色只看服务端给的 verdict。
+ * 不在前端按 1.00/1.33 重新比一遍——判档只在 CapabilityMath 一处，两处阈值迟早会漂。
+ */
+function cpkClass(row) {
+  if (!row || row.cpk === null || row.cpk === undefined) return ''
+  if (row.verdict === 'INSUFFICIENT') return 'bad'
+  if (row.verdict === 'MARGINAL') return 'warn2'
+  return ''
+}
+
+function cpkText(v) {
+  return v === null || v === undefined ? '-' : Number(v).toFixed(2)
+}
+
+/** 规格限可能是单边（只有下限或只有上限），别硬拼成「14 ~ 16」 */
+function specText(row) {
+  const lo = row.lsl
+  const hi = row.usl
+  if ((lo === null || lo === undefined) && (hi === null || hi === undefined)) return '-'
+  if (lo === null || lo === undefined) return '≤ ' + hi
+  if (hi === null || hi === undefined) return '≥ ' + lo
+  return lo + ' ~ ' + hi
+}
+
+function changeText(row) {
+  const c = row.change
+  if (c === null || c === undefined) return '-'
+  const v = Number(c)
+  if (Math.abs(v) < 0.005) return '持平'
+  return (v > 0 ? '↑ ' : '↓ ') + Math.abs(v).toFixed(2)
+}
+
+/** Cpk 掉是坏事（红），涨不标色——报表上不需要为「没退步」发奖状 */
+function changeClass(row) {
+  const c = row.change
+  if (c === null || c === undefined) return ''
+  const v = Number(c)
+  if (v <= -slipThreshold.value) return 'bad'
+  if (v < 0) return 'warn2'
+  return ''
+}
+
 const capa = computed(() => {
   const c = data.value.capa || {}
   const n = (v) => Number(v) || 0
@@ -517,6 +624,7 @@ h2 {
   line-height: 1.7;
 }
 .bad { color: #f56c6c; font-weight: 600; }
+.muted { color: #a8abb2; }
 .warn2 { color: #e6a23c; font-weight: 600; }
 
 .box {

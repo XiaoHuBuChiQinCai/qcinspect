@@ -89,6 +89,44 @@ public interface QcInspectionLineMapper extends BaseMapper<QcInspectionLine> {
             """)
     List<Map<String, Object>> capabilitySamples(@Param("productId") Long productId,
                                                 @Param("itemId") Long itemId,
-                                                @Param("from") java.time.LocalDateTime from,
-                                                @Param("to") java.time.LocalDateTime to);
+                                                @Param("from") java.time.OffsetDateTime from,
+                                                @Param("to") java.time.OffsetDateTime to);
+
+    /**
+     * 某个时间窗内值得按月评过程能力的「产品 + 检验项」。
+     *
+     * <p>和 {@link #capabilityItems()} 的区别：那个是「有史以来够样本的全量清单」，
+     * 这个只看一个自然月，并且要求本月样本量已经够 {@code minSamples}。月报不能
+     * 拿三个月前的样本给本月背书。
+     *
+     * <p>只要设了规格限的项：没设上下限的算不出 Cp/Cpk，列进月报只会让看的人
+     * 以为「这项没问题」，而实际是「这项根本没判过能力」。
+     */
+    @Select("""
+            SELECT i.product_id,
+                   max(p.product_name)                        AS product_name,
+                   l.item_id,
+                   max(l.item_code)                           AS item_code,
+                   max(l.item_name)                           AS item_name,
+                   max(l.unit)                                AS unit,
+                   count(DISTINCT i.id)                       AS inspection_cnt,
+                   sum(jsonb_array_length(l.measured_values)) AS sample_cnt
+            FROM qc_inspection_line l
+            JOIN qc_inspection i ON i.id = l.inspection_id
+            LEFT JOIN qc_product p ON p.id = i.product_id
+            WHERE l.value_type = 'NUMBER'
+              AND l.measured_values IS NOT NULL
+              AND jsonb_array_length(l.measured_values) > 0
+              AND (l.min_value IS NOT NULL OR l.max_value IS NOT NULL)
+              AND i.del_flag = 0
+              AND i.status IN ('SUBMITTED', 'CLOSED')
+              AND coalesce(i.inspected_at, i.created_at) >= #{from}
+              AND coalesce(i.inspected_at, i.created_at) < #{to}
+            GROUP BY i.product_id, l.item_id
+            HAVING sum(jsonb_array_length(l.measured_values)) >= #{minSamples}
+            ORDER BY product_name NULLS LAST, item_code
+            """)
+    List<Map<String, Object>> monthlyCapabilityItems(@Param("from") java.time.OffsetDateTime from,
+                                                     @Param("to") java.time.OffsetDateTime to,
+                                                     @Param("minSamples") int minSamples);
 }

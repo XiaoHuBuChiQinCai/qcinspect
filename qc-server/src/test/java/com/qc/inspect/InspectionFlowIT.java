@@ -1114,6 +1114,25 @@ class InspectionFlowIT {
                 .contains(String.valueOf(month.get("label")))
                 .contains("%");
 
+        // ---- 过程能力：要能看出「哪几项在往下走」，而不是只报本月 Cpk ----
+        Map<String, Object> capability = asMap(month.get("capability"));
+        assertThat(capability.get("hasData")).as("本月有带规格的数值项，能力段不能是空的")
+                .isEqualTo(true);
+        assertThat(num(capability.get("judged"))).as("至少有一项样本够判").isGreaterThan(0L);
+        List<Map<String, Object>> capRows = asList(capability.get("rows"));
+        assertThat(capRows).isNotEmpty();
+        assertThat(capRows).allSatisfy(r -> assertThat(num(r.get("n"))).isGreaterThan(0L));
+        assertThat(capRows.stream().anyMatch(r -> num(r.get("n")) >= 25 && r.get("cpk") != null))
+                .as("样本够的那一项要真的算出 Cpk").isTrue();
+        // 上月这些单还不存在，所以只能是 null，不能编一个 0 出来当基准
+        assertThat(capRows).allSatisfy(r -> assertThat(r.get("prevCpk"))
+                .as("上月没有可比样本时 prevCpk 必须是 null").isNull());
+
+        String capText = joinNarrative(month);
+        assertThat(capText).contains("个特性够样本可判过程能力");
+        assertThat(capText).as("月报永不报「平均 Cpk」：公差宽的特性会把平均拉高，盖住出问题的那项")
+                .doesNotContain("平均");
+
         // ---- 非法月份：给中文提示，不吐 DateTimeParseException ----
         Map<String, Object> bad = get("/api/reports/monthly?month=2026-13");
         assertThat(num(bad.get("code"))).as("非法月份要拦").isNotZero();
@@ -3186,6 +3205,15 @@ class InspectionFlowIT {
     }
 
     @SuppressWarnings("unchecked")
+    /** 把月报的 narrative 列表拼成一段，用来对文字断言 */
+    private static String joinNarrative(Map<String, Object> report) {
+        Object n = report.get("narrative");
+        if (!(n instanceof List<?> list)) {
+            return "";
+        }
+        return String.join("\n", list.stream().map(String::valueOf).toList());
+    }
+
     private Map<String, Object> asMap(Object o) {
         return o instanceof Map ? (Map<String, Object>) o : Map.of();
     }
