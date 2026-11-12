@@ -85,7 +85,13 @@ public class MonthlyCapabilityService {
                     Objects.toString(it.get("item_code"), null));
 
             boolean enough = now.n() >= CapabilityMath.MIN_SAMPLE;
-            Double prevCpk = before == null ? null : round(before.cpk());
+            // 上月样本不足就不给 prevCpk，和「规格变过」一样按不可比处理：
+            // 3 个样本算出来的 -32.84 不是「上月很差」，是「上月压根没数据」，
+            // 摆在报表上只会招来一句「这个数是不是算错了」
+            int prevN = before == null ? 0 : before.n();
+            boolean prevComparable = before != null
+                    && prevN >= CapabilityMath.MIN_SAMPLE && before.cpk() != null;
+            Double prevCpk = prevComparable ? round(before.cpk()) : null;
 
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("label", label);
@@ -93,7 +99,7 @@ public class MonthlyCapabilityService {
             row.put("itemName", it.get("item_name"));
             row.put("unit", it.get("unit"));
             row.put("n", now.n());
-            row.put("prevN", before == null ? 0 : before.n());
+            row.put("prevN", prevN);
             row.put("lsl", cur.lsl());
             row.put("usl", cur.usl());
             row.put("cpk", round(now.cpk()));
@@ -109,7 +115,7 @@ public class MonthlyCapabilityService {
             // cpk 可能为 null（实测值没有波动），也要进结论：那是一个要人去查量具的信号，
             // 不是「这项没事」
             forNarrative.add(new CapabilityNarrative.Item(label, now.n(), round(now.cpk()),
-                    prevCpk, before == null ? 0 : before.n()));
+                    prevCpk, prevN));
         }
 
         // 最差的排最前：月报是给人挑毛病用的，不按字母序

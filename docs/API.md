@@ -1779,6 +1779,7 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 | `rows[].n` / `prevN` | 本月 / 上月实测值个数 | 少于 25 个不判档，见 `enoughSamples` |
 | `rows[].lsl` / `usl` | 本月最后一次测量时的规格快照 | 单边规格可能只有其一 |
 | `rows[].cpk` / `prevCpk` | Cpk（组内 σ̂ = MR̄ ÷ 1.128） | `prevCpk` 为 `null` 表示**不可比**，不是上月很差 |
+| | | 不可比有三种：上月没有数据、上月样本 <25、两个月之间规格限改过 |
 | `rows[].change` | `cpk - prevCpk`，两位小数 | 只有可比时才有值 |
 | `judged` / `insufficient` / `marginal` / `slipping` / `fewSamples` | 各自项数 | 页面顶部的摘要句 |
 | `judged` | 样本 ≥25 **且**算得出 Cpk 的项数 | 只有这些进判档分母 |
