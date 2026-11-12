@@ -565,7 +565,7 @@ public class CapaService {
     }
 
     public List<Map<String, Object>> openByOwner() {
-        return capaMapper.openByOwner();
+        return capaMapper.openByOwner(LocalDate.now().toString());
     }
 
     // ------------------------------------------------------------------ 内部

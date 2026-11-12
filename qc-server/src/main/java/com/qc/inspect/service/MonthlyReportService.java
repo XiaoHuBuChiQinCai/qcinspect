@@ -2,11 +2,13 @@ package com.qc.inspect.service;
 
 import com.qc.inspect.common.BizException;
 import com.qc.inspect.mapper.QcBatchMapper;
+import com.qc.inspect.mapper.QcCapaMapper;
 import com.qc.inspect.mapper.QcComplaintMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
 import com.qc.inspect.mapper.QcGaugeCalibrationMapper;
 import com.qc.inspect.mapper.QcGaugeMapper;
 import com.qc.inspect.mapper.QcInspectionMapper;
+import com.qc.inspect.report.CapaNarrative;
 import com.qc.inspect.report.MonthlyNarrative;
 import com.qc.inspect.report.MonthlyReport;
 import lombok.RequiredArgsConstructor;
@@ -55,6 +57,8 @@ public class MonthlyReportService {
     private static final int TOP_DEFECTS = 8;
     /** 供应商只列最差的几个，好的不需要管 */
     private static final int WORST_SUPPLIERS = 5;
+    /** 关闭耗时最长的措施列几条：三条足够看出「有没有那种挂了半年的」 */
+    private static final int SLOWEST_CAPA = 3;
 
     private static final Map<String, String> TYPE_LABEL = Map.of(
             "IQC", "来料检验",
@@ -68,6 +72,7 @@ public class MonthlyReportService {
     private final QcComplaintMapper complaintMapper;
     private final QcGaugeMapper gaugeMapper;
     private final QcGaugeCalibrationMapper calibrationMapper;
+    private final QcCapaMapper capaMapper;
 
     /**
      * @param month yyyy-MM；留空取上月——月报基本都在月头上看，
@@ -195,16 +200,74 @@ public class MonthlyReportService {
         gauges.put("calibrated", calMap);
         m.put("gauges", gauges);
 
+        // ---------- 纠正措施 ----------
+        // 前面几段讲「这个月做得怎么样」，这一段讲「做错了之后改没改」。
+        // 四个数是分开的：本月新立 / 本月关闭 / 本月判无效退回 / 当前还开着。
+        // 混成一个「措施完成率」就谁也看不出到底是没人立、还是立了没关
+        Map<String, Object> capaRaw = capaMapper.monthlySummary(
+                cur.fromTs(), cur.toTs(), LocalDate.now(BIZ_ZONE).toString());
+        Map<String, Object> capa = new LinkedHashMap<>();
+        long cCapaOpened = num(capaRaw == null ? null : capaRaw.get("opened"));
+        long cCapaClosed = num(capaRaw == null ? null : capaRaw.get("closed"));
+        long cCapaRejected = num(capaRaw == null ? null : capaRaw.get("rejected"));
+        long cCapaCancelled = num(capaRaw == null ? null : capaRaw.get("cancelled"));
+        long cCapaOpenNow = num(capaRaw == null ? null : capaRaw.get("open_now"));
+        long cCapaOverdue = num(capaRaw == null ? null : capaRaw.get("overdue"));
+        long cCapaMaxDays = num(capaRaw == null ? null : capaRaw.get("max_days_open"));
+        capa.put("opened", cCapaOpened);
+        capa.put("closed", cCapaClosed);
+        capa.put("rejected", cCapaRejected);
+        capa.put("cancelled", cCapaCancelled);
+        capa.put("openNow", cCapaOpenNow);
+        capa.put("overdue", cCapaOverdue);
+        capa.put("maxDaysOpen", cCapaMaxDays);
+
+        // avg 可能是 null（本月一条都没关），不能落到 0——「平均 0 天关闭」是句假话
+        Object avgRaw = capaRaw == null ? null : capaRaw.get("avg_close_days");
+        Double cCapaAvgDays = avgRaw instanceof Number n ? round1(n.doubleValue()) : null;
+        capa.put("avgCloseDays", cCapaAvgDays);
+
+        // 拖得最久的那几条。平均会被一堆三五天的拉平，看不出「有两条挂了大半年」——
+        // 而管理评审真正要问的是后者，那两条背后通常是一个没人愿意碰的问题
+        List<Map<String, Object>> slowRows = capaMapper.slowestClosed(
+                cur.fromTs(), cur.toTs(), SLOWEST_CAPA);
+        List<Map<String, Object>> slowest = new ArrayList<>();
+        for (Map<String, Object> r : slowRows) {
+            Map<String, Object> s = new LinkedHashMap<>();
+            s.put("capaNo", str(r.get("capa_no")));
+            s.put("title", str(r.get("title")));
+            s.put("owner", str(r.get("owner")));
+            s.put("severity", str(r.get("severity")));
+            s.put("createdDay", str(r.get("created_day")));
+            s.put("closedDay", str(r.get("closed_day")));
+            s.put("days", num(r.get("days")));
+            slowest.add(s);
+        }
+        capa.put("slowest", slowest);
+        m.put("capa", capa);
+
         // ---------- 结论文本 ----------
         String topText = defects.stream().limit(3)
                 .map(d -> (String) d.get("name"))
                 .filter(s -> s != null && !s.isBlank())
                 .reduce((a, b) -> a + "、" + b)
                 .orElse("");
-        m.put("narrative", MonthlyNarrative.build(curTotal, prevTotal, m.get("label").toString(),
+        List<String> narrative = new ArrayList<>(MonthlyNarrative.build(curTotal, prevTotal,
+                m.get("label").toString(),
                 topText, cOpened, cHigh, cClosed, cOpenNow,
                 gauges.get("overdue") instanceof Number n1 ? n1.longValue() : 0,
                 gauges.get("suspended") instanceof Number n2 ? n2.longValue() : 0));
+
+        // 措施那几句接在后面：管理评审问完「这个月质量怎么样」，
+        // 下一句必然是「那你怎么改的」。空月没有检验数据时 MonthlyNarrative 会提前返回，
+        // 但措施是独立的一条线，照样要说——所以不能写在那边
+        String slowTitle = slowest.isEmpty() ? null : (String) slowest.get(0).get("title");
+        long slowDays = slowest.isEmpty() ? 0 : num(slowest.get(0).get("days"));
+        narrative.addAll(CapaNarrative.build(
+                new CapaNarrative.Summary(cCapaOpened, cCapaClosed, cCapaRejected, cCapaCancelled,
+                        cCapaOpenNow, cCapaOverdue, (int) cCapaMaxDays, cCapaAvgDays),
+                curTotal.pieceFail(), slowTitle, (int) slowDays));
+        m.put("narrative", narrative);
 
         return m;
     }
@@ -285,6 +348,11 @@ public class MonthlyReportService {
 
     private static String str(Object v) {
         return v == null ? null : v.toString();
+    }
+
+    /** 保留一位小数。SQL 里已经 round 过了，这里只是兜住驱动返回 BigDecimal 的差异 */
+    private static Double round1(double v) {
+        return Math.round(v * 10.0) / 10.0;
     }
 
     private static String dispositionLabel(String d) {

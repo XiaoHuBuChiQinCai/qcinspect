@@ -161,6 +161,56 @@
         </el-col>
       </el-row>
 
+      <!-- ---------- 纠正措施 ---------- -->
+      <!-- 前面几段讲「这个月做得怎么样」，这一段讲「做错了之后改没改」。
+           它是管理评审问的第二句，也是唯一能证明「不良处置」之外还有「问题纠正」的地方 -->
+      <h2>七、纠正措施（CAPA）</h2>
+      <el-row :gutter="16">
+        <el-col :span="12">
+          <div class="box">
+            <div class="box-title">本月动作</div>
+            <div class="pairs">
+              <div><span>本月新立</span><b>{{ capa.opened }} 条</b></div>
+              <div><span>本月关闭</span><b :class="{ bad: capa.opened > 0 && capa.closed === 0 }">{{ capa.closed }} 条</b></div>
+              <div><span>其中判无效退回</span><b>{{ capa.rejected }} 条</b></div>
+              <div><span>本月撤销</span><b>{{ capa.cancelled }} 条</b></div>
+              <div><span>平均关闭用时</span><b>{{ avgCloseText }}</b></div>
+            </div>
+            <div class="box-tip">
+              判无效退回不是坏消息——它说明验证的人在拿数据判，而不是看见「已完成」就点通过。
+              这里刻意不算「验证通过率」：表里只存最后一次验证结果，算出来的数衡量的是谁更容易被劝退，
+              而一旦把它挂上报表，就没人再判无效了。
+            </div>
+          </div>
+        </el-col>
+        <el-col :span="12">
+          <div class="box">
+            <div class="box-title">当前状态（截至生成日）</div>
+            <div class="pairs">
+              <div><span>仍开着的措施</span><b>{{ capa.openNow }} 条</b></div>
+              <div><span>已过要求完成日</span><b :class="{ bad: capa.overdue > 0 }">{{ capa.overdue }} 条</b></div>
+              <div><span>挂得最久的一条</span><b :class="{ bad: capa.maxDaysOpen > 60 }">{{ maxDaysText }}</b></div>
+            </div>
+            <div class="box-tip">
+              {{ capaHint }}
+            </div>
+          </div>
+        </el-col>
+      </el-row>
+      <template v-if="capa.slowest && capa.slowest.length">
+        <div class="sub-title">本月关闭最慢的（平均会被三五天的拉平，这几条才是没人愿意碰的）</div>
+        <el-table :data="capa.slowest" size="small" border>
+          <el-table-column prop="capaNo" label="单号" width="150" />
+          <el-table-column prop="title" label="措施" min-width="240" />
+          <el-table-column prop="owner" label="责任人" width="110" />
+          <el-table-column prop="createdDay" label="立单" width="110" />
+          <el-table-column prop="closedDay" label="关闭" width="110" />
+          <el-table-column prop="days" label="用时" width="90" align="right">
+            <template #default="{ row }">{{ row.days }} 天</template>
+          </el-table-column>
+        </el-table>
+      </template>
+
       <footer class="sheet-foot">
         本报表由 QcInspect 自动汇总生成，数据口径为「已提交 / 已关闭的检验单」，作废单与草稿不计入。
         与检验单、不良台账、客诉台账的明细可逐条追溯。
@@ -271,6 +321,51 @@ const backlogHint = computed(() => {
     return `本月新开 ${c.opened} 起、关闭 ${c.closed} 起，积压在消化。`
   }
   return '本月新开与关闭数量持平，积压未变化。'
+})
+
+/** 措施这一段每个数都可能缺（老数据 / 空月），统一在这里补 0，模板里不再写 ?? */
+const capa = computed(() => {
+  const c = data.value.capa || {}
+  const n = (v) => Number(v) || 0
+  return {
+    opened: n(c.opened),
+    closed: n(c.closed),
+    rejected: n(c.rejected),
+    cancelled: n(c.cancelled),
+    openNow: n(c.openNow),
+    overdue: n(c.overdue),
+    maxDaysOpen: n(c.maxDaysOpen),
+    avgCloseDays: c.avgCloseDays === null || c.avgCloseDays === undefined ? null : Number(c.avgCloseDays),
+    slowest: c.slowest || []
+  }
+})
+
+const avgCloseText = computed(() => {
+  const v = capa.value.avgCloseDays
+  // 本月一条都没关时不说「平均 0 天」——那是句假话，会让人以为措施当天就关掉了
+  if (v === null) return capa.value.closed > 0 ? '-' : '本月无关闭'
+  return Number.isInteger(v) ? `${v} 天` : `${v.toFixed(1)} 天`
+})
+
+const maxDaysText = computed(() => {
+  // 没有开着的措施时给「—」，别在这一行写一句话——那一格对的是数字，
+  // 文字说明交给下面的 capaHint，否则一行里左边两个字右边一整句，看着就错位
+  if (!capa.value.openNow) return '—'
+  return `${capa.value.maxDaysOpen} 天`
+})
+
+const capaHint = computed(() => {
+  const c = capa.value
+  if (!c.openNow) {
+    return '手上没有未完成的措施。'
+  }
+  if (c.overdue > 0) {
+    return '超期通常不是没时间，是没人再催。挂过两个月的，基本可以当成「已经放弃了但没写撤销理由」。'
+  }
+  if (c.maxDaysOpen > 60) {
+    return '没有超期，但有一条已经挂了两个月以上——这种通常不是还在改，是该有人去问一句了。'
+  }
+  return '没有超期。'
 })
 
 /** 合格率分档只做视觉提示，不参与任何判定 —— 判定永远在检验单上 */
@@ -440,6 +535,14 @@ h2 {
 .pairs div:last-child { border-bottom: none; }
 .pairs span { color: #606266; }
 .box-tip { margin-top: 10px; font-size: 12px; color: #909399; line-height: 1.6; }
+
+/* 小节里的补充标题（表格前的说明），比 h2 轻、比 tip 重 */
+.sub-title {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  color: #606266;
+  line-height: 1.6;
+}
 
 .sheet-foot {
   margin-top: 28px;

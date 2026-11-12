@@ -113,16 +113,99 @@ public interface QcCapaMapper extends BaseMapper<QcCapa> {
      * 按责任人统计还开着的措施数量。
      *
      * <p>用来回答「这个人手上压了几条」。压了十条和压了一条，跟踪的力度不该一样。
+     *
+     * <p>{@code today} 从 Java 传，不用 {@code CURRENT_DATE}：容器默认 UTC，
+     * 数据库的「今天」在早上 8 点前还是昨天，于是前一天刚到期的那条不会被算成超期。
+     * 同一个页面上「超期 N 条」和列表里的红色标记会差一条，没人看得出是时区问题。
      */
     @Select("""
             SELECT c.owner                       AS owner,
                    count(*)                      AS open_cnt,
-                   count(*) FILTER (WHERE c.due_date < CURRENT_DATE) AS overdue_cnt
+                   count(*) FILTER (WHERE c.due_date < CAST(#{today} AS date)) AS overdue_cnt
             FROM qc_capa c
             WHERE c.del_flag = 0
               AND c.status IN ('OPEN', 'DOING', 'VERIFYING')
             GROUP BY c.owner
             ORDER BY count(*) DESC
             """)
-    List<Map<String, Object>> openByOwner();
+    List<Map<String, Object>> openByOwner(@Param("today") String today);
+
+    /**
+     * 月报用的措施汇总。
+     *
+     * <p>月报要回答的是「这个月质量问题改了没有」，所以四个数必须分开：
+     * <ul>
+     *   <li>{@code opened} / {@code closed}——本月新立、本月关掉的，按动作发生的时间算，
+     *       不是按创建时间算。一张三月份立的措施五月才关，它属于五月的关闭量。</li>
+     *   <li>{@code rejected}——本月被判无效退回的。判无效后状态回到 DOING，
+     *       所以这条只能按 {@code verified_at} 落窗口，不能按状态筛。</li>
+     *   <li>{@code open_now} / {@code overdue}——当前快照，不按月（和量具同一处理：
+     *       「现在有几条超期」不需要等月底）。</li>
+     * </ul>
+     *
+     * <p><b>算不出「验证通过率」是刻意的，不是缺数据。</b>表里只存最后一次验证结果，
+     * 退回后重新验证通过就把 {@code close_effective} 覆盖成 true 了。真按它算通过率，
+     * 会得到一个恒等于「关闭数 ÷ 提交过验证的数」的漂亮数字——它衡量的是「谁更容易被劝退」，
+     * 不是「措施有没有用」。而且一旦挂上这个指标，验证人就开始不判无效了。
+     */
+    @Select("""
+            SELECT count(*) FILTER (
+                       WHERE c.created_at >= CAST(#{from} AS timestamptz)
+                         AND c.created_at <  CAST(#{to}   AS timestamptz))        AS opened,
+                   count(*) FILTER (
+                       WHERE c.status = 'CLOSED'
+                         AND c.closed_at >= CAST(#{from} AS timestamptz)
+                         AND c.closed_at <  CAST(#{to}   AS timestamptz))         AS closed,
+                   count(*) FILTER (
+                       WHERE c.close_effective = false
+                         AND c.verified_at >= CAST(#{from} AS timestamptz)
+                         AND c.verified_at <  CAST(#{to}   AS timestamptz))       AS rejected,
+                   count(*) FILTER (
+                       WHERE c.status = 'CANCELLED'
+                         AND c.updated_at >= CAST(#{from} AS timestamptz)
+                         AND c.updated_at <  CAST(#{to}   AS timestamptz))        AS cancelled,
+                   count(*) FILTER (
+                       WHERE c.status IN ('OPEN', 'DOING', 'VERIFYING'))          AS open_now,
+                   count(*) FILTER (
+                       WHERE c.status IN ('OPEN', 'DOING', 'VERIFYING')
+                         AND c.due_date < CAST(#{today} AS date))                 AS overdue,
+                   max(CASE WHEN c.status IN ('OPEN', 'DOING', 'VERIFYING')
+                            THEN CAST(#{today} AS date) - c.created_at::date END) AS max_days_open,
+                   round(avg(CASE WHEN c.status = 'CLOSED'
+                                   AND c.closed_at >= CAST(#{from} AS timestamptz)
+                                   AND c.closed_at <  CAST(#{to}   AS timestamptz)
+                                  THEN extract(epoch FROM (c.closed_at - c.created_at)) / 86400.0
+                             END)::numeric, 1)                                    AS avg_close_days
+            FROM qc_capa c
+            WHERE c.del_flag = 0
+            """)
+    Map<String, Object> monthlySummary(@Param("from") String from,
+                                       @Param("to") String to,
+                                       @Param("today") String today);
+
+    /**
+     * 本月关闭的措施里，哪几条从立到关用了最久。
+     *
+     * <p>平均关闭天数会被一堆三五天的拉平，看不出「有两条挂了大半年」。
+     * 管理评审真正要问的是后者——那两条背后通常是一个没人愿意碰的问题。
+     */
+    @Select("""
+            SELECT c.capa_no                    AS capa_no,
+                   c.title                      AS title,
+                   c.owner                      AS owner,
+                   c.severity                   AS severity,
+                   c.created_at::date           AS created_day,
+                   c.closed_at::date            AS closed_day,
+                   (c.closed_at::date - c.created_at::date) AS days
+            FROM qc_capa c
+            WHERE c.del_flag = 0
+              AND c.status = 'CLOSED'
+              AND c.closed_at >= CAST(#{from} AS timestamptz)
+              AND c.closed_at <  CAST(#{to}   AS timestamptz)
+            ORDER BY (c.closed_at - c.created_at) DESC
+            LIMIT #{limit}
+            """)
+    List<Map<String, Object>> slowestClosed(@Param("from") String from,
+                                            @Param("to") String to,
+                                            @Param("limit") int limit);
 }

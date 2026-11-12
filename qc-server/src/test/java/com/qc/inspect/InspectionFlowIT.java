@@ -2581,9 +2581,65 @@ class InspectionFlowIT {
                         + num(todo.get("capaOverdue")));
     }
 
+    @Test
+    @Order(40)
+    @DisplayName("月报纠正措施段：新立/关闭/判无效分开报，且绝不出现验证通过率")
+    void monthlyCapaSection() {
+        String thisMonth = YearMonth.now().toString();
+        Map<String, Object> month = data(get("/api/reports/monthly?month=" + thisMonth));
+
+        Map<String, Object> capa = asMap(month.get("capa"));
+        assertThat(capa).as("月报没带措施段，管理评审问「那你怎么改的」就答不上").isNotEmpty();
+
+        // 前面 38/39 两个用例在本月建过措施、也关过两条
+        assertThat(num(capa.get("opened"))).as("本月新立要把前面造的算进去").isPositive();
+        assertThat(num(capa.get("closed"))).as("前面关过措施，关闭量不能是 0").isPositive();
+        assertThat(num(capa.get("openNow"))).as("「三天内要交的」那条还开着").isPositive();
+
+        // 38 里判过一条无效，判完状态回到 DOING。这条只能靠 verified_at + close_effective 数：
+        // 按 status='CLOSED' 筛会一条都数不到，而「这个月有几条改完没管用」正是该被看见的
+        assertThat(num(capa.get("rejected"))).as("判无效的条数要能数出来（靠 verified_at，不靠状态）")
+                .isPositive();
+        // 撤销前面 38 造过一条，所以不写死具体数，只要字段在、不是负数
+        // （写死就等于把测试和「前面那个用例撤了几条」绑死，改一处崩一片）
+        assertThat(num(capa.get("cancelled"))).isNotNegative();
+
+        // 平均关闭天数：本月关过 ≥1 条就必须有值。落成 0 的话，「平均 0 天关闭」是句假话
+        Object avg = capa.get("avgCloseDays");
+        assertThat(avg).as("本月关过措施，平均用时必须有值").isNotNull();
+        assertThat(((Number) avg).doubleValue()).isNotNegative();
+
+        // 挂得最久那条的天数。today 从 Java 传是因为容器时区是 UTC：
+        // 用 SQL 的 CURRENT_DATE，早上 8 点前还是昨天，这里会算出 -1
+        assertThat(num(capa.get("maxDaysOpen"))).as("天数不能是负的").isNotNegative();
+
+        // 最慢关闭：按用时降序，最多 3 条。平均会被三五天的拉平，这几条才是有问题的
+        List<Map<String, Object>> slow = asList(capa.get("slowest"));
+        assertThat(slow).isNotEmpty();
+        assertThat(slow.size()).isLessThanOrEqualTo(3);
+        long prevDays = Long.MAX_VALUE;
+        for (Map<String, Object> r : slow) {
+            long d = num(r.get("days"));
+            assertThat(d).as("用时不能是负的").isNotNegative();
+            assertThat(d).as("必须从慢到快排").isLessThanOrEqualTo(prevDays);
+            prevDays = d;
+            assertThat(String.valueOf(r.get("capaNo"))).startsWith("CAPA");
+            assertThat(String.valueOf(r.get("title"))).isNotBlank();
+        }
+
+        // ---- 结论：要有人话，且绝不出现「通过率」 ----
+        List<?> narr = (List<?>) month.get("narrative");
+        String text = String.join("\n", narr.stream().map(String::valueOf).toList());
+        assertThat(text).as("措施那几句必须进结论，不能只躺在下面那张表里")
+                .contains("纠正措施")
+                .contains("本月新立");
+        assertThat(text).as("一挂上通过率，验证人就不判无效了——这是刻意的取舍")
+                .doesNotContain("通过率")
+                .doesNotContain("有效率");
+    }
+
     /** 建议列表里找某一不良标识的那条。找不到给 null，别抛——「不该出现」也是一种断言 */
-    private Map<String, Object> findSuggestion(String defectKey) {
-        for (Map<String, Object> r : dataList("/api/capa/suggestions")) {
+    private Map<String, Object> findSuggestion(String defectKey) {        for (Map<String, Object> r : dataList("/api/capa/suggestions")) {
             if (defectKey.equals(String.valueOf(r.get("defectKey")))) {
                 return r;
             }

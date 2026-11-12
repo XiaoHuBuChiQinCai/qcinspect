@@ -1753,8 +1753,52 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 - `complaints.backlogDelta = 本月新开 - 本月关闭`，正数说明积压在恶化，
   比单看「未关闭数」有用
 - `narrative` 是给管理评审直接念的几句话，顺序：总量与环比 → 主要不良 → 客诉 →
-  计量器具 → 返工。措辞规则（空月不假警报、持平不说「上升 0」）由
-  `MonthlyNarrativeTest` 逐条锁定
+  计量器具 → 返工 → **纠正措施**。措辞规则（空月不假警报、持平不说「上升 0」）由
+  `MonthlyNarrativeTest` 逐条锁定，措施那几句由 `CapaNarrativeTest` 锁
+
+### 纠正措施段（`capa`）
+
+前面几块讲「这个月做得怎么样」，这一块讲**「做错了之后改没改」**——管理评审问的第二句，
+也是唯一能证明「不良被处置」之外还有「问题被纠正」的地方。
+
+```json
+{ "opened": 5, "closed": 3, "rejected": 1, "cancelled": 1,
+  "openNow": 4, "overdue": 2, "maxDaysOpen": 96, "avgCloseDays": 9.5,
+  "slowest": [{ "capaNo": "CAPA20261101 001", "title": "…", "owner": "张三",
+                "createdDay": "2026-08-02", "closedDay": "2026-11-04", "days": 94 }] }
+```
+
+**四个数必须分开，不能合成一个「措施完成率」**：混在一起就谁也看不出到底是
+「没人立」还是「立了没关」，而这两种情况的处理方式完全相反。
+
+| 字段 | 口径 | 为什么这么算 |
+|---|---|---|
+| `opened` | `created_at` 落本月 | 按动作发生的时间，不是按单号 |
+| `closed` | `status=CLOSED` 且 `closed_at` 落本月 | 三月立、五月关，算五月的关闭量 |
+| `rejected` | `close_effective=false` 且 `verified_at` 落本月 | 判无效后状态回到 `DOING`，按状态筛会一条都数不到 |
+| `cancelled` | `CANCELLED` 且 `updated_at` 落本月 | 撤销是终态，此后不会再有改动，`updated_at` 就是撤销时刻 |
+| `openNow` / `overdue` / `maxDaysOpen` | **当前快照** | 和量具一样：「现在有几条超期」不需要等月底 |
+
+**`avgCloseDays` 在一条都没关时是 `null`，不是 0**。落成 0 会显示成「平均 0 天关闭」，
+看着像措施当天立当天关。
+
+**刻意不算「验证通过率」**，这是取舍不是缺数据：
+
+1. 表里只存最后一次验证结果，退回后重新验证通过就把 `close_effective` 覆盖了。
+   真按它算，得到的是一个恒等于「关闭数 ÷ 提交过验证的数」的漂亮数字——
+   它衡量的是**谁更容易被劝退**，不是措施有没有用
+2. 更要紧的是：**一旦这个数上了报表，验证人就开始不判无效了**。而判无效是这套机制
+   唯一防得住「表上全是已验证有效、问题照旧发生」的东西
+
+所以判无效只报绝对数（`rejected`），结论里明说「这不是坏消息」——
+`CapaNarrative` 里「失败 / 不合格」这些词被测试禁止出现。
+
+**`slowest` 是最多 3 条本月关闭里拖得最久的**。平均值会被一堆三五天的拉平，
+看不出「有两条挂了半年」，而那两条背后通常是一个没人愿意碰的问题。
+
+**`today` 从 Java 传进 SQL，不用 `CURRENT_DATE`**：容器默认 UTC，数据库的「今天」
+在早上 8 点前还是昨天，`maxDaysOpen` 会算出 -1，「超期 N 条」也会和列表里的红色标记差一条。
+同一个根因在 `openByOwner` 里也有，一并改成传参。
 
 **不需要新增数据库脚本**：全部聚合在既有表的索引上完成。
 
