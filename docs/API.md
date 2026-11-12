@@ -1811,6 +1811,7 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
 | GET | `/suppliers` | 登录用户 | 一览，带引用批次数与件级合格率 |
+| GET | `/suppliers/{id}/profile?months=6` | 登录用户 | 画像：批次分布 + 按月走势 + 不良聚类 + 结论 |
 | GET | `/suppliers/options` | 登录用户 | 新建批次的**下拉专用**，只返回在用供应商 |
 | POST | `/suppliers` | ADMIN | 新建 / 编辑（带 `id` 即编辑） |
 | POST | `/suppliers/{id}/status?status=ACTIVE|DISABLED` | ADMIN | 停用 / 启用 |
@@ -1857,6 +1858,70 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 **统计口径的变化**：`/batches/stat/supplier` 与月报的供应商块，分组键从
 「`btrim(supplier)` 文本」改成「`coalesce(主数据名称, 文本, '（未填供应商）')`」，
 并新返回 `unlinked`（未挂档案的批次数）。前端的「未建档」标记就来自这一列。
+
+### 画像：`GET /suppliers/{id}/profile`
+
+列表上那一列「件级合格率 94.2%」解决不了问题：采购拿着它去谈话，对方一句
+「那 5.8% 是哪几批、坏在哪」就把人问住了。更要紧的是——
+
+**合格率相同的两家，问题性质可能完全相反：**
+
+| 形状 | 性质 | 该做什么 |
+|---|---|---|
+| 12 批里 11 批零不良、1 批废掉 40% | **偶发** | 查那一批的料、运输、换模记录。这时候换供应商是最贵的错 |
+| 12 批每批坏 5% 左右 | **系统性** | 不是运气，是这家厂现在的能力就在这儿。谈工艺整改，改不动才考虑分单 |
+
+两家都写着 95%，该做的事一件都不沾边。
+
+所以这个接口真正算的不是合格率，是**批次分布**：`perfectLots`（零不良几张）、
+`badLots`（有不良几张）、`worstBatchRate`（最差那批多少）。
+
+`kind` 分六档，判定全在 `SupplierInsight.kind()` 一处：
+
+| kind | label | 条件 | 为什么这样分 |
+|---|---|---|---|
+| `NO_DATA` | 无检验 | 时间窗内没有单 | 数据空白的常见原因是批次没挂 `supplier_id`，不是这家厂没问题 |
+| `TOO_FEW` | 样本不足 | `lots < 3` | 三批里坏两批很可能只是运气。**这时候闭嘴**，不然会上一句「那才三批」就被顶回来 |
+| `CLEAN` | 无不良 | `badLots = 0` | 附带提醒「没检出来 ≠ 确实没有」，抽检比例低时零不良只说明没抽到 |
+| `SPORADIC` | 偶发 | 有不良的 ≤ 1/3 | 问题集中在少数批次 |
+| `UNSTABLE` | 不稳定 | 1/3 ~ 2/3 之间 | 好坏混着来，比一直差更难处理：要问「好的那几批和差的有什么不一样」 |
+| `SYSTEMATIC` | 系统性 | ≥ 2/3 | 每批都有，是能力问题 |
+
+判定顺序有讲究：先排除「没数据」和「样本不足」，再判「零不良」，最后才分三档。
+反过来的话，三批里坏一批会被判成「系统性」。
+
+**不良占比的分母是这家供应商自己的不良件数**，不是全厂——「你家的问题里外径占 56%」
+才有用，「占全厂 3%」说明不了任何事。过半时结论会说「先只谈这一项，提十条等于没提」。
+
+**趋势按件数加权的前后两段比，不是首月比末月**：首月常常只有一批货，末月也可能只检了
+一张单，单批波动会让趋势完全反过来。触发条件：≥4 个月、且前后两段各 ≥30 件，
+否则返回 `null`（宁愿不说，也不要拿两批货编一条趋势）。差不到 2 个百分点不算趋势。
+
+**按月分组的 `AT TIME ZONE 'Asia/Shanghai'` 不能省**：`inspected_at` 是 timestamptz，
+直接 `date_trunc('month', ...)` 按容器时区（UTC）截断，月初最后 8 小时的检验会算到上个月。
+
+返回结构：
+
+```json
+{ "months": 6, "from": "2026-06-01", "to": "2026-11-12",
+  "supplier": { "id": 3, "supplierCode": "SUP0003", "supplierName": "…", "level": "B" },
+  "totals": { "batches": 6, "lots": 6, "pieceTotal": 60, "piecePass": 56,
+              "yieldRate": 0.9333, "perfectLots": 5, "badLots": 1,
+              "badShare": 0.1667, "worstBatchRate": 0.6 },
+  "kind": "SPORADIC", "kindLabel": "偶发",
+  "monthly": [{ "month": "2026-11", "batches": 6, "lots": 6, "pieceTotal": 60,
+                "piecePass": 56, "pieceFail": 4, "yieldRate": 0.9333 }],
+  "defects": [{ "code": "OD-001", "name": "外径超差", "cnt": 1, "qty": 4,
+                "batches": 1, "share": 1.0 }],
+  "narrative": ["近 6 张检验单、6 个批次……", "这是偶发，不是这家厂的常态……"] }
+```
+
+`yieldRate` / `badShare` / `worstBatchRate` 在件数为 0 时是 `null` 不是 0——
+「一件没检」和「全不合格」在报表上长得一样，含义差一个数量级。
+
+**只统计 `SUBMITTED / CLOSED`**：草稿和作废单不代表任何结论。
+**只按 `supplier_id` 匹配**：没挂档的批次不会进这张画像，页脚对这一点有明说——
+否则「查了没数据」会被误读成「这家厂没问题」。
 
 ## 十九、检验员分析
 

@@ -60,8 +60,9 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="150" fixed="right">
+      <el-table-column label="操作" width="210" fixed="right">
         <template #default="{ row }">
+          <el-button size="small" type="primary" plain @click="openProfile(row)">画像</el-button>
           <el-button size="small" @click="edit(row)">编辑</el-button>
           <el-button size="small" :type="row.status === 'ACTIVE' ? 'warning' : 'success'" plain @click="toggle(row)">
             {{ row.status === 'ACTIVE' ? '停用' : '启用' }}
@@ -73,6 +74,92 @@
     <div class="tip">
       停用不删档：历史批次照样能按这家厂统计、能追溯。停用只是让它不再出现在新建批次的下拉里。
     </div>
+
+    <!-- 画像：列表上那一列合格率回答不了「该跟这家厂谈什么」。
+         12 批里 1 批废掉 40%、和 12 批每批坏 5%，平均下来都写着 95%，
+         但一个要查那一批、一个要改工艺 -->
+    <el-drawer v-model="profVisible" size="780px" :with-header="false" class="prof-drawer">
+      <div v-loading="profLoading" class="prof">
+        <template v-if="prof">
+          <div class="prof-head">
+            <div>
+              <span class="prof-name">{{ prof.supplier.supplierName }}</span>
+              <el-tag :type="kindTag(prof.kind)" effect="dark" size="small" class="ml">
+                {{ prof.kindLabel }}
+              </el-tag>
+            </div>
+            <div class="spacer" />
+            <el-radio-group v-model="profMonths" size="small" @change="reloadProfile">
+              <el-radio-button label="3">3 个月</el-radio-button>
+              <el-radio-button label="6">6 个月</el-radio-button>
+              <el-radio-button label="12">12 个月</el-radio-button>
+            </el-radio-group>
+          </div>
+          <div class="prof-sub">
+            {{ prof.supplier.supplierCode }}　·　统计区间 {{ prof.from }} 至 {{ prof.to }}
+            <span v-if="prof.supplier.level">　·　评级 {{ prof.supplier.level }}</span>
+            <span v-if="prof.supplier.status !== 'ACTIVE'">　·　已停用</span>
+          </div>
+
+          <ol class="narr">
+            <li v-for="(line, i) in prof.narrative" :key="i">{{ line }}</li>
+          </ol>
+
+          <div class="pairs">
+            <div><span>批次 / 检验单</span><b>{{ prof.totals.batches }} / {{ prof.totals.lots }}</b></div>
+            <div>
+              <span>受检件 / 合格件</span>
+              <b>{{ prof.totals.pieceTotal }} / {{ prof.totals.piecePass }}</b>
+            </div>
+            <div>
+              <span>件级合格率</span>
+              <b :class="rateTone(prof.totals.yieldRate)">{{ profPct(prof.totals.yieldRate) }}</b>
+            </div>
+            <!-- 这两个数是这张画像和「合格率排名」的区别 -->
+            <div>
+              <span>零不良 / 有不良</span>
+              <b>{{ prof.totals.perfectLots }} 张 / {{ prof.totals.badLots }} 张</b>
+            </div>
+            <div>
+              <span>最差的一批</span>
+              <b :class="rateTone(prof.totals.worstBatchRate)">{{ profPct(prof.totals.worstBatchRate) }}</b>
+            </div>
+          </div>
+
+          <div class="sec">按月（合格率按件加权，不是各月简单平均）</div>
+          <el-table :data="prof.monthly" size="small" border>
+            <el-table-column prop="month" label="月份" width="100" />
+            <el-table-column prop="batches" label="批次" width="70" align="right" />
+            <el-table-column prop="lots" label="检验单" width="80" align="right" />
+            <el-table-column prop="pieceTotal" label="受检件" width="90" align="right" />
+            <el-table-column prop="pieceFail" label="不合格件" width="100" align="right" />
+            <el-table-column label="件级合格率" min-width="150">
+              <template #default="{ row }">
+                <span :class="rateTone(row.yieldRate)">{{ profPct(row.yieldRate) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div class="sec">不良都坏在哪（占比按这家自己的不良件数算）</div>
+          <el-table v-if="prof.defects.length" :data="prof.defects" size="small" border>
+            <el-table-column prop="code" label="代码" width="100" />
+            <el-table-column prop="name" label="不良项" min-width="160" />
+            <el-table-column prop="cnt" label="次数" width="70" align="right" />
+            <el-table-column prop="qty" label="件数" width="70" align="right" />
+            <el-table-column prop="batches" label="涉及批次" width="90" align="right" />
+            <el-table-column label="占本家不良" width="110" align="right">
+              <template #default="{ row }">{{ profPct(row.share) }}</template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-else description="这段时间没有不良记录" :image-size="52" />
+
+          <div class="prof-foot">
+            只统计已提交 / 已关闭的检验单。批次建立时没挂 supplier_id 的不会进这张画像——
+            数据缺口的常见原因就是这个，而不是这家厂真的没问题。
+          </div>
+        </template>
+      </div>
+    </el-drawer>
 
     <el-dialog v-model="visible" :title="form.id ? '编辑供应商' : '新增供应商'" width="480px">
       <el-form label-width="90px">
@@ -241,6 +328,65 @@ async function toggle(row) {
   await load()
 }
 
+// ---------------------------------------------------------------- 画像
+
+const profVisible = ref(false)
+const profLoading = ref(false)
+const prof = ref(null)
+const profMonths = ref('6')
+// 记住当前看的是哪一家：切 3/6/12 个月时要知道重新拉谁
+const profRow = ref(null)
+
+function openProfile(row) {
+  profRow.value = row
+  prof.value = null
+  profVisible.value = true
+  loadProfile()
+}
+
+function reloadProfile() {
+  if (profRow.value) loadProfile()
+}
+
+async function loadProfile() {
+  if (!profRow.value) return
+  profLoading.value = true
+  try {
+    prof.value = await http.get(`/suppliers/${profRow.value.id}/profile`, {
+      params: { months: Number(profMonths.value) }
+    })
+  } catch (e) {
+    // 拉不到就关掉抽屉：空白的抽屉比一句错误更让人以为「这家厂一点数据都没有」
+    profVisible.value = false
+    throw e
+  } finally {
+    profLoading.value = false
+  }
+}
+
+/** 分档配色。系统性用红：那不是运气，是要么改工艺要么分单 */
+function kindTag(kind) {
+  return {
+    CLEAN: 'success',
+    SPORADIC: 'warning',
+    UNSTABLE: 'warning',
+    SYSTEMATIC: 'danger'
+  }[kind] || 'info'
+}
+
+function profPct(v) {
+  if (v === null || v === undefined) return '-'
+  return (Number(v) * 100).toFixed(1) + '%'
+}
+
+/** 只做视觉提示，不参与判定——判定在服务端 SupplierInsight */
+function rateTone(v) {
+  if (v === null || v === undefined) return ''
+  if (v < 0.9) return 'bad'
+  if (v < 0.98) return 'warn2'
+  return ''
+}
+
 onMounted(load)
 </script>
 
@@ -254,4 +400,40 @@ onMounted(load)
 .tip { margin-top: 10px; font-size: 12px; color: #909399; line-height: 1.6; }
 .bad { color: #f56c6c; font-weight: 600; }
 .warn2 { color: #e6a23c; font-weight: 600; }
+
+/* ---------- 画像抽屉 ---------- */
+.prof { min-height: 120px; }
+.prof-head { display: flex; align-items: center; gap: 12px; }
+.prof-name { font-size: 18px; font-weight: 600; }
+.ml { margin-left: 8px; }
+.prof-sub { margin-top: 6px; font-size: 12px; color: #909399; }
+.narr {
+  margin: 16px 0;
+  padding: 12px 16px 12px 32px;
+  background: #f7f8fa;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: #303133;
+}
+.narr li { margin: 2px 0; }
+.pairs { margin-top: 8px; }
+.pairs div {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px dashed #f2f3f5;
+}
+.pairs div:last-child { border-bottom: none; }
+.pairs span { color: #606266; }
+.sec { margin: 20px 0 8px; font-size: 13px; font-weight: 600; color: #303133; }
+.prof-foot {
+  margin-top: 20px;
+  padding-top: 10px;
+  border-top: 1px solid #ebeef5;
+  font-size: 12px;
+  color: #a8abb2;
+  line-height: 1.7;
+}
 </style>

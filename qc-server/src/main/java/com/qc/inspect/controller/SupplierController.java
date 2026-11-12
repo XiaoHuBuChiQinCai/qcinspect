@@ -5,6 +5,7 @@ import com.qc.inspect.common.BizException;
 import com.qc.inspect.common.R;
 import com.qc.inspect.entity.QcSupplier;
 import com.qc.inspect.mapper.QcSupplierMapper;
+import com.qc.inspect.service.SupplierProfileService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -40,6 +41,7 @@ public class SupplierController {
     private static final Set<String> STATUSES = Set.of("ACTIVE", "DISABLED");
 
     private final QcSupplierMapper supplierMapper;
+    private final SupplierProfileService profileService;
 
     /** 一览：带引用批次数与件级合格率，列表页直接能看出哪家该谈话 */
     @GetMapping
@@ -124,6 +126,21 @@ public class SupplierController {
             supplierMapper.updateById(supplier);
         }
         return R.ok(supplier);
+    }
+
+    /**
+     * 供应商画像。
+     *
+     * <p>列表上那一列合格率回答不了「该跟这家厂谈什么」。这个接口把批次分布算出来：
+     * 零不良几张、有不良几张、最差那批多少——「12 批里 1 批废掉 40%」和
+     * 「12 批每批坏 5%」平均下来都写着 95%，但一个要查那一批、一个要改工艺。
+     *
+     * <p>{@code months} 留空看半年。
+     */
+    @GetMapping("/{id}/profile")
+    public R<Map<String, Object>> profile(@PathVariable Long id,
+                                          @RequestParam(required = false) Integer months) {
+        return R.ok(profileService.profile(id, months));
     }
 
     /**

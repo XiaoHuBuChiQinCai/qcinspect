@@ -2638,6 +2638,104 @@ class InspectionFlowIT {
                 .doesNotContain("有效率");
     }
 
+    @Test
+    @Order(41)
+    @DisplayName("供应商画像：偶发与系统性分开判，分母用这家自己的不良件数")
+    void supplierProfile() {
+        // 专属供应商：和别人共用的话，别人造的批次会把分布搅乱，
+        // 「6 张里 1 张有不良」就变成了「20 张里 7 张」，分档也就跟着变了
+        Long supId = num(data(post("/api/suppliers", Map.of(
+                "supplierName", "IT 画像供应商"))).get("id"));
+        assertThat(supId).isNotNull();
+
+        QcStandard std = standardMapper.selectList(null).get(0);
+        // 6 个批次：5 张零不良 + 1 张合格率 60%
+        for (int i = 1; i <= 6; i++) {
+            boolean bad = i == 6;
+
+            QcBatch b = new QcBatch();
+            b.setBatchNo("PROF-B" + i);
+            b.setProductId(1L);
+            b.setInspectType("IQC");
+            b.setQty(10);
+            b.setStatus("PENDING");
+            b.setSupplierId(supId);
+            b.setSupplier("IT 画像供应商");
+            batchMapper.insert(b);
+
+            QcInspection ins = new QcInspection();
+            ins.setInspectionNo("PROF-INS-" + i);
+            ins.setBatchId(b.getId());
+            ins.setStandardId(std.getId());
+            ins.setStandardVersion(std.getVersion() == null ? 1 : std.getVersion());
+            ins.setProductId(1L);
+            ins.setInspectType("IQC");
+            ins.setSamplingType("FULL");
+            ins.setSampleQty(10);
+            ins.setAcceptQty(0);
+            ins.setStatus("CLOSED");
+            ins.setResult(bad ? "FAIL" : "PASS");
+            ins.setPassedQty(bad ? 6 : 10);
+            ins.setFailedQty(bad ? 4 : 0);
+            ins.setInspectedAt(LocalDateTime.now());
+            inspectionMapper.insert(ins);
+
+            if (bad) {
+                QcDefect d = new QcDefect();
+                d.setInspectionId(ins.getId());
+                d.setPieceNo(1);
+                d.setDefectCode("PROF-OD");
+                d.setDefectName("外径超差");
+                d.setDefectQty(4);
+                defectMapper.insert(d);
+            }
+        }
+
+        Map<String, Object> prof = data(get("/api/suppliers/" + supId + "/profile"));
+        Map<String, Object> t = asMap(prof.get("totals"));
+
+        assertThat(num(t.get("lots"))).isEqualTo(6L);
+        assertThat(num(t.get("batches"))).as("6 个批次各一张单").isEqualTo(6L);
+        assertThat(num(t.get("perfectLots"))).as("5 张零不良").isEqualTo(5L);
+        assertThat(num(t.get("badLots"))).as("1 张有不良").isEqualTo(1L);
+        assertThat(num(t.get("pieceTotal"))).isEqualTo(60L);
+        assertThat(num(t.get("piecePass"))).isEqualTo(56L);
+        // 最差那批 = 6/10。这个数是「偶发还是系统性」之外的另一条线索：
+        // 只有 1 批出问题、而且那 1 批废了 40%，这才是偶发的典型形状
+        assertThat(dec(t.get("worstBatchRate"))).isEqualByComparingTo("0.6");
+
+        // 6 张里 1 张有不良 ≈ 16.7%，落在 1/3 以下 → 偶发
+        assertThat(prof.get("kind")).isEqualTo("SPORADIC");
+        assertThat(prof.get("kindLabel")).isEqualTo("偶发");
+
+        // 不良占比的分母是这家自己的不良件数（4），不是全厂：4/4 = 100%
+        List<Map<String, Object>> defs = asList(prof.get("defects"));
+        assertThat(defs).hasSize(1);
+        assertThat(num(defs.get(0).get("qty"))).isEqualTo(4L);
+        assertThat(num(defs.get(0).get("batches"))).as("只涉及 1 个批次").isEqualTo(1L);
+        assertThat(dec(defs.get(0).get("share"))).isEqualByComparingTo("1.0");
+        assertThat(String.valueOf(defs.get(0).get("code"))).isEqualTo("PROF-OD");
+
+        // 按月：合计要回到总量，否则分组里有行落在外面（时区截断最容易造成这个）
+        List<Map<String, Object>> monthly = asList(prof.get("monthly"));
+        assertThat(monthly).isNotEmpty();
+        long monthTotal = monthly.stream().mapToLong(r -> num(r.get("pieceTotal"))).sum();
+        assertThat(monthTotal).as("按月合计必须等于总受检件").isEqualTo(num(t.get("pieceTotal")));
+        long monthPass = monthly.stream().mapToLong(r -> num(r.get("piecePass"))).sum();
+        assertThat(monthPass).as("按月合格件合计也要对得上").isEqualTo(num(t.get("piecePass")));
+
+        // 结论要能直接念给采购听
+        List<?> narr = (List<?>) prof.get("narrative");
+        String text = String.join("\n", narr.stream().map(String::valueOf).toList());
+        assertThat(text).contains("这是偶发").contains("换供应商是最贵的一种错");
+        assertThat(text).contains("外径超差");
+
+        // 不存在的供应商要拦，不能返回一个全 0 的画像（那会被当成「这家没问题」）
+        Map<String, Object> missing = get("/api/suppliers/999999/profile");
+        assertThat(num(missing.get("code"))).isNotZero();
+        assertThat(String.valueOf(missing.get("msg"))).contains("不存在");
+    }
+
     /** 建议列表里找某一不良标识的那条。找不到给 null，别抛——「不该出现」也是一种断言 */
     private Map<String, Object> findSuggestion(String defectKey) {        for (Map<String, Object> r : dataList("/api/capa/suggestions")) {
             if (defectKey.equals(String.valueOf(r.get("defectKey")))) {
