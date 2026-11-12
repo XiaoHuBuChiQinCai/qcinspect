@@ -132,6 +132,20 @@ public class CapaController {
         return R.ok(capaService.recurrence(productId, defectKey));
     }
 
+    /**
+     * 该立措施却还没立的：近 90 天反复出现、当前没有有效措施的不良簇。
+     *
+     * <p>这是「动作层」的入口。{@code /recurrence} 要人先想到要立措施才会被查，
+     * 而这个接口是系统主动把单子推到人面前——返回里已经带好建单要用的标题与问题描述，
+     * 点一下就进建单弹窗。
+     *
+     * <p>不做权限限制：信息本身不敏感，建单那一步本来就要填责任人、走原来的校验。
+     */
+    @GetMapping("/suggestions")
+    public R<List<Map<String, Object>>> suggestions() {
+        return R.ok(capaService.suggestions());
+    }
+
     /** 按责任人看谁手上压着几条 */
     @GetMapping("/by-owner")
     public R<List<Map<String, Object>>> byOwner() {

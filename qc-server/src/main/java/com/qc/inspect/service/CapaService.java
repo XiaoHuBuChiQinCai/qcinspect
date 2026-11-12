@@ -27,6 +27,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -303,8 +304,7 @@ public class CapaService {
             return out;
         }
 
-        String from = LocalDate.now().minusDays(HISTORY_DAYS)
-                .atStartOfDay().atOffset(BIZ_OFFSET).toString();
+        String from = windowStart();
         Map<String, Object> hist = capaMapper.defectHistory(productId, defectKey, from);
         long occ = hist == null ? 0 : toLong(hist.get("occ"));
         long batches = hist == null ? 0 : toLong(hist.get("batches"));
@@ -357,6 +357,137 @@ public class CapaService {
         }
         out.put("advice", advice);
         return out;
+    }
+
+    // -------------------------------------------------------------- 该立却没立的
+
+    /**
+     * 扫描近 {@link #HISTORY_DAYS} 天的不良簇，挑出「该立措施却还没立」的。
+     *
+     * <p>为什么要主动扫：{@link #recurrence} 只在有人打开新建弹窗时才算一次，而这套系统
+     * 最大的敌人不是「措施做不好」，是<b>根本没想起来要立</b>。帕累托每月的第一根柱子
+     * 都是同一个毛病——这件事报表上一直看得见，但没有一个地方会站出来说「这一条你还没动过」。
+     *
+     * <p>判断全部交给 {@link CapaRules#advice}：几个数字、几条口径，写在这里就又变成
+     * 第二份出处，前端要是再自己判一次就是第三份。这里只负责取数、匹配、拼单子。
+     */
+    public List<Map<String, Object>> suggestions() {
+        List<Map<String, Object>> clusters = capaMapper.defectClusters(windowStart());
+        if (clusters.isEmpty()) {
+            return List.of();
+        }
+
+        // 把措施事实压成「这个产品 + 这个不良」上的两个布尔：有没有还开着的、有没有判过有效的。
+        // 撤销的不算：它没被做过，也就不该挡住重新立一条
+        Map<String, boolean[]> facts = new HashMap<>();
+        for (Map<String, Object> f : capaMapper.capaFacts()) {
+            String key = clusterKey(str(f.get("product_id")), str(f.get("defect_code")));
+            if (key == null) {
+                continue;
+            }
+            boolean[] v = facts.computeIfAbsent(key, k -> new boolean[2]);
+            String status = str(f.get("status"));
+            if (CapaRules.isOpen(status)) {
+                v[0] = true;
+            }
+            if (QcCapa.STATUS_CLOSED.equals(status) && isTrue(f.get("close_effective"))) {
+                v[1] = true;
+            }
+        }
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map<String, Object> c : clusters) {
+            Long productId = longOrNull(c.get("product_id"));
+            String defectKey = str(c.get("defect_key"));
+            long occ = toLong(c.get("occ"));
+            long batches = toLong(c.get("batches"));
+            long qty = toLong(c.get("qty"));
+
+            boolean[] v = facts.getOrDefault(clusterKey(str(c.get("product_id")), defectKey),
+                    new boolean[2]);
+            CapaRules.Advice advice = CapaRules.advice(batches, occ, v[0], v[1]);
+            if (!advice.suggest()) {
+                continue;
+            }
+
+            String productName = str(c.get("product_name"));
+            String productLabel = productName == null ? "未指定产品" : productName;
+            String lastDay = str(c.get("last_day"));
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("productId", productId);
+            row.put("productCode", str(c.get("product_code")));
+            row.put("productName", productName);
+            row.put("defectKey", defectKey);
+            row.put("occ", occ);
+            row.put("batches", batches);
+            row.put("qty", qty);
+            row.put("lastDay", lastDay);
+            // 改过又犯的排前面：它比「第一次被推出来」的那类严重得多
+            row.put("regressed", advice.regressed());
+            row.put("note", advice.note());
+            // 建单要填的标题与问题描述在这里拼好。让前端自己拼一次，就等于
+            // 「同一件事两种说法」，而且几年后没人知道当初为什么这么写
+            row.put("title", productLabel + " · " + defectKey + " 反复出现");
+            row.put("problem", "近 " + HISTORY_DAYS + " 天在 " + batches + " 个批次出现 "
+                    + occ + " 次，累计 " + qty + " 件" + (lastDay == null ? "" : "，最近一次 " + lastDay) + "。");
+            rows.add(row);
+        }
+
+        // 改过又犯的最前，然后按批次数、件数
+        rows.sort((a, b) -> {
+            int r = Boolean.compare(Boolean.TRUE.equals(b.get("regressed")),
+                    Boolean.TRUE.equals(a.get("regressed")));
+            if (r != 0) {
+                return r;
+            }
+            int byBatch = Long.compare((Long) b.get("batches"), (Long) a.get("batches"));
+            return byBatch != 0 ? byBatch : Long.compare((Long) b.get("qty"), (Long) a.get("qty"));
+        });
+        return rows;
+    }
+
+    /** 再犯窗口的起点，与 {@link #recurrence} 用同一个，别处不许自己算 */
+    private String windowStart() {
+        return LocalDate.now().minusDays(HISTORY_DAYS).atStartOfDay().atOffset(BIZ_OFFSET).toString();
+    }
+
+    /**
+     * 措施上的 (product_id, defect_code) 与不良簇上的 (product_id, defect_key) 是同一个坐标系。
+     *
+     * <p>用不可见字符做分隔，避免「产品名里带竖线」这类撞车——拿字符串拼 key 的通病。
+     */
+    private static String clusterKey(String productId, String defectKey) {
+        if (productId == null || defectKey == null) {
+            return null;
+        }
+        return productId + '\u0001' + defectKey;
+    }
+
+    private static String str(Object o) {
+        if (o == null) {
+            return null;
+        }
+        String s = o.toString().trim();
+        return s.isEmpty() ? null : s;
+    }
+
+    private static Long longOrNull(Object o) {
+        return o instanceof Number n ? n.longValue() : null;
+    }
+
+    /**
+     * 从 Map 里读 boolean。
+     *
+     * <p>不能只写 {@code Boolean.TRUE.equals(x)}：MyBatis 把结果塞进 Map 时，
+     * 有的驱动给 Boolean、有的给 "t"/"f" 字符串，直接比会静默判成 false，
+     * 于是「改过又犯」这类最该冒出来的全被吞掉。
+     */
+    private static boolean isTrue(Object o) {
+        if (o instanceof Boolean b) {
+            return b;
+        }
+        return o != null && ("t".equalsIgnoreCase(o.toString()) || "true".equalsIgnoreCase(o.toString()));
     }
 
     // ------------------------------------------------------------------ 查询

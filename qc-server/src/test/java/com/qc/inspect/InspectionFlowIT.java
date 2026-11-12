@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcBackupLog;
 import com.qc.inspect.entity.QcDefect;
+import com.qc.inspect.entity.QcInspection;
 import com.qc.inspect.entity.QcProduct;
 import com.qc.inspect.entity.QcReworkOrder;
 import com.qc.inspect.entity.QcStandard;
@@ -13,6 +14,7 @@ import com.qc.inspect.entity.QcStandardItem;
 import com.qc.inspect.mapper.QcBatchMapper;
 import com.qc.inspect.mapper.QcBackupLogMapper;
 import com.qc.inspect.mapper.QcDefectMapper;
+import com.qc.inspect.mapper.QcInspectionMapper;
 import com.qc.inspect.mapper.QcProductMapper;
 import com.qc.inspect.mapper.QcReworkOrderMapper;
 import com.qc.inspect.mapper.QcStandardItemMapper;
@@ -111,6 +113,9 @@ class InspectionFlowIT {
     private com.qc.inspect.service.DocNoService docNoService;
     @Autowired
     private QcDefectMapper defectMapper;
+    /* 「反复出现该立措施」要造跨批次的不良，只能直接插检验单——走接口得把单据真的判一遍 */
+    @Autowired
+    private QcInspectionMapper inspectionMapper;
     /* 备份记录平时是外部脚本写的，测试里直接插一行，模拟脚本落库的那一刻 */
     @Autowired
     private QcBackupLogMapper backupLogMapper;
@@ -2492,6 +2497,98 @@ class InspectionFlowIT {
         assertThat(asList(pageData.get("records")).get(0).get("statusText")).isNotNull();
         assertThat(data(get("/api/capa/" + capaId)).get("recurrenceNote"))
                 .as("关过的措施详情要能看到同类不良的历史").isNotNull();
+    }
+
+    @Test
+    @Order(39)
+    @DisplayName("该立却没立：反复出现的不良自己冒出来，立了就不再推，改过又犯要标出来")
+    void capaSuggest() {
+        // 跨三个批次各一条同一不良：换料、换班、换模之后它照样发生，才是「过程的病」。
+        // 同一批里十次不推——那是那批货的事，先把这批处理掉就完了
+        String code = "V23-SUG";
+        QcStandard std = standardMapper.selectList(null).get(0);
+        for (int i = 1; i <= 3; i++) {
+            QcInspection ins = new QcInspection();
+            ins.setInspectionNo("SUG-INS-" + i);
+            ins.setBatchId(ctxBatch("SUG-B" + i, 1L));
+            ins.setStandardId(std.getId());
+            ins.setStandardVersion(std.getVersion() == null ? 1 : std.getVersion());
+            ins.setProductId(1L);
+            ins.setInspectType("IQC");
+            ins.setSamplingType("FULL");
+            ins.setSampleQty(1);
+            ins.setAcceptQty(0);
+            ins.setStatus("CLOSED");
+            ins.setResult("FAIL");
+            ins.setPassedQty(0);
+            ins.setFailedQty(1);
+            ins.setInspectedAt(LocalDateTime.now());
+            inspectionMapper.insert(ins);
+
+            QcDefect d = new QcDefect();
+            d.setInspectionId(ins.getId());
+            d.setPieceNo(1);
+            d.setDefectCode(code);
+            d.setDefectName("测试用跨批次不良");
+            d.setDefectQty(1);
+            defectMapper.insert(d);
+        }
+
+        // ---- 三批都在犯、还没立过措施 → 该推出来 ----
+        Map<String, Object> sug = findSuggestion(code);
+        assertThat(sug).as("跨三个批次还在犯，得有人被叫去查根因").isNotNull();
+        assertThat(num(sug.get("batches"))).isEqualTo(3);
+        assertThat(Boolean.TRUE.equals(sug.get("regressed")))
+                .as("没关过措施，不能说成「改过又犯」").isFalse();
+        assertThat(String.valueOf(sug.get("problem"))).contains("3 个批次");
+        // 标题和问题描述由服务端拼：前端自己拼一次，就成了同一件事两种说法
+        assertThat(String.valueOf(sug.get("title"))).contains(code);
+
+        // ---- 立了措施 → 立刻不再推，免得人以为系统不知道他正在做 ----
+        Long id = num(data(post("/api/capa", Map.of(
+                "title", sug.get("title"),
+                "problem", sug.get("problem"),
+                "productId", 1,
+                "defectCode", code,
+                "owner", "张三"))).get("id"));
+        assertThat(findSuggestion(code)).as("已经在改了，就不再催着立新的").isNull();
+
+        // ---- 改完判有效关掉、可它又犯了 → 必须重新推，而且标成「改过又犯」 ----
+        data(post("/api/capa/" + id + "/analysis", Map.of(
+                "rootCause", "刀补没算热变形", "actionPlan", "按班次修正刀补")));
+        data(post("/api/capa/" + id + "/submit-verify", Map.of()));
+        data(post("/api/capa/" + id + "/verify",
+                Map.of("effective", true, "note", "连续 5 批未再出现")));
+
+        Map<String, Object> again = findSuggestion(code);
+        assertThat(again).as("判过有效又犯了，这是最该被看见的一条").isNotNull();
+        assertThat(Boolean.TRUE.equals(again.get("regressed"))).isTrue();
+        assertThat(String.valueOf(again.get("note"))).contains("验证有效");
+
+        // ---- 待办角标：快到期的单列一个数，且不混进 actionable ----
+        Long soonId = num(data(post("/api/capa", Map.of(
+                "title", "三天内要交的", "problem", "到期提醒口径", "owner", "李四",
+                "dueDate", LocalDate.now().plusDays(2).toString()))).get("id"));
+        assertThat(soonId).isNotNull();
+        Map<String, Object> todo = data(get("/api/todo/summary"));
+        assertThat(num(todo.get("capaDueSoon"))).as("两天后到期要进快到期").isPositive();
+        assertThat(num(todo.get("capaDueSoonDays"))).as("天数由服务端下发").isEqualTo(3);
+        // 还没到期不是事故：混进角标总数会让人以为有十几件事压着，久了整个不看了
+        assertThat(num(todo.get("actionable"))).isEqualTo(
+                num(todo.get("pendingReview")) + num(todo.get("pendingDefect"))
+                        + num(todo.get("myRejected")) + num(todo.get("openComplaint"))
+                        + num(todo.get("pendingBatch")) + num(todo.get("reworkOverdue"))
+                        + num(todo.get("capaOverdue")));
+    }
+
+    /** 建议列表里找某一不良标识的那条。找不到给 null，别抛——「不该出现」也是一种断言 */
+    private Map<String, Object> findSuggestion(String defectKey) {
+        for (Map<String, Object> r : dataList("/api/capa/suggestions")) {
+            if (defectKey.equals(String.valueOf(r.get("defectKey")))) {
+                return r;
+            }
+        }
+        return null;
     }
 
     /** 1x1 PNG，只求扩展名与字节都像图片，不关心内容 */

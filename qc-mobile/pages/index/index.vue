@@ -69,6 +69,7 @@
 import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { api, clearSession, getToken, getUser } from '../../common/api'
+import { summaryLine } from '../../common/capa.js'
 import { scanCode } from '../../common/lookup'
 
 const batches = ref([])
@@ -135,14 +136,9 @@ const reworkSub = computed(() => {
  * 三个数都是全厂口径（和返修那格一样），不是「我负责的」；手机上点进去才是自己那份。
  */
 const capaOverdue = computed(() => Number(summary.value?.capaOverdue) || 0)
-const capaOpen = computed(() => Number(summary.value?.capaOpen) || 0)
-const capaVerifying = computed(() => Number(summary.value?.capaVerifying) || 0)
-const capaSub = computed(() => {
-  if (capaOverdue.value) return capaOverdue.value + ' 条超期没改'
-  if (capaVerifying.value) return capaVerifying.value + ' 条待验证'
-  if (capaOpen.value) return capaOpen.value + ' 条在改'
-  return '没有在改的措施'
-})
+// 摘要句的优先级（超期 > 快到期 > 待验证 > 在改）在 common/capa.js 里，好单独测。
+// 顺序排错会变成「看着有事、点进去没事」，点两次以后人就再也不点了
+const capaSub = computed(() => summaryLine(summary.value))
 
 async function load() {
   if (!getToken()) {

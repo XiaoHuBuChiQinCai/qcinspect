@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   statusTone, isOpen, canStart, canEdit, canSubmit,
-  missingForSubmit, daysBetween, dueLabel
+  missingForSubmit, daysBetween, dueLabel, summaryLine
 } from '../../qc-mobile/common/capa.js'
 
 /**
@@ -117,4 +117,34 @@ test('待验证的也算开着：期限照常提示，因为审核员还压着�
   const row = { dueDate: '2026-11-25', status: 'VERIFYING', overdue: false, overdueDays: 0 }
   assert.equal(dueLabel(row, '2026-11-11'), '还剩 14 天')
   assert.equal(isOpen(row.status), true)
+})
+
+/* ---------------- 首页那一格的摘要句 ---------------- */
+
+test('摘要优先级：超期压过快到期，快到期压过待验证', () => {
+  // 三个都有的时候只说最要紧的那一条，不堆成一句话
+  assert.equal(
+    summaryLine({ capaOverdue: 2, capaDueSoon: 3, capaVerifying: 1, capaOpen: 9 }),
+    '2 条超期没改')
+  assert.equal(
+    summaryLine({ capaOverdue: 0, capaDueSoon: 3, capaVerifying: 1, capaOpen: 9 }),
+    '3 条 3 天内到期')
+  assert.equal(
+    summaryLine({ capaDueSoon: 0, capaVerifying: 1, capaOpen: 9 }),
+    '1 条待验证')
+  assert.equal(summaryLine({ capaOpen: 9 }), '9 条在改')
+  assert.equal(summaryLine({}), '没有在改的措施')
+  assert.equal(summaryLine(null), '没有在改的措施')
+})
+
+test('天数用服务端下发的，不在前端写死 3', () => {
+  // 窗口改成 5 天，句子得跟着变——写死的话页面上还写着 3，而且它已经不准了也没人发现
+  assert.equal(summaryLine({ capaDueSoon: 1, capaDueSoonDays: 5 }), '1 条 5 天内到期')
+  // 老后端没这个字段时退回 3，不至于说出「NaN 天内到期」
+  assert.equal(summaryLine({ capaDueSoon: 1 }), '1 条 3 天内到期')
+})
+
+test('字段缺省或给成字符串都不该说出 NaN', () => {
+  assert.equal(summaryLine({ capaOverdue: '2' }), '2 条超期没改')
+  assert.equal(summaryLine({ capaDueSoon: undefined }), '没有在改的措施')
 })

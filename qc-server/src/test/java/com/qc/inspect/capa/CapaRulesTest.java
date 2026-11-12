@@ -246,4 +246,91 @@ class CapaRulesTest {
         assertThat(CapaRules.statusText("WHATEVER")).isEqualTo("未知状态");
         assertThat(CapaRules.statusText(null)).isEqualTo("未知状态");
     }
+
+    // ------------------------------------------------------ 什么时候该立措施
+
+    @Test
+    @DisplayName("跨三个批次才推：挤在一批里的多少次都不推")
+    void 建议门槛看批次数不看次数() {
+        // 三批各一次：换料换班都还在，是过程的病
+        assertThat(CapaRules.advice(3, 3, false, false).suggest()).isTrue();
+        // 一批十次：那是那批货的事，先把这批处理掉
+        assertThat(CapaRules.advice(1, 10, false, false).suggest()).isFalse();
+        // 两批：够看，但还不够推——两天各撞一次可能只是同一台设备的两个班
+        assertThat(CapaRules.advice(2, 8, false, false).suggest()).isFalse();
+    }
+
+    @Test
+    @DisplayName("已经在改的不推：再列一条会让人以为系统不知道他正在做")
+    void 有开着的措施不再推() {
+        assertThat(CapaRules.advice(5, 9, false, false).suggest()).isTrue();
+        assertThat(CapaRules.advice(5, 9, true, false).suggest()).isFalse();
+        assertThat(CapaRules.advice(5, 9, true, true).suggest()).isFalse();
+    }
+
+    @Test
+    @DisplayName("改过又犯：哪怕只冒一次也要推，且标成改过又犯")
+    void 改过又犯最该被看见() {
+        CapaRules.Advice a = CapaRules.advice(1, 1, false, true);
+        assertThat(a.suggest()).isTrue();
+        assertThat(a.regressed()).isTrue();
+        assertThat(a.note()).contains("验证有效");
+
+        // 首次出现（没关过措施）且只有一批，不推
+        assertThat(CapaRules.advice(1, 1, false, false).suggest()).isFalse();
+    }
+
+    @Test
+    @DisplayName("跨批次但没关过措施：说的是「查一次根因」，不说「上次打偏了」")
+    void 首次反复的措辞不能说成再犯() {
+        CapaRules.Advice a = CapaRules.advice(4, 6, false, false);
+        assertThat(a.regressed()).isFalse();
+        assertThat(a.note()).doesNotContain("上次");
+        assertThat(a.note()).contains("批次");
+    }
+
+    @Test
+    @DisplayName("不推的时候不带文案：前端不会拿到一句用不上的话")
+    void 不推就没有note() {
+        CapaRules.Advice a = CapaRules.advice(1, 1, false, false);
+        assertThat(a.suggest()).isFalse();
+        assertThat(a.note()).isNull();
+    }
+
+    // ------------------------------------------------------------ 什么时候该催
+
+    @Test
+    @DisplayName("距到期天数：今天到期是 0，已超期是负数")
+    void 距到期天数() {
+        assertThat(CapaRules.dueInDays(TODAY, CapaRules.DOING, TODAY)).isZero();
+        assertThat(CapaRules.dueInDays(TODAY.plusDays(1), CapaRules.DOING, TODAY)).isEqualTo(1);
+        // 超期给负数：「已经晚了」和「快到了」不是同一句话
+        assertThat(CapaRules.dueInDays(TODAY.minusDays(5), CapaRules.DOING, TODAY)).isEqualTo(-5);
+    }
+
+    @Test
+    @DisplayName("结束了的不算天数：关闭、撤销、没定期限都给 null")
+    void 结束态没有天数() {
+        assertThat(CapaRules.dueInDays(TODAY.plusDays(3), CapaRules.CLOSED, TODAY)).isNull();
+        assertThat(CapaRules.dueInDays(TODAY.plusDays(3), CapaRules.CANCELLED, TODAY)).isNull();
+        assertThat(CapaRules.dueInDays(null, CapaRules.DOING, TODAY)).isNull();
+    }
+
+    @Test
+    @DisplayName("快到期的窗口是闭区间 0~3 天，第 4 天就不催了")
+    void 催的窗口边界() {
+        assertThat(CapaRules.dueSoon(TODAY, CapaRules.DOING, TODAY)).isTrue();
+        assertThat(CapaRules.dueSoon(TODAY.plusDays(3), CapaRules.DOING, TODAY)).isTrue();
+        assertThat(CapaRules.dueSoon(TODAY.plusDays(4), CapaRules.DOING, TODAY)).isFalse();
+        // 昨天到期的归「超期」管，不重复出现在「快到期」里
+        assertThat(CapaRules.dueSoon(TODAY.minusDays(1), CapaRules.DOING, TODAY)).isFalse();
+    }
+
+    @Test
+    @DisplayName("已提交验证的不催：期限对交上来的人没意义，压着的是验证人")
+    void 待验证不催责任人() {
+        assertThat(CapaRules.dueSoon(TODAY.plusDays(1), CapaRules.VERIFYING, TODAY)).isFalse();
+        assertThat(CapaRules.dueSoon(TODAY.plusDays(1), CapaRules.DOING, TODAY)).isTrue();
+        assertThat(CapaRules.dueSoon(TODAY.plusDays(1), CapaRules.OPEN, TODAY)).isTrue();
+    }
 }

@@ -210,6 +210,85 @@ public final class CapaRules {
         return null;
     }
 
+    // ------------------------------------------------------------ 什么时候该立措施
+
+    /**
+     * 「反复出现」的批次门槛。
+     *
+     * <p>用<b>批次数</b>而不是出现次数来判：同一批里出现十次，是那一批的来料或设备问题，
+     * 先把那批处理掉就完了；三个批次各出现一次，说明换料、换班、换模之后它照样发生，
+     * 那才是系统性原因。这两个数长得很像，含义完全不同。
+     */
+    public static final int SUGGEST_BATCHES = 3;
+
+    /**
+     * 一条不良簇该不该出现在「建议立措施」里。
+     *
+     * @param batches           近窗口内出现的批次数
+     * @param occ               近窗口内出现的次数
+     * @param hasOpenCapa       已有还开着的措施
+     * @param hadEffectiveCapa  有过判「验证有效」且已关闭的措施
+     */
+    public record Advice(boolean suggest, boolean regressed, String note) {
+
+        public static Advice quiet() {
+            return new Advice(false, false, null);
+        }
+    }
+
+    public static Advice advice(long batches, long occ, boolean hasOpenCapa, boolean hadEffectiveCapa) {
+        // 已经在改的不催：再列一条「建议立措施」出来，人会以为系统不知道他正在做
+        if (hasOpenCapa) {
+            return Advice.quiet();
+        }
+        // 改过、判过有效、现在又出现——这是整块功能里最该被看见的一条。
+        // 放宽到 occ >= 1：哪怕只又冒了一次，也说明上次那条措施没打到根因上
+        if (hadEffectiveCapa && occ > 0) {
+            return new Advice(true, true,
+                    "上次改完判过「验证有效」，最近又出现 " + occ + " 次（" + batches
+                            + " 个批次）。别再照着上一套做一遍——同一套做法再来一次，"
+                            + "多半还是同样的结果。先弄清楚它到底在什么条件下才发生");
+        }
+        if (batches >= SUGGEST_BATCHES) {
+            return new Advice(true, false,
+                    "近 " + batches + " 个批次都有它，累计 " + occ + " 次。"
+                            + "跨批次还在发生，说明不是某一批的偶发，查一次根因比反复挑拣划算");
+        }
+        // 剩下的（哪怕次数不少）先不推：都挤在一两批里的，多半是那批货的事
+        return Advice.quiet();
+    }
+
+    // ------------------------------------------------------------ 什么时候该催
+
+    /** 到期前几天进提醒窗口。三天够人排一次活，一周会变成「还早」 */
+    public static final int DUE_SOON_DAYS = 3;
+
+    /**
+     * 距到期还有几天。已关闭、已撤销、或没定期限的返回 {@code null}。
+     *
+     * <p>返回负数表示已超期——那是「已经晚了」，和「快到了」不是同一句话，调用方要分开说。
+     */
+    public static Integer dueInDays(LocalDate dueDate, String status, LocalDate today) {
+        if (dueDate == null || today == null || !isOpen(status)) {
+            return null;
+        }
+        return (int) ChronoUnit.DAYS.between(today, dueDate);
+    }
+
+    /**
+     * 该催了：还没超期，但已经进了提醒窗口。
+     *
+     * <p>已提交验证的不催（{@code VERIFYING}）—— 期限是给「改」定的，他已经交上来了，
+     * 这时候催他等于催错人；真正压着的是验证人，那一头由待办管。
+     */
+    public static boolean dueSoon(LocalDate dueDate, String status, LocalDate today) {
+        if (!OPEN.equals(status) && !DOING.equals(status)) {
+            return false;
+        }
+        Integer d = dueInDays(dueDate, status, today);
+        return d != null && d >= 0 && d <= DUE_SOON_DAYS;
+    }
+
     private static boolean isBlank(String s) {
         return s == null || s.trim().isEmpty();
     }

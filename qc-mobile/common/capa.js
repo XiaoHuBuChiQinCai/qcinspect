@@ -87,3 +87,27 @@ export function dueLabel(row, today) {
   if (left > 0) return `还剩 ${left} 天`
   return `要求 ${d} 完成`
 }
+
+/**
+ * 首页「纠正措施」那一格的摘要句。
+ *
+ * <p>优先级固定：超期 > 快到期 > 待验证 > 在改。顺序不是随手排的——「超期」是事故，
+ * 「快到期」是自己的活，「待验证」是别人的活，「在改」只是现状。把别人的活排在自己
+ * 前面，这一格就变成「看着有事、点进去没事」，点两次以后人就再也不点了。
+ *
+ * <p>天数用服务端下发的 `capaDueSoonDays`，不在前端写死 3：窗口一改，
+ * 页面上还写着「3 天内」，而且它已经不准了也没人会发现。
+ */
+export function summaryLine(summary) {
+  const s = summary || {}
+  const overdue = Number(s.capaOverdue) || 0
+  const dueSoon = Number(s.capaDueSoon) || 0
+  const verifying = Number(s.capaVerifying) || 0
+  const open = Number(s.capaOpen) || 0
+  const days = Number(s.capaDueSoonDays) || 3
+  if (overdue) return overdue + ' 条超期没改'
+  if (dueSoon) return dueSoon + ' 条 ' + days + ' 天内到期'
+  if (verifying) return verifying + ' 条待验证'
+  if (open) return open + ' 条在改'
+  return '没有在改的措施'
+}

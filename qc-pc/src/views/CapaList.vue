@@ -35,6 +35,31 @@
       </span>
     </div>
 
+    <!-- 该立却还没立的。这一块是「动作层」真正缺的那半截：
+         /recurrence 要人先想到「我要立措施」才会被查一次，而实际情况是压根想不起来。
+         帕累托每月第一根柱子都是同一个毛病，说明报表看得见、但没人被叫去做事 -->
+    <el-collapse v-if="suggestions.length" v-model="suggestOpen" class="suggest">
+      <el-collapse-item name="s">
+        <template #title>
+          <span class="sug-head">
+            <b class="warn">{{ suggestions.length }}</b>
+            个毛病反复出现、还没有措施——点开看该不该立
+          </span>
+        </template>
+        <div v-for="s in suggestions" :key="s.productId + '|' + s.defectKey" class="sug">
+          <div class="sug-main">
+            <div class="sug-title">
+              <span>{{ s.title }}</span>
+              <el-tag v-if="s.regressed" type="danger" size="small" effect="plain">改过又犯</el-tag>
+            </div>
+            <div class="sug-note">{{ s.note }}</div>
+            <div class="sub">{{ s.problem }}</div>
+          </div>
+          <el-button size="small" type="primary" plain @click="fromSuggestion(s)">立措施</el-button>
+        </div>
+      </el-collapse-item>
+    </el-collapse>
+
     <!-- 这张表解决的是帕累托管不到的那半截：柱子指出来之后，有没有人去改、改完有没有用 -->
     <el-alert
       type="info"
@@ -305,6 +330,33 @@ const filter = reactive({ keyword: '', status: '', overdue: false })
 const products = ref([])
 const defectCodes = ref([])
 
+// 「该立却没立」的建议。判断全在后端 CapaRules.advice 一处，
+// 这里只管显示——前端自己再判一次门槛，早晚会出现「页面推了、点进去又说不用立」
+const suggestions = ref([])
+const suggestOpen = ref([])
+
+async function loadSuggestions() {
+  try {
+    suggestions.value = (await http.get('/capa/suggestions')) || []
+  } catch {
+    suggestions.value = []
+  }
+}
+
+/**
+ * 从建议直接建单：标题与问题描述用后端拼好的，不再自己拼一遍。
+ * 带上 productId，弹窗里的「以前」才查得出来——帕累托那条路是跨产品的，带不上，
+ * 只能看到历史次数而看不到上一次关过的那条措施。
+ */
+function fromSuggestion(s) {
+  openCreate({
+    productId: s.productId,
+    defectCode: s.defectKey,
+    title: s.title,
+    problem: s.problem
+  })
+}
+
 function queryParams() {
   return {
     keyword: filter.keyword.trim() || undefined,
@@ -469,7 +521,9 @@ async function doCreate() {
     })
     ElMessage.success(`已建立 ${res.capaNo}`)
     createDlg.visible = false
-    await load()
+    // 建完这条就不再是「该立没立」了，建议列表得跟着变——不然人刚建完，
+    // 上面还挂着「1 个毛病反复出现」，会以为没建上
+    await Promise.all([load(), loadSuggestions()])
   } finally {
     createDlg.saving = false
   }
@@ -638,6 +692,7 @@ onMounted(async () => {
     })
   }
   load()
+  loadSuggestions()
 })
 </script>
 
@@ -666,4 +721,17 @@ onMounted(async () => {
          background: var(--el-fill-color-lighter); padding: 10px 12px; border-radius: 4px; }
 .block.empty { color: var(--el-text-color-placeholder); }
 :deep(.overdue-row) { background: var(--el-color-danger-light-9); }
+.suggest { margin-bottom: 12px; border-top: none; }
+:deep(.suggest .el-collapse-item__header) { height: auto; min-height: 40px; line-height: 1.5;
+                                            padding: 6px 0; border-bottom: none; }
+:deep(.suggest .el-collapse-item__wrap) { border-bottom: none; }
+.sug-head { font-size: 13px; }
+.sug { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0;
+       border-top: 1px dashed var(--el-border-color-lighter); }
+.sug:first-child { border-top: none; padding-top: 0; }
+.sug-main { flex: 1; min-width: 0; }
+.sug-title { display: flex; align-items: center; gap: 8px; font-size: 13px;
+             color: var(--el-text-color-primary); }
+.sug-note { font-size: 12px; line-height: 1.65; margin-top: 4px;
+            color: var(--el-color-warning-dark-2); }
 </style>

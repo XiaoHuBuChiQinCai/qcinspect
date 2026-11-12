@@ -1,6 +1,7 @@
 package com.qc.inspect.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.qc.inspect.capa.CapaRules;
 import com.qc.inspect.entity.QcBatch;
 import com.qc.inspect.entity.QcComplaint;
 import com.qc.inspect.entity.QcDefect;
@@ -96,6 +97,12 @@ public class TodoService {
                 .lt(QcCapa::getDueDate, today));
         long capaVerifying = capaMapper.selectCount(new LambdaQueryWrapper<QcCapa>()
                 .eq(QcCapa::getStatus, QcCapa.STATUS_VERIFYING));
+        // 快到期的（还没超）：只提醒「改」的那一段，已提交验证的不催——期限对交上来的人
+        // 已经没有意义了，这时候催他是催错人，真正压着的是验证人
+        long capaDueSoon = capaMapper.selectCount(new LambdaQueryWrapper<QcCapa>()
+                .in(QcCapa::getStatus, QcCapa.STATUS_OPEN, QcCapa.STATUS_DOING)
+                .ge(QcCapa::getDueDate, today)
+                .le(QcCapa::getDueDate, today.plusDays(CapaRules.DUE_SOON_DAYS)));
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("pendingReview", pendingReview);
@@ -116,6 +123,12 @@ public class TodoService {
         m.put("capaOpen", openCapa);
         m.put("capaOverdue", overdueCapa);
         m.put("capaVerifying", capaVerifying);
+        // 三天内到期单独一个数，且**不进 actionable**：还没到期的不是事故，
+        // 混进角标总数会让人以为「有十几件事压着我」，久了就整个不看了
+        m.put("capaDueSoon", capaDueSoon);
+        // 天数跟着一起下发：前端文案要写「N 条 3 天内到期」，天数写死在前端，
+        // 后端一改窗口就对不上了，而且对不上时页面照样显示，没人会发现
+        m.put("capaDueSoonDays", CapaRules.DUE_SOON_DAYS);
         // 角标总数不含量具超期：它不是「单据」，混在一起会让人以为有几十张单没处理
         m.put("actionable", pendingReview + pendingDefect + myRejected + openComplaint + pendingBatch
                 + overdueRework + overdueCapa);
