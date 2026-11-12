@@ -61,12 +61,15 @@ class CapaNarrativeTest {
     }
 
     @Test
-    @DisplayName("有存量却一条没关：要单说一句，否则埋在小句里像是「没什么事」")
+    @DisplayName("有存量却一条没关：要单说一句，并把「存量是快照」交代清楚")
     void 一条没关要说出来() {
         String text = join(CapaNarrative.build(s(2, 0, 0, 0, 6, 0, 30, null), 10, null, 0));
         assertThat(text).contains("本月没有关闭任何一条");
-        assertThat(text).contains("这个月一条都没关上");
+        assertThat(text).contains("一条都没关上是值得注意的");
         assertThat(text).contains("没人再问起");
+        // 「本月关了 0 条」+「目前还有 6 条在改」放一起，容易被读成这 6 条是本月攒的。
+        // 存量是快照，必须交代它会跨月，否则看十月报表的人会拿着十一月的措施追十月的责任人
+        assertThat(text).contains("每个月的报表里");
 
         // 手上也没有存量时不要说这句——那是「本来就没事」，不是「没人催」
         assertThat(join(CapaNarrative.build(s(0, 0, 0, 0, 0, 0, 0, null), 5, null, 0)))
