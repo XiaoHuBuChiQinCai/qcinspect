@@ -1918,6 +1918,7 @@ const blob = await http.get('/export/inspections', { params: {}, responseType: '
 
 `yieldRate` / `badShare` / `worstBatchRate` 在件数为 0 时是 `null` 不是 0——
 「一件没检」和「全不合格」在报表上长得一样，含义差一个数量级。
+（序列化时 `null` 键会被省略，前端按「字段不存在」处理，不要当成缺字段报错。）
 
 **只统计 `SUBMITTED / CLOSED`**：草稿和作废单不代表任何结论。
 **只按 `supplier_id` 匹配**：没挂档的批次不会进这张画像，页脚对这一点有明说——
